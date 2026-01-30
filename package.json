@@ -1,0 +1,51 @@
+{
+  "name": "blockspool",
+  "version": "0.2.0",
+  "description": "Autonomous coding swarm that improves your codebase while you focus on what matters",
+  "author": "BlockSpool",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/blockspool/blockspool",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blockspool/blockspool.git"
+  },
+  "bugs": {
+    "url": "https://github.com/blockspool/blockspool/issues"
+  },
+  "keywords": [
+    "ai",
+    "autonomous",
+    "coding",
+    "claude",
+    "swarm",
+    "automation",
+    "refactoring"
+  ],
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc --build packages/core packages/sqlite packages/cli",
+    "dev": "npx tsx packages/cli/src/bin/blockspool.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint packages/*/src/",
+    "lint:fix": "eslint packages/*/src/ --fix",
+    "typecheck": "tsc --noEmit",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.53.0",
+    "@typescript-eslint/parser": "^8.53.0",
+    "@vitest/coverage-v8": "^2.1.9",
+    "eslint": "^9.39.2",
+    "eslint-plugin-security": "^3.0.1",
+    "husky": "^9.1.7",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.0"
+  }
+}

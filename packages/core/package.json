@@ -1,0 +1,62 @@
+{
+  "name": "@blockspool/core",
+  "version": "0.1.0",
+  "description": "Core business logic and database adapter interface for BlockSpool",
+  "author": "BlockSpool",
+  "homepage": "https://blockspool.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blockspool/blockspool.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/blockspool/blockspool/issues"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./db": {
+      "types": "./dist/db/index.d.ts",
+      "import": "./dist/db/index.js"
+    },
+    "./repos": {
+      "types": "./dist/repos/index.d.ts",
+      "import": "./dist/repos/index.js"
+    },
+    "./services": {
+      "types": "./dist/services/index.d.ts",
+      "import": "./dist/services/index.js"
+    },
+    "./scout": {
+      "types": "./dist/scout/index.d.ts",
+      "import": "./dist/scout/index.js"
+    },
+    "./utils": {
+      "types": "./dist/utils/index.d.ts",
+      "import": "./dist/utils/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "blockspool",
+    "core",
+    "database",
+    "adapter"
+  ],
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

@@ -12,7 +12,7 @@ Autonomous coding tools fall into three categories:
 2. **Issue-to-PR engines** — Convert issues into PRs (Factory, Sweep, Devin)
 3. **Improvement engines** — Continuously scout and improve codebases (BlockSpool)
 
-BlockSpool is the only tool in category 3: purpose-built for unattended, overnight codebase improvement with cost control and safety guarantees.
+BlockSpool is purpose-built for category 3: unattended, overnight codebase improvement with cost control and safety guarantees.
 
 ---
 
@@ -21,7 +21,10 @@ BlockSpool is the only tool in category 3: purpose-built for unattended, overnig
 | Feature | BlockSpool | Gas Town | Factory.ai | Devin | Sweep | Claude Flow |
 |---|---|---|---|---|---|---|
 | **Primary use** | Overnight improvement runs | Multi-agent orchestration | Issue-to-PR automation | AI software engineer | Simple issue fixes | Agent swarm coordination |
-| **Unattended operation** | Yes (designed for it) | No (needs steering) | Yes | Yes | Yes | Yes |
+| **Unattended operation** | Yes (designed for it) | Partial (can run unattended, best with steering) | Yes | Yes | Yes | Yes |
+| **Eco model routing** | Yes (auto sonnet/opus by complexity) | No | N/A | N/A | N/A | No |
+| **Auto-learning from failures** | Yes (records + injects into future scouts) | No | Unknown | Unknown | No | No |
+| **AI merge conflict resolution** | Yes (Claude resolves conflicts before blocking) | No | No | N/A | N/A | No |
 | **Milestone batching** | Yes (`--batch-size`) | Partial (checkpoints) | No | No | No | No |
 | **Parallel execution** | 3-5 adaptive | 20-30 agents | Multiple droids | Single | Single | Swarm |
 | **Conflict-aware scheduling** | Yes (wave partitioning) | No | No | N/A | N/A | No |
@@ -33,62 +36,62 @@ BlockSpool is the only tool in category 3: purpose-built for unattended, overnig
 | **Deep architectural review** | Yes (`--deep`) | No | No | Partial | No | No |
 | **Impact scoring** | Yes (impact x confidence) | No | No | No | No | No |
 | **Loop detection** | Yes (Spindle) | No | Unknown | Unknown | No | No |
-| **Cost per 8h run** | ~$5-15 | ~$800 | SaaS pricing | $500/mo | Free tier | Open source |
-| **Runtime** | Claude Code CLI | Claude, Codex, Aider | Proprietary | Proprietary | GitHub Actions | Claude Code |
+| **Multi-runtime** | No (Claude Code CLI) | Yes (Claude, Codex, Aider, custom) | Proprietary | Proprietary | GitHub Actions | Claude Code |
 | **Open source** | Yes (Apache 2.0) | Yes | No | No | Partial | Yes |
 | **Install** | `npm install -g` | `brew install` / `go install` | SaaS | SaaS | GitHub App | `npm install` |
 
 ---
 
-## Why BlockSpool Wins on Resource Efficiency
+## Design Trade-offs
 
-BlockSpool is designed around **micro-equilibrium** — doing the most useful work per dollar spent.
+Different tools make different trade-offs. Here's how BlockSpool's approach differs:
 
-### Cost Comparison (8-hour overnight run)
+### Cost Efficiency
 
-| Tool | Agents | Typical output | Estimated cost | Cost per improvement |
-|---|---|---|---|---|
-| **BlockSpool** | 3-5 | 50+ improvements, 5 milestone PRs | $5-15 | ~$0.20 |
-| **Gas Town** | 20-30 | Variable (needs steering) | ~$800 | ~$16+ |
-| **Devin** | 1 | 1-3 tasks | $500/mo flat | ~$100+ |
-| **Factory** | Variable | Issue-dependent | Usage-based SaaS | Variable |
+BlockSpool optimizes for **cost per improvement** through:
 
-### Why the difference?
+1. **Eco model routing** (default) — Routes trivial/simple tickets to sonnet, moderate/complex to opus. Scout uses sonnet by default. Use `--no-eco --scout-deep` for full opus if cost isn't a concern.
 
-1. **Focused scope** — Each ticket is sandboxed to specific files. The agent doesn't explore the whole codebase, it works on a narrow slice.
+2. **Focused scope** — Each ticket is sandboxed to specific files. The agent works on a narrow slice, not the whole codebase.
 
-2. **Smart filtering** — Scout finds 20 proposals, dedup removes 10, trust ladder filters to 5. Only high-confidence, high-impact work gets executed.
+3. **Smart filtering** — Scout finds 20 proposals, dedup removes duplicates, trust ladder filters to high-confidence work.
 
-3. **Milestone batching** — Scout scans the milestone branch, seeing prior work. No wasted cycles rediscovering things already fixed.
+4. **Milestone batching** — Scout scans the milestone branch, seeing prior work. No wasted cycles rediscovering things already fixed.
 
-4. **Wave scheduling** — Conflicting tickets run sequentially instead of failing and retrying. Zero wasted compute on merge conflicts.
+5. **Wave scheduling** — Conflicting tickets run sequentially instead of failing and retrying.
 
-5. **Scope expansion** — Instead of failing on edge cases (root config, cross-package import), the system auto-expands and retries. Fewer wasted runs.
+6. **Scope expansion** — Instead of failing on edge cases (root config, cross-package import), the system auto-expands and retries.
 
-6. **Adaptive parallelism** — Runs 5 simple tickets in parallel but only 2 complex ones. Reduces near-batch-limit to avoid conflicts. Resources match the workload.
+7. **Adaptive parallelism** — Runs 5 simple tickets in parallel but only 2 complex ones.
 
-Gas Town throws 30 agents at a problem. BlockSpool runs 3-5 agents surgically. The result: 40x better cost-per-improvement.
+8. **Auto-learning** — Records why tickets fail and avoids proposing similar work in future cycles.
+
+### Parallelism vs. Precision
+
+Gas Town runs 20-30 agents in parallel, optimizing for throughput on large, well-defined tasks (e.g., migrating 500 files). BlockSpool runs 3-5 agents with scope enforcement and conflict-aware scheduling, optimizing for overnight unattended operation where safety matters more than speed.
+
+Both are valid approaches for different use cases.
 
 ---
 
-## Gas Town Deep Dive
+## Gas Town
 
-[Gas Town](https://github.com/steveyegge/gastown) by Steve Yegge is a multi-agent workspace manager written in Go. It coordinates 20-30 Claude Code agents working in parallel.
+[Gas Town](https://github.com/steveyegge/gastown) by Steve Yegge is a multi-agent workspace manager written in Go.
 
 **Strengths:**
-- Raw parallelism (20-30 agents)
-- Multi-runtime (Claude Code, Codex, Aider, custom)
-- Git-native persistence (survives crashes)
+- High parallelism (20-30 agents)
+- Multi-runtime support (Claude Code, Codex, Aider, custom)
+- Git-native persistence (Beads system, survives crashes)
 - Kubernetes operator for cloud deployment
+- TOML-based task definitions
 
-**Weaknesses:**
-- Requires constant human steering (not unattended)
-- ~$100/hour burn rate
-- No built-in scope enforcement or dedup
-- Has auto-merged failing tests in early versions
-- No milestone batching (produces many individual changes)
+**Different trade-offs than BlockSpool:**
+- Optimized for large defined tasks vs. continuous scouting
+- Higher parallelism but no conflict-aware scheduling
+- Multi-runtime flexibility but no per-ticket scope enforcement
+- Higher throughput, higher cost per run
 
-**When to use Gas Town:** You have a large, well-defined task (e.g., migrate 500 files from framework A to B) and can afford $800 for an 8-hour run with active supervision.
+**When to use Gas Town:** You have a large, well-defined task (e.g., migrate 500 files from framework A to B) and want maximum parallelism.
 
 **When to use BlockSpool:** You want continuous, unattended improvement of your codebase overnight with cost control and safety guarantees.
 
@@ -97,10 +100,10 @@ Gas Town throws 30 agents at a problem. BlockSpool runs 3-5 agents surgically. T
 ## Other Tools
 
 ### Factory.ai
-Enterprise SaaS that assigns "droids" to GitHub issues. Good for teams with existing issue workflows. Not open source. No unattended scouting — it reacts to issues, doesn't proactively find improvements.
+Enterprise SaaS that assigns "droids" to GitHub issues. Good for teams with existing issue workflows. Not open source. Reacts to issues rather than proactively finding improvements.
 
 ### Devin (Cognition Labs)
-"First AI software engineer." Handles complete projects from planning to deployment. $500/month subscription. Single-agent, no parallel execution. Good for greenfield tasks, not continuous improvement.
+AI software engineer that handles complete projects from planning to deployment. Subscription-based pricing. Single-agent. Good for greenfield tasks rather than continuous improvement.
 
 ### Sweep.dev
 Lightweight GitHub app that turns issues into PRs for minor fixes. Free tier available. Single-agent, no scouting, no milestone batching. Good for simple, well-defined fixes.
@@ -109,19 +112,19 @@ Lightweight GitHub app that turns issues into PRs for minor fixes. Free tier ava
 Code review tools, not code generation. They review PRs, not create them. Complementary to BlockSpool — use CodeRabbit to review BlockSpool's PRs.
 
 ### Claude Flow
-Open-source multi-agent swarm for Claude Code. Similar to Gas Town in concept. No scope enforcement, no dedup, no milestone batching. More of a framework than a product.
+Open-source multi-agent framework for Claude Code. More of a building block than a product — provides coordination primitives without scope enforcement, dedup, or milestone batching.
 
 ---
 
 ## BlockSpool's Niche
 
-BlockSpool occupies a unique position: **the unattended overnight improvement engine.**
+BlockSpool is built for **unattended overnight improvement runs**.
 
-No other tool combines:
+It combines:
 - Autonomous scouting (finds work to do)
+- Eco model routing (cost-efficient by default)
+- Auto-learning (avoids repeating failures)
+- AI merge conflict resolution (fewer blocked tickets)
 - Milestone batching (coherent PRs)
-- Cost control ($5-15 per overnight run)
 - Safety guarantees (scope enforcement, trust ladder, dedup)
 - Zero configuration (`npm install` + `init` + `auto`)
-
-The closest comparison is a developer running Claude Code manually for 8 hours — but BlockSpool does it without supervision, avoids duplicates, enforces scope, batches into clean PRs, and costs a fraction of what manual operation would.

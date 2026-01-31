@@ -40,8 +40,17 @@ Trust Ladder (use --aggressive for more):
   Default:   refactor, test, docs, types, perf (safe categories only)
   Aggressive: + security fixes (still excludes deps, migrations)
 
+Model Routing (eco mode, on by default):
+  Default:   trivial/simple tickets → sonnet, moderate/complex → opus
+  --no-eco:  force opus for all tickets
+  --model:   explicit model override (sonnet or opus)
+  Scout uses sonnet by default. --scout-deep for opus.
+
 Examples:
-  blockspool solo auto                    # Scout + fix + PR (safe defaults)
+  blockspool solo auto                    # Scout + fix + PR (safe defaults, eco mode)
+  blockspool solo auto --no-eco           # Force opus for all tickets
+  blockspool solo auto --model sonnet     # Use sonnet for everything
+  blockspool solo auto --scout-deep       # Use opus for scout phase
   blockspool solo auto --dry-run          # Show what would be done
   blockspool solo auto --scope src/api    # Scout specific directory
   blockspool solo auto --formula security-audit  # Run a predefined formula
@@ -70,6 +79,9 @@ Examples:
     .option('--formula <name>', 'Use a predefined formula (e.g., security-audit, test-coverage, cleanup, deep)')
     .option('--deep', 'Deep architectural review (shortcut for --formula deep)')
     .option('--batch-size <n>', 'Milestone mode: merge N tickets into one PR (default: off)')
+    .option('--no-eco', 'Disable eco mode (use opus for all tickets)')
+    .option('--model <name>', 'Override model for all tickets (sonnet or opus)')
+    .option('--scout-deep', 'Use opus for scout phase (default: sonnet)')
     .action(async (mode: string | undefined, options: {
       dryRun?: boolean;
       scope?: string;
@@ -87,6 +99,9 @@ Examples:
       formula?: string;
       deep?: boolean;
       batchSize?: string;
+      eco?: boolean;
+      model?: string;
+      scoutDeep?: boolean;
     }) => {
       if (options.deep && !options.formula) {
         options.formula = 'deep';
@@ -100,7 +115,7 @@ Examples:
       }
 
       if (effectiveMode === 'auto') {
-        await runAutoMode({ ...options, formula: options.formula, batchSize: options.batchSize });
+        await runAutoMode({ ...options, formula: options.formula, batchSize: options.batchSize, eco: options.eco, model: options.model, scoutDeep: options.scoutDeep });
         return;
       }
 

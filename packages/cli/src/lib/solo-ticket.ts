@@ -137,6 +137,8 @@ export interface RunTicketOptions {
   skipPush?: boolean;
   /** Skip PR creation even if createPr is true */
   skipPr?: boolean;
+  /** Model to use for Claude execution (default: opus) */
+  model?: 'sonnet' | 'opus';
 }
 
 /**
@@ -224,12 +226,17 @@ export async function runClaude(opts: {
   timeoutMs: number;
   verbose: boolean;
   onProgress: (msg: string) => void;
+  model?: 'sonnet' | 'opus';
 }): Promise<ClaudeResult> {
-  const { worktreePath, prompt, timeoutMs, verbose, onProgress } = opts;
+  const { worktreePath, prompt, timeoutMs, verbose, onProgress, model } = opts;
   const startTime = Date.now();
 
   return new Promise((resolve) => {
-    const claude = spawn('claude', ['-p', '--dangerously-skip-permissions'], {
+    const args = ['-p', '--dangerously-skip-permissions'];
+    if (model) {
+      args.push('--model', model);
+    }
+    const claude = spawn('claude', args, {
       cwd: worktreePath,
       env: { ...process.env, CLAUDE_CODE_NON_INTERACTIVE: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -515,6 +522,7 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
       timeoutMs,
       verbose,
       onProgress: verbose ? onProgress : () => {},
+      model: opts.model,
     });
 
     // Save agent artifact

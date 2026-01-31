@@ -70,6 +70,9 @@ Final Summary
 
 | Feature | Description |
 |---------|-------------|
+| **Eco Model Routing** | Default on: trivial/simple → sonnet, moderate/complex → opus. `--no-eco` for full opus. |
+| **Auto-Learning** | Records failures and injects lessons into future scout cycles |
+| **AI Merge Resolution** | Claude resolves merge conflicts before blocking tickets |
 | **Milestone Mode** | Batches N tickets into one PR instead of 50 individual PRs |
 | **Parallel Execution** | Runs 3-5 tickets concurrently with adaptive parallelism |
 | **Wave Scheduling** | Detects overlapping file paths, serializes conflicting tickets |
@@ -124,12 +127,38 @@ blockspool solo auto --hours 8 --batch-size 30
 ```bash
 blockspool solo init
 ```
-Creates `.blockspool/` directory with SQLite database. No external services needed.
+
+You'll be prompted to authorize the repo:
+
+```
+Authorize repository for BlockSpool
+
+  Repository:  user/my-repo
+  Remote:      git@github.com:user/my-repo.git
+  Local path:  /home/user/my-repo
+
+BlockSpool will scout this repo, execute changes in isolated
+worktrees, and create draft PRs. All changes go through QA.
+
+Authorize user/my-repo? [Y/n]
+```
+
+Creates `.blockspool/` directory with SQLite database and registers the repo in `~/.blockspool/allowed-repos.json`. No external services needed.
+
+For CI/scripting, skip the prompt:
+
+```bash
+blockspool solo init --yes                                    # Auto-detect remote, skip prompt
+blockspool solo init --repo git@github.com:user/repo.git      # Explicit remote, skip prompt
+```
 
 ### Auto (Main Command)
 ```bash
-# Run overnight with milestone PRs
+# Run overnight with milestone PRs (eco mode, sonnet scout)
 blockspool solo auto --hours 8 --batch-size 30
+
+# Full opus run — maximum quality, maximum cost
+blockspool solo auto --no-eco --scout-deep --hours 8 --batch-size 30
 
 # Run until stopped (Ctrl+C finalizes partial milestone)
 blockspool solo auto --continuous --batch-size 20
@@ -146,8 +175,26 @@ blockspool solo auto --formula test-coverage
 blockspool solo auto --deep
 ```
 
+### Model Routing
+
+Eco mode is on by default — routes trivial/simple tickets to sonnet and moderate/complex to opus.
+
+```bash
+blockspool solo auto                          # Eco mode (default)
+blockspool solo auto --no-eco                 # Force opus for all tickets
+blockspool solo auto --model sonnet           # Force sonnet for all tickets
+blockspool solo auto --scout-deep             # Use opus for scout phase
+blockspool solo auto --no-eco --scout-deep    # Full opus everything
+```
+
 ### Other Commands
 ```bash
+# List authorized repos
+blockspool solo repos
+
+# Deauthorize a repo
+blockspool solo repos --remove user/my-repo
+
 # Check prerequisites
 blockspool solo doctor
 
@@ -248,7 +295,7 @@ Optional `.blockspool/config.json`:
 
 See [docs/COMPARISON.md](./docs/COMPARISON.md) for a detailed comparison with Gas Town, Factory.ai, Devin, and others.
 
-**TL;DR:** BlockSpool is the only tool designed for unattended overnight runs with built-in cost control, scope enforcement, and milestone batching. Other tools either require constant steering (Gas Town), are SaaS-only (Factory, Devin), or handle only simple fixes (Sweep).
+**TL;DR:** BlockSpool is built for unattended overnight runs with eco model routing, auto-learning, scope enforcement, and milestone batching. Other tools optimize for different trade-offs: Gas Town for high-parallelism defined tasks, Factory/Devin for SaaS issue-to-PR workflows, Sweep for simple fixes.
 
 ---
 
@@ -274,7 +321,7 @@ BlockSpool adds:
 
 ### How much does it cost?
 
-BlockSpool is free and open source. It uses your Claude Code subscription or API key. A typical overnight run produces 50+ improvements for roughly $5-15 in API costs depending on codebase size.
+BlockSpool is free and open source. It uses your Claude Code subscription or API key. Eco mode (default) routes simple tickets to sonnet to reduce costs. Use `--no-eco` for full opus if cost isn't a concern.
 
 ### What are formulas?
 

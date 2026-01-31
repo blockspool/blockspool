@@ -7,6 +7,7 @@ Solo mode with SQLite backend — runs locally, creates PRs autonomously.
 ```bash
 blockspool solo init
 blockspool solo auto --hours 8 --batch-size 30
+blockspool solo auto --no-eco --scout-deep    # Full opus run
 ```
 
 ### Shipped Features
@@ -15,6 +16,9 @@ blockspool solo auto --hours 8 --batch-size 30
 |---------|--------|-------------|
 | **Solo mode** | Done | Zero-config local execution with SQLite |
 | **Auto (continuous)** | Done | Runs for hours, scouts + executes + PRs |
+| **Eco model routing** | Done | Default on: trivial/simple → sonnet, moderate/complex → opus |
+| **Auto-learning** | Done | Records failures, injects lessons into future scout cycles |
+| **AI merge resolution** | Done | Claude resolves merge conflicts before blocking tickets |
 | **Milestone mode** | Done | `--batch-size N` batches tickets into milestone PRs |
 | **Parallel execution** | Done | 3-5 adaptive workers in isolated worktrees |
 | **Wave scheduling** | Done | Conflict-aware partitioning avoids merge conflicts |
@@ -158,7 +162,7 @@ jobs:
 
 ## Version Plan
 
-### v0.1 (Current)
+### v0.1
 - [x] Solo mode with SQLite
 - [x] Auto (continuous mode)
 - [x] Trust ladder (safe/aggressive)
@@ -174,7 +178,10 @@ jobs:
 - [x] Spindle loop detection
 - [x] Rebase-retry on merge conflicts
 
-### v0.2
+### v0.2 (Current)
+- [x] Eco model routing (default on, `--no-eco` to disable)
+- [x] Auto-learning from failures (records + injects into scout)
+- [x] AI merge conflict resolution (Claude resolves before blocking)
 - [ ] YAML backend option
 - [ ] Custom trust configuration
 - [ ] JSON output format

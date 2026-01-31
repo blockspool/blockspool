@@ -122,7 +122,7 @@ describe('scoutRepo', () => {
       success: true,
       proposals: [],
       errors: [],
-      scannedFiles: 5,
+      scanDurationMs: 100, scannedFiles: 5,
     });
 
     const deps = makeDeps();
@@ -139,7 +139,7 @@ describe('scoutRepo', () => {
       success: true,
       proposals: [],
       errors: [],
-      scannedFiles: 10,
+      scanDurationMs: 100, scannedFiles: 10,
     });
 
     await scoutRepo(makeDeps(), {
@@ -165,7 +165,7 @@ describe('scoutRepo', () => {
       success: true,
       proposals: [proposal],
       errors: [],
-      scannedFiles: 3,
+      scanDurationMs: 100, scannedFiles: 3,
     });
 
     const fakeTicket = {
@@ -199,7 +199,7 @@ describe('scoutRepo', () => {
       success: true,
       proposals: [],
       errors: [],
-      scannedFiles: 1,
+      scanDurationMs: 100, scannedFiles: 1,
     });
 
     const phases: ScoutProgress['phase'][] = [];
@@ -233,7 +233,7 @@ describe('scoutRepo', () => {
       success: true,
       proposals,
       errors: [],
-      scannedFiles: 20,
+      scanDurationMs: 100, scannedFiles: 20,
     });
 
     const result = await scoutRepo(makeDeps());

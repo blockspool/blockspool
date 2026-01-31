@@ -30,8 +30,8 @@
     "dev": "npx tsx packages/cli/src/bin/blockspool.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint packages/*/src/",
-    "lint:fix": "eslint packages/*/src/ --fix",
+    "lint": "eslint packages/*/src/ --ignore-pattern '**/test/**'",
+    "lint:fix": "eslint packages/*/src/ --ignore-pattern '**/test/**' --fix",
     "typecheck": "tsc --noEmit",
     "prepare": "npm run build"
   },

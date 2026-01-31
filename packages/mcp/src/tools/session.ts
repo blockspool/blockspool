@@ -1,0 +1,366 @@
+/**
+ * Session management tools: start_session, session_status, end_session, advance, ingest_event
+ */
+
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
+import type { SessionManager } from '../state.js';
+import { advance } from '../advance.js';
+import { processEvent } from '../event-processor.js';
+import type { EventType } from '../types.js';
+import { deriveScopePolicy, isFileAllowed, serializeScopePolicy } from '../scope-policy.js';
+import { repos } from '@blockspool/core';
+import { loadFormula, applyFormula, listFormulas } from '../formulas.js';
+
+export function registerSessionTools(server: McpServer, getState: () => SessionManager) {
+  server.tool(
+    'blockspool_start_session',
+    'Initialize an improvement session. Creates a run folder with state.json and event log. Call this first.',
+    {
+      hours: z.number().optional().describe('Session duration in hours. Omit for unlimited.'),
+      formula: z.string().optional().describe('Formula name (e.g., security-audit, test-coverage).'),
+      deep: z.boolean().optional().describe('Enable deep architectural review mode.'),
+      continuous: z.boolean().optional().describe('Run until manually stopped.'),
+      scope: z.string().optional().describe('Glob pattern for files to scan (default: src/**).'),
+      categories: z.array(z.string()).optional().describe('Trust ladder categories.'),
+      min_confidence: z.number().optional().describe('Minimum confidence threshold (default: 70).'),
+      max_proposals: z.number().optional().describe('Max proposals per scout (default: 5).'),
+      step_budget: z.number().optional().describe('Max advance() calls (default: 200).'),
+      ticket_step_budget: z.number().optional().describe('Max steps per ticket (default: 12).'),
+      max_prs: z.number().optional().describe('Max PRs to create (default: 5).'),
+      max_cycles: z.number().optional().describe('Max scout→execute cycles (default: 1). Use with hours for multi-cycle runs.'),
+      draft_prs: z.boolean().optional().describe('Create draft PRs (default: true).'),
+    },
+    async (params) => {
+      const state = getState();
+
+      // Load and apply formula if specified
+      let config = {
+        hours: params.hours,
+        formula: params.formula,
+        deep: params.deep,
+        continuous: params.continuous,
+        scope: params.scope,
+        categories: params.categories,
+        min_confidence: params.min_confidence,
+        max_proposals: params.max_proposals,
+        step_budget: params.step_budget,
+        ticket_step_budget: params.ticket_step_budget,
+        max_prs: params.max_prs,
+        max_cycles: params.max_cycles,
+        draft_prs: params.draft_prs,
+      };
+
+      let formulaInfo: { name: string; description: string } | undefined;
+      if (params.formula) {
+        const formula = loadFormula(params.formula, state.projectPath);
+        if (formula) {
+          config = applyFormula(formula, config);
+          formulaInfo = { name: formula.name, description: formula.description };
+        }
+      }
+
+      const runState = state.start(config);
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            run_id: runState.run_id,
+            session_id: runState.session_id,
+            project_id: runState.project_id,
+            phase: runState.phase,
+            step_budget: runState.step_budget,
+            expires_at: runState.expires_at,
+            run_dir: state.run.dir,
+            formula: formulaInfo,
+            message: 'Session started. Call blockspool_advance to begin.',
+          }, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'blockspool_advance',
+    'Get the next action to perform. This is the main loop driver. Call repeatedly until it returns STOP.',
+    {},
+    async () => {
+      const state = getState();
+      try {
+        const response = await advance({
+          run: state.run,
+          db: state.db,
+          project: state.project,
+        });
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(response, null, 2),
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: (e as Error).message }),
+          }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'blockspool_ingest_event',
+    'Report an event back to BlockSpool. Used after executing an action from advance(). Triggers state transitions.',
+    {
+      type: z.string().describe('Event type (e.g., SCOUT_OUTPUT, PLAN_SUBMITTED, TICKET_RESULT, QA_PASSED, QA_FAILED, PR_CREATED, USER_OVERRIDE).'),
+      payload: z.record(z.unknown()).describe('Event payload data.'),
+    },
+    async (params) => {
+      const state = getState();
+      try {
+        state.run.require();
+
+        // Log the raw event
+        state.run.appendEvent(params.type as EventType, params.payload as Record<string, unknown>);
+
+        // Process the event (may trigger state transitions)
+        const result = await processEvent(
+          state.run,
+          state.db,
+          params.type as EventType,
+          params.payload as Record<string, unknown>,
+        );
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              ...result,
+              step: state.run.require().step_count,
+              current_phase: state.run.require().phase,
+            }, null, 2),
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: (e as Error).message }),
+          }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'blockspool_session_status',
+    'Get current session state: phase, budgets, tickets completed/failed, time remaining.',
+    {},
+    async () => {
+      const state = getState();
+      try {
+        const status = state.getStatus();
+        const digest = state.run.buildDigest();
+        const warnings = state.run.getBudgetWarnings();
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              ...status,
+              digest,
+              budget_warnings: warnings.length > 0 ? warnings : undefined,
+            }, null, 2),
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: (e as Error).message }),
+          }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'blockspool_end_session',
+    'Finalize the current session. Returns summary.',
+    {},
+    async () => {
+      const state = getState();
+      try {
+        const finalState = state.end();
+        const durationMs = Date.now() - new Date(finalState.started_at).getTime();
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              run_id: finalState.run_id,
+              session_id: finalState.session_id,
+              duration_ms: durationMs,
+              step_count: finalState.step_count,
+              tickets_completed: finalState.tickets_completed,
+              tickets_failed: finalState.tickets_failed,
+              tickets_blocked: finalState.tickets_blocked,
+              prs_created: finalState.prs_created,
+              scout_cycles: finalState.scout_cycles,
+              final_phase: finalState.phase,
+              message: 'Session ended.',
+            }, null, 2),
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: (e as Error).message }),
+          }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'blockspool_get_scope_policy',
+    'Get the scope policy for the current ticket. Used by PreToolUse hooks to check if a file path is allowed before writes.',
+    {
+      file_path: z.string().optional().describe('Optional file path to check. If provided, returns whether this specific file is allowed.'),
+    },
+    async (params) => {
+      const state = getState();
+      try {
+        const s = state.run.require();
+
+        if (!s.current_ticket_id) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({ error: 'No active ticket' }),
+            }],
+            isError: true,
+          };
+        }
+
+        const ticket = await repos.tickets.getById(state.db, s.current_ticket_id);
+        if (!ticket) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({ error: 'Ticket not found' }),
+            }],
+            isError: true,
+          };
+        }
+
+        const policy = deriveScopePolicy({
+          allowedPaths: ticket.allowedPaths ?? [],
+          category: ticket.category ?? 'refactor',
+          maxLinesPerTicket: s.max_lines_per_ticket,
+        });
+
+        const result: Record<string, unknown> = {
+          ticket_id: s.current_ticket_id,
+          policy: serializeScopePolicy(policy),
+        };
+
+        // If a file path is provided, check it
+        if (params.file_path) {
+          const allowed = isFileAllowed(params.file_path, policy);
+          result.file_check = {
+            path: params.file_path,
+            allowed,
+          };
+
+          // Log the scope check event
+          state.run.appendEvent(
+            allowed ? 'SCOPE_ALLOWED' : 'SCOPE_BLOCKED',
+            { path: params.file_path, ticket_id: s.current_ticket_id },
+          );
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: (e as Error).message }),
+          }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'blockspool_nudge',
+    'Add a hint to guide the running session. Hints are consumed in the next scout cycle and appended to the scout prompt.',
+    {
+      hint: z.string().describe('Guidance for the scout (e.g., "focus on auth module", "skip test files").'),
+    },
+    async (params) => {
+      const state = getState();
+      try {
+        state.run.addHint(params.hint);
+        const s = state.run.require();
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              hint: params.hint,
+              pending_hints: s.hints.length,
+              message: 'Hint added. Will be consumed in next scout cycle.',
+            }, null, 2),
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: (e as Error).message }),
+          }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'blockspool_list_formulas',
+    'List all available formulas (built-in + custom from .blockspool/formulas/).',
+    {},
+    async () => {
+      const state = getState();
+      const formulas = listFormulas(state.projectPath);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            formulas: formulas.map(f => ({
+              name: f.name,
+              version: f.version,
+              description: f.description,
+              categories: f.categories,
+              risk_tolerance: f.risk_tolerance,
+              tags: f.tags,
+            })),
+          }, null, 2),
+        }],
+      };
+    },
+  );
+}

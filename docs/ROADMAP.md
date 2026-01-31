@@ -2,7 +2,7 @@
 
 ## Current State (v0.2)
 
-Solo mode with SQLite backend — runs locally, creates PRs autonomously.
+Solo mode with SQLite backend — runs locally, creates PRs continuously.
 
 ```bash
 blockspool solo init

@@ -20,7 +20,7 @@ const program = new Command();
 
 program
   .name('blockspool')
-  .description('Autonomous coding swarm for your codebase')
+  .description('Continuous codebase improvement tool')
   .version('0.2.0');
 
 // `blockspool solo <cmd>` — backwards compat

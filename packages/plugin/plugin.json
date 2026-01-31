@@ -1,0 +1,12 @@
+{
+  "name": "blockspool",
+  "version": "0.1.0",
+  "description": "Continuous codebase improvement — scouts, plans, executes, and PRs",
+  "commands": [
+    "./commands/run.md",
+    "./commands/status.md",
+    "./commands/nudge.md",
+    "./commands/cancel.md"
+  ],
+  "hooks": "./hooks/hooks.json"
+}

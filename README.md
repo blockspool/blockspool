@@ -1,8 +1,8 @@
 # BlockSpool
 
-**Autonomous coding swarm that improves your codebase while you focus on what matters.**
+**Your codebase improves itself. Scouts improvements, executes in parallel, batches into milestone PRs.**
 
-BlockSpool scouts your codebase for improvements, executes them in parallel, and batches everything into milestone PRs — all running autonomously for hours.
+BlockSpool scouts your codebase for improvements, executes them in parallel, and batches everything into milestone PRs — ready for your review.
 
 ---
 
@@ -327,7 +327,7 @@ See [docs/COMPARISON.md](./docs/COMPARISON.md) for a detailed comparison with Ga
 ### How is this different from just running Claude Code?
 
 BlockSpool adds:
-- **Hours of autonomous operation** (not just one task)
+- **Hours of continuous operation** (not just one task)
 - **Milestone batching** (coherent PRs, not 50 tiny ones)
 - **Parallel execution** with conflict-aware scheduling
 - **Deduplication** (won't recreate similar work)

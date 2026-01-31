@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@blockspool/cli` - Command-line interface with solo mode
 - `@blockspool/sqlite` - Zero-config SQLite adapter for local development
 - Solo mode commands: `init`, `scout`, `run`, `pr`, `auto`, `status`, `doctor`
-- TUI dashboard for monitoring autonomous runs
+- TUI dashboard for monitoring long-running sessions
 - Built-in starter pack with CI fix automation
 
 ### Security

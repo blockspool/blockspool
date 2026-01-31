@@ -1,7 +1,7 @@
 {
   "name": "blockspool",
   "version": "0.3.0",
-  "description": "Autonomous coding swarm that improves your codebase while you focus on what matters",
+  "description": "Continuous codebase improvement tool — scouts, executes, and batches into milestone PRs",
   "author": "BlockSpool",
   "license": "Apache-2.0",
   "homepage": "https://github.com/blockspool/blockspool",
@@ -14,10 +14,8 @@
   },
   "keywords": [
     "ai",
-    "autonomous",
     "coding",
     "claude",
-    "swarm",
     "automation",
     "refactoring"
   ],

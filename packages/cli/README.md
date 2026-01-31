@@ -1,6 +1,6 @@
 # BlockSpool CLI
 
-Zero-config autonomous coding assistant. Works locally with any git repository.
+Zero-config continuous improvement tool. Works locally with any git repository.
 
 ## Quick Start (5 minutes)
 

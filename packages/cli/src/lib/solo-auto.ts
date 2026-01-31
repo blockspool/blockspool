@@ -1,5 +1,5 @@
 /**
- * Solo mode autonomous execution
+ * Solo mode continuous execution
  */
 
 import * as path from 'node:path';

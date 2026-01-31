@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "blockspool": {
+      "command": "npx",
+      "args": ["tsx", "../mcp/src/index.ts"],
+      "env": {}
+    }
+  }
+}

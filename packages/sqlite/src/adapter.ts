@@ -203,8 +203,8 @@ export class SQLiteAdapter implements DatabaseAdapter {
       let rows: T[] = [];
       let rowCount: number | null = null;
 
-      // Use run() for INSERT/UPDATE/DELETE, all() for SELECT
-      if (queryType === 'SELECT' || text.trim().toUpperCase().includes('RETURNING')) {
+      // Use run() for INSERT/UPDATE/DELETE, all() for SELECT and PRAGMA queries that return data
+      if (queryType === 'SELECT' || text.trim().toUpperCase().includes('RETURNING') || text.trim().toUpperCase().startsWith('PRAGMA')) {
         const stmt = db.prepare(sql);
         rows = stmt.all(...values) as T[];
         rowCount = rows.length;

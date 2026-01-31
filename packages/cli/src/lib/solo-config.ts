@@ -25,10 +25,6 @@ export interface AutoConfig {
   maxLinesPerTicket: number;
   draftPrs: boolean;
   defaultScope: string;
-  /** Model routing: 'auto' = eco mode (complexity-based), or explicit model name */
-  model: 'auto' | 'sonnet' | 'opus';
-  /** Model used for scout phase */
-  scoutModel: 'sonnet' | 'opus';
 }
 
 /**
@@ -43,22 +39,7 @@ export const DEFAULT_AUTO_CONFIG: AutoConfig = {
   maxLinesPerTicket: 300,
   draftPrs: true,
   defaultScope: 'src',
-  model: 'auto',
-  scoutModel: 'sonnet',
 };
-
-/**
- * Resolve which model to use for a ticket based on eco mode and complexity.
- * In 'auto' (eco) mode: trivial/simple → sonnet, moderate/complex → opus.
- * Explicit model overrides eco routing entirely.
- */
-export function resolveModelForComplexity(
-  modelSetting: 'auto' | 'sonnet' | 'opus',
-  complexity: string
-): 'sonnet' | 'opus' {
-  if (modelSetting !== 'auto') return modelSetting;
-  return (complexity === 'moderate' || complexity === 'complex') ? 'opus' : 'sonnet';
-}
 
 /**
  * Solo config file structure
@@ -189,7 +170,7 @@ export function detectQaCommands(repoRoot: string): DetectedQaCommand[] {
 /**
  * Initialize solo mode for a repository
  */
-export async function initSolo(repoRoot: string, opts?: { remoteUrl?: string }): Promise<{ config: SoloConfig; detectedQa: DetectedQaCommand[] }> {
+export async function initSolo(repoRoot: string): Promise<{ config: SoloConfig; detectedQa: DetectedQaCommand[] }> {
   const dir = getBlockspoolDir(repoRoot);
   const configPath = path.join(dir, 'config.json');
   const dbPath = getDbPath(repoRoot);
@@ -200,15 +181,13 @@ export async function initSolo(repoRoot: string, opts?: { remoteUrl?: string }):
 
   const detectedQa = detectQaCommands(repoRoot);
 
-  // Use provided remote URL or auto-detect from git origin
-  let allowedRemote: string | undefined = opts?.remoteUrl;
-  if (!allowedRemote) {
-    try {
-      const { execSync } = await import('child_process');
-      allowedRemote = execSync('git remote get-url origin', { cwd: repoRoot, encoding: 'utf-8' }).trim();
-    } catch {
-      // No remote configured yet — that's fine
-    }
+  // Capture origin remote URL for safety validation
+  let allowedRemote: string | undefined;
+  try {
+    const { execSync } = await import('child_process');
+    allowedRemote = execSync('git remote get-url origin', { cwd: repoRoot, encoding: 'utf-8' }).trim();
+  } catch {
+    // No remote configured yet — that's fine
   }
 
   const config: SoloConfig = {

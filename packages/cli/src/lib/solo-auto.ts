@@ -10,7 +10,7 @@ import {
   scoutRepo,
   type ScoutProgress,
 } from '@blockspool/core/services';
-import { projects, tickets, runs, learnings } from '@blockspool/core/repos';
+import { projects, tickets, runs } from '@blockspool/core/repos';
 import type { TicketProposal } from '@blockspool/core/scout';
 import { createGitService } from './git.js';
 import {
@@ -21,7 +21,6 @@ import {
   loadConfig,
   createScoutDeps,
   formatProgress,
-  resolveModelForComplexity,
 } from './solo-config.js';
 import { pathsOverlap, runPreflightChecks } from './solo-utils.js';
 import { soloRunTicket, type RunTicketResult } from './solo-ticket.js';
@@ -418,9 +417,6 @@ export async function runAutoMode(options: {
   formula?: string;
   deep?: boolean;
   batchSize?: string;
-  eco?: boolean;
-  model?: string;
-  scoutDeep?: boolean;
 }): Promise<void> {
   // Load formula if specified
   let activeFormula: import('./formulas.js').Formula | null = null;
@@ -450,20 +446,6 @@ export async function runAutoMode(options: {
   const maxPrs = parseInt(options.maxPrs || String(activeFormula?.maxPrs ?? defaultMaxPrs), 10);
   const minConfidence = parseInt(options.minConfidence || String(activeFormula?.minConfidence ?? 70), 10);
   const useDraft = options.draft !== false;
-
-  // Model routing: eco mode is default (auto), --no-eco forces opus, --model overrides all
-  const modelSetting: 'auto' | 'sonnet' | 'opus' =
-    options.model === 'sonnet' ? 'sonnet' :
-    options.model === 'opus' ? 'opus' :
-    options.eco === false ? 'opus' : 'auto';
-  const scoutModel: 'sonnet' | 'opus' = options.scoutDeep ? 'opus' : 'sonnet';
-
-  if (modelSetting === 'auto') {
-    console.log(chalk.gray('  Model: eco (sonnet for simple, opus for complex)'));
-  } else {
-    console.log(chalk.gray(`  Model: ${modelSetting} (all tickets)`));
-  }
-  console.log(chalk.gray(`  Scout: ${scoutModel}`));
 
   // Milestone mode state (declared early so header can reference)
   const batchSize = options.batchSize ? parseInt(options.batchSize, 10) : undefined;
@@ -734,24 +716,16 @@ export async function runAutoMode(options: {
         console.log(chalk.yellow(`[Hints] Applying ${hintCount} user hint(s) to this scout cycle`));
       }
 
-      // Query recent learnings to avoid repeating failures
-      const recentLearnings = await learnings.getRecent(adapter, project.id, 20);
-      const learningsBlock = learnings.formatForScoutPrompt(recentLearnings);
-      if (learningsBlock && options.verbose) {
-        console.log(chalk.gray(`  Injecting ${recentLearnings.length} learning(s) from past failures`));
-      }
-
       let lastProgress = '';
       const scoutPath = (milestoneMode && milestoneWorktreePath) ? milestoneWorktreePath : repoRoot;
       const basePrompt = cycleFormula?.prompt || '';
-      const promptParts = [basePrompt, hintBlock, learningsBlock].filter(Boolean).join('\n');
-      const effectivePrompt = promptParts || undefined;
+      const effectivePrompt = hintBlock ? (basePrompt + hintBlock) : (basePrompt || undefined);
       const scoutResult = await scoutRepo(deps, {
         path: scoutPath,
         scope,
         maxProposals: 20,
         minConfidence: Math.max((cycleFormula?.minConfidence ?? minConfidence) - 20, 30),
-        model: cycleFormula?.model ?? scoutModel,
+        model: cycleFormula?.model ?? 'opus',
         customPrompt: effectivePrompt,
         autoApprove: false,
         onProgress: (progress: ScoutProgress) => {
@@ -844,8 +818,7 @@ export async function runAutoMode(options: {
           const confidenceStr = p.confidence ? `${p.confidence}%` : '?';
           const complexity = p.estimated_complexity || 'simple';
           console.log(chalk.cyan(`  • ${p.title}`));
-          const ticketModel = resolveModelForComplexity(modelSetting, complexity);
-          console.log(chalk.gray(`    ${p.category || 'refactor'} | ${complexity} | ${confidenceStr} | ${ticketModel}`));
+          console.log(chalk.gray(`    ${p.category || 'refactor'} | ${complexity} | ${confidenceStr}`));
         }
         console.log();
       }
@@ -925,7 +898,6 @@ export async function runAutoMode(options: {
 
         while (retryCount <= maxScopeRetries) {
           try {
-            const ticketModel = resolveModelForComplexity(modelSetting, proposal.estimated_complexity || 'simple');
             const result = await soloRunTicket({
               ticket: currentTicket,
               repoRoot,
@@ -937,7 +909,6 @@ export async function runAutoMode(options: {
               draftPr: useDraft,
               timeoutMs: 600000,
               verbose: options.verbose ?? false,
-              model: ticketModel,
               onProgress: (msg) => {
                 if (options.verbose) {
                   console.log(chalk.gray(`    ${msg}`));
@@ -975,8 +946,7 @@ export async function runAutoMode(options: {
                 milestoneTicketSummaries.push(currentTicket.title);
                 await runs.markSuccess(adapter, currentRun.id);
                 await tickets.updateStatus(adapter, currentTicket.id, 'done');
-                const resolvedTag = mergeResult.aiResolved ? ' (AI-resolved conflicts)' : '';
-                console.log(chalk.green(`  ✓ Merged to milestone (${milestoneTicketCount}/${batchSize})${resolvedTag}`));
+                console.log(chalk.green(`  ✓ Merged to milestone (${milestoneTicketCount}/${batchSize})`));
 
                 // Finalize mid-batch if full (prevents overflow when running in parallel)
                 if (batchSize && milestoneTicketCount >= batchSize) {
@@ -1023,17 +993,6 @@ export async function runAutoMode(options: {
                 ? `Scope expansion failed after ${maxScopeRetries} retries`
                 : (result.error || result.failureReason || 'unknown');
               console.log(chalk.red(`  ✗ Failed: ${failReason}`));
-
-              // Record learning from failure
-              try {
-                await learnings.insertFromFailure(adapter, {
-                  projectId: project.id,
-                  ticketId: currentTicket.id,
-                  runId: currentRun.id,
-                  content: `"${proposal.title}" failed: ${failReason}. Category: ${proposal.category || 'refactor'}, files: ${(proposal.files || []).join(', ')}`,
-                });
-              } catch { /* don't fail on learning insertion */ }
-
               return { success: false };
             }
           } catch (err) {
@@ -1041,17 +1000,6 @@ export async function runAutoMode(options: {
             await runs.markFailure(adapter, currentRun.id, errorMsg);
             await tickets.updateStatus(adapter, currentTicket.id, 'blocked');
             console.log(chalk.red(`  ✗ Error: ${errorMsg}`));
-
-            // Record learning from error
-            try {
-              await learnings.insertFromFailure(adapter, {
-                projectId: project.id,
-                ticketId: currentTicket.id,
-                runId: currentRun.id,
-                content: `"${proposal.title}" errored: ${errorMsg}. Category: ${proposal.category || 'refactor'}, files: ${(proposal.files || []).join(', ')}`,
-              });
-            } catch { /* don't fail on learning insertion */ }
-
             return { success: false };
           }
         }

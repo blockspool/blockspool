@@ -137,8 +137,6 @@ export interface RunTicketOptions {
   skipPush?: boolean;
   /** Skip PR creation even if createPr is true */
   skipPr?: boolean;
-  /** Model to use for Claude execution (default: opus) */
-  model?: 'sonnet' | 'opus';
 }
 
 /**
@@ -226,17 +224,12 @@ export async function runClaude(opts: {
   timeoutMs: number;
   verbose: boolean;
   onProgress: (msg: string) => void;
-  model?: 'sonnet' | 'opus';
 }): Promise<ClaudeResult> {
-  const { worktreePath, prompt, timeoutMs, verbose, onProgress, model } = opts;
+  const { worktreePath, prompt, timeoutMs, verbose, onProgress } = opts;
   const startTime = Date.now();
 
   return new Promise((resolve) => {
-    const args = ['-p', '--dangerously-skip-permissions'];
-    if (model) {
-      args.push('--model', model);
-    }
-    const claude = spawn('claude', args, {
+    const claude = spawn('claude', ['-p', '--dangerously-skip-permissions'], {
       cwd: worktreePath,
       env: { ...process.env, CLAUDE_CODE_NON_INTERACTIVE: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -522,7 +515,6 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
       timeoutMs,
       verbose,
       onProgress: verbose ? onProgress : () => {},
-      model: opts.model,
     });
 
     // Save agent artifact
@@ -856,6 +848,8 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
       await markStep('push', 'started');
 
       try {
+        const { assertPushSafe } = await import('./solo-remote.js');
+        await assertPushSafe(worktreePath, config?.allowedRemote);
         await gitExec(`git push -u origin "${branchName}"`, { cwd: worktreePath });
         await markStep('push', 'success');
       } catch (pushError) {
@@ -959,6 +953,8 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
       await markStep('pr', 'started');
 
       try {
+        const { assertPushSafe: assertPrSafe } = await import('./solo-remote.js');
+        await assertPrSafe(worktreePath, config?.allowedRemote);
         const prBody = `## Summary\n\n${ticket.description ?? ticket.title}\n\n---\n_Created by BlockSpool_`;
         const draftFlag = draftPr ? ' --draft' : '';
 

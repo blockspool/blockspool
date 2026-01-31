@@ -168,7 +168,7 @@ export async function scoutRepo(
     metadata: {
       scope: opts.scope ?? 'src/**',
       maxProposals: opts.maxProposals ?? 10,
-      model: opts.model ?? 'sonnet',
+      model: opts.model ?? 'opus',
     },
   });
 
@@ -188,7 +188,7 @@ export async function scoutRepo(
       maxProposals: opts.maxProposals ?? 10,
       minConfidence: opts.minConfidence ?? 50,
       projectPath: repoRoot,
-      model: opts.model ?? 'sonnet',
+      model: opts.model ?? 'opus',
       timeoutMs: opts.timeoutMs ?? 120000,
       signal: opts.signal,
       recentlyCompletedTitles: recentTitles,

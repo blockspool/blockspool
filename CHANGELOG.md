@@ -21,5 +21,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - All packages published with npm provenance
 
-[Unreleased]: https://github.com/blockspool/blockspool/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/blockspool/blockspool/releases/tag/v0.1.0
+[Unreleased]: https://github.com/blockspool/blockspool/compare/v0.2.0...HEAD
+[0.1.0]: https://github.com/blockspool/blockspool/releases/tag/v0.2.0

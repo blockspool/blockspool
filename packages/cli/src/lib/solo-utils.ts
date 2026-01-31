@@ -170,27 +170,23 @@ export async function runPreflightChecks(repoRoot: string, opts: {
     };
   }
 
-  // Validate origin matches the remote recorded at init time + global registry
+  // Validate origin matches the remote recorded at init time
   if (!opts.skipRemoteCheck) {
     try {
       const { loadConfig } = await import('./solo-config.js');
-      const { isRepoAuthorized, repoNameFromRemote } = await import('./repo-registry.js');
       const config = loadConfig(repoRoot);
       if (config?.allowedRemote) {
+        const { normalizeRemoteUrl } = await import('./solo-remote.js');
         const currentRemote = execSync('git remote get-url origin', { cwd: repoRoot, encoding: 'utf-8' }).trim();
-        if (currentRemote !== config.allowedRemote) {
+        if (normalizeRemoteUrl(currentRemote) !== normalizeRemoteUrl(config.allowedRemote)) {
           return {
             ok: false,
-            error: `Remote mismatch: origin points to "${repoNameFromRemote(currentRemote)}" but this repo was authorized for "${repoNameFromRemote(config.allowedRemote)}". ` +
+            error: `Remote mismatch: origin points to "${currentRemote}" but solo init recorded "${config.allowedRemote}". ` +
               'Re-run "blockspool solo init --force" if this is intentional.',
             warnings,
             hasRemote,
             ghAuthenticated: false,
           };
-        }
-        // Also check global registry
-        if (!isRepoAuthorized(currentRemote)) {
-          warnings.push(`Repo ${repoNameFromRemote(currentRemote)} not in global registry (~/.blockspool/allowed-repos.json). Run "blockspool solo init --force" to re-authorize.`);
         }
       }
     } catch {

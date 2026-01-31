@@ -136,6 +136,20 @@ Prevents runaway agent execution:
 - **Repetition**: Catches repeated output patterns
 - **Token Budget**: Enforces context limits
 
+## Push Safety
+
+BlockSpool records your `origin` remote URL when you run `solo init`.
+Every push and PR creation validates the current origin still matches.
+SSH and HTTPS URLs for the same repo are treated as equivalent.
+
+If your origin changes (e.g., you switch from HTTPS to SSH), re-initialize:
+
+    blockspool solo init --force
+
+Or edit `.blockspool/config.json` directly:
+
+    { "allowedRemote": "git@github.com:you/your-repo.git" }
+
 ## Exit Codes
 
 | Code | Meaning |

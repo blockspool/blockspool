@@ -1,75 +1,67 @@
 # BlockSpool
 
-**Autonomous coding tool. Finds improvements, fixes them, opens PRs.**
+**Autonomous coding swarm that improves your codebase while you focus on what matters.**
+
+BlockSpool scouts your codebase for improvements, executes them in parallel, and batches everything into milestone PRs — all running autonomously for hours.
+
+---
+
+## Quick Start
 
 ```bash
+# Install (requires Node 18+)
 npm install -g @blockspool/cli
+
+# Initialize in your repo
 cd your-project
 blockspool solo init
-blockspool solo auto
-```
 
-That's it. BlockSpool scouts your code, runs fixes in parallel, and creates draft PRs.
-
----
-
-## Try It (15 minutes)
-
-```bash
-# Quick run — scout, fix, and PR a few improvements
-blockspool solo auto --minutes 15
-```
-
-You'll see BlockSpool find improvements, execute them, and open draft PRs. Review them, merge what you like.
-
-### Ready for more?
-
-```bash
-# Run for a few hours
-blockspool solo auto --hours 4
-
-# Overnight with milestone PRs (batches fixes into fewer PRs)
+# Run overnight with milestone PRs
 blockspool solo auto --hours 8 --batch-size 30
-
-# Run until you stop it
-blockspool solo auto --continuous
 ```
+
+That's it. Come back to 5 milestone PRs containing 50+ improvements.
 
 ---
 
-## What It Looks Like
+## What It Does
 
 ```
-$ blockspool solo auto --minutes 15
+$ blockspool solo auto --hours 4 --batch-size 10
 
 BlockSpool Auto
 
-  Model: eco (sonnet for simple, opus for complex)
-  Scout: sonnet
+  Mode: Continuous (Ctrl+C to stop gracefully)
+  Time budget: 4 hours (until 6:00 PM)
   Categories: refactor, test, docs, types, perf
   Draft PRs: yes
+  Milestone mode: batch size 10
 
-Step 1: Scouting src...
-  Found 8 improvements, processing 3...
+Milestone branch: blockspool/milestone-abc123
 
-Will process:
-  • Extract repeated validation into shared helper
-    refactor | simple | 85% | sonnet
-  • Add missing error boundary to dashboard route
-    fix | moderate | 78% | opus
-  • Add unit tests for date formatting utils
-    test | trivial | 92% | sonnet
+[Cycle 1] Scouting src...
+  Found 20 improvements, processing 5...
+  Conflict-aware scheduling: 2 waves
+  Merged to milestone (1/10)
+  Merged to milestone (2/10)
+  Merged to milestone (3/10)
+  Merged to milestone (4/10)
+  Merged to milestone (5/10)
 
-  ✓ PR created
-    https://github.com/you/repo/pull/42
-  ✓ PR created
-    https://github.com/you/repo/pull/43
-  ✓ PR created
-    https://github.com/you/repo/pull/44
+[Cycle 3] Scouting packages...
+  Found 15 improvements, processing 5...
+  Merged to milestone (6/10)
+  ...
+  Merged to milestone (10/10)
 
-Summary
-  Duration: 12m
-  PRs created: 3
+  Milestone PR: https://github.com/you/repo/pull/42
+  New milestone branch: blockspool/milestone-def456
+
+Final Summary
+  Duration: 4h 2m
+  Cycles: 32
+  Milestone PRs: 5
+  Total tickets merged: 50
 ```
 
 ---
@@ -78,9 +70,6 @@ Summary
 
 | Feature | Description |
 |---------|-------------|
-| **Eco Model Routing** | Default on: trivial/simple → sonnet, moderate/complex → opus. `--no-eco` for full opus. |
-| **Auto-Learning** | Records failures and injects lessons into future scout cycles |
-| **AI Merge Resolution** | Claude resolves merge conflicts before blocking tickets |
 | **Milestone Mode** | Batches N tickets into one PR instead of 50 individual PRs |
 | **Parallel Execution** | Runs 3-5 tickets concurrently with adaptive parallelism |
 | **Wave Scheduling** | Detects overlapping file paths, serializes conflicting tickets |
@@ -135,38 +124,12 @@ blockspool solo auto --hours 8 --batch-size 30
 ```bash
 blockspool solo init
 ```
-
-You'll be prompted to authorize the repo:
-
-```
-Authorize repository for BlockSpool
-
-  Repository:  user/my-repo
-  Remote:      git@github.com:user/my-repo.git
-  Local path:  /home/user/my-repo
-
-BlockSpool will scout this repo, execute changes in isolated
-worktrees, and create draft PRs. All changes go through QA.
-
-Authorize user/my-repo? [Y/n]
-```
-
-Creates `.blockspool/` directory with SQLite database and registers the repo in `~/.blockspool/allowed-repos.json`. No external services needed.
-
-For CI/scripting, skip the prompt:
-
-```bash
-blockspool solo init --yes                                    # Auto-detect remote, skip prompt
-blockspool solo init --repo git@github.com:user/repo.git      # Explicit remote, skip prompt
-```
+Creates `.blockspool/` directory with SQLite database. No external services needed.
 
 ### Auto (Main Command)
 ```bash
-# Run overnight with milestone PRs (eco mode, sonnet scout)
+# Run overnight with milestone PRs
 blockspool solo auto --hours 8 --batch-size 30
-
-# Full opus run — maximum quality, maximum cost
-blockspool solo auto --no-eco --scout-deep --hours 8 --batch-size 30
 
 # Run until stopped (Ctrl+C finalizes partial milestone)
 blockspool solo auto --continuous --batch-size 20
@@ -183,26 +146,8 @@ blockspool solo auto --formula test-coverage
 blockspool solo auto --deep
 ```
 
-### Model Routing
-
-Eco mode is on by default — routes trivial/simple tickets to sonnet and moderate/complex to opus.
-
-```bash
-blockspool solo auto                          # Eco mode (default)
-blockspool solo auto --no-eco                 # Force opus for all tickets
-blockspool solo auto --model sonnet           # Force sonnet for all tickets
-blockspool solo auto --scout-deep             # Use opus for scout phase
-blockspool solo auto --no-eco --scout-deep    # Full opus everything
-```
-
 ### Other Commands
 ```bash
-# List authorized repos
-blockspool solo repos
-
-# Deauthorize a repo
-blockspool solo repos --remove user/my-repo
-
 # Check prerequisites
 blockspool solo doctor
 
@@ -303,7 +248,7 @@ Optional `.blockspool/config.json`:
 
 See [docs/COMPARISON.md](./docs/COMPARISON.md) for a detailed comparison with Gas Town, Factory.ai, Devin, and others.
 
-**TL;DR:** BlockSpool is built for unattended overnight runs with eco model routing, auto-learning, scope enforcement, and milestone batching. Other tools optimize for different trade-offs: Gas Town for high-parallelism defined tasks, Factory/Devin for SaaS issue-to-PR workflows, Sweep for simple fixes.
+**TL;DR:** BlockSpool is the only tool designed for unattended overnight runs with built-in cost control, scope enforcement, and milestone batching. Other tools either require constant steering (Gas Town), are SaaS-only (Factory, Devin), or handle only simple fixes (Sweep).
 
 ---
 
@@ -329,7 +274,7 @@ BlockSpool adds:
 
 ### How much does it cost?
 
-BlockSpool is free and open source. It uses your Claude Code subscription or API key. Eco mode (default) routes simple tickets to sonnet to reduce costs. Use `--no-eco` for full opus if cost isn't a concern.
+BlockSpool is free and open source. It uses your Claude Code subscription or API key. A typical overnight run produces 50+ improvements for roughly $5-15 in API costs depending on codebase size.
 
 ### What are formulas?
 

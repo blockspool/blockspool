@@ -19,13 +19,6 @@ import {
   formatDoctorReport,
   formatDoctorReportJson,
 } from '../lib/doctor.js';
-import {
-  isRepoAuthorized,
-  authorizeRepo,
-  deauthorizeRepo,
-  listAuthorizedRepos,
-  repoNameFromRemote,
-} from '../lib/repo-registry.js';
 
 export function registerLifecycleCommands(solo: Command): void {
   /**
@@ -35,9 +28,7 @@ export function registerLifecycleCommands(solo: Command): void {
     .command('init')
     .description('Initialize BlockSpool local state for this repository')
     .option('-f, --force', 'Reinitialize even if already initialized')
-    .option('-y, --yes', 'Skip confirmation prompt')
-    .option('--repo <url>', 'Set the authorized remote URL (implies --yes)')
-    .action(async (options: { force?: boolean; yes?: boolean; repo?: string }) => {
+    .action(async (options: { force?: boolean }) => {
       const git = createGitService();
       const repoRoot = await git.findRepoRoot(process.cwd());
 
@@ -56,54 +47,7 @@ export function registerLifecycleCommands(solo: Command): void {
         return;
       }
 
-      // Detect the repo remote (--repo overrides auto-detection)
-      let remoteUrl: string | undefined = options.repo;
-      if (!remoteUrl) {
-        try {
-          const { execSync } = await import('child_process');
-          remoteUrl = execSync('git remote get-url origin', { cwd: repoRoot, encoding: 'utf-8' }).trim();
-        } catch {
-          // No remote — will proceed without whitelisting
-        }
-      }
-
-      // --repo implies --yes (scripting mode)
-      const skipPrompt = options.yes || !!options.repo;
-
-      // Confirmation prompt: show what we're about to authorize
-      if (!skipPrompt) {
-        const repoName = remoteUrl ? repoNameFromRemote(remoteUrl) : path.basename(repoRoot);
-        console.log(chalk.bold('Authorize repository for BlockSpool'));
-        console.log();
-        console.log(`  Repository:  ${chalk.cyan(repoName)}`);
-        if (remoteUrl) {
-          console.log(`  Remote:      ${chalk.gray(remoteUrl)}`);
-        }
-        console.log(`  Local path:  ${chalk.gray(repoRoot)}`);
-        console.log();
-        console.log(chalk.yellow('BlockSpool will scout this repo, execute changes in isolated'));
-        console.log(chalk.yellow('worktrees, and create draft PRs. All changes go through QA.'));
-        console.log();
-
-        const readline = await import('readline');
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const answer = await new Promise<string>((resolve) => {
-          rl.question(chalk.bold(`Authorize ${repoName}? [Y/n] `), resolve);
-        });
-        rl.close();
-
-        if (answer.toLowerCase() === 'n' || answer.toLowerCase() === 'no') {
-          console.log(chalk.gray('Cancelled.'));
-          process.exit(0);
-        }
-      }
-
-      const { config, detectedQa } = await initSolo(repoRoot, { remoteUrl });
-
-      // Register in global allowed-repos list
-      if (remoteUrl) {
-        authorizeRepo(remoteUrl, repoRoot);
-      }
+      const { config, detectedQa } = await initSolo(repoRoot);
 
       // Initialize database
       const adapter = await getAdapter(repoRoot);
@@ -112,10 +56,6 @@ export function registerLifecycleCommands(solo: Command): void {
       console.log(chalk.green('✓ Initialized BlockSpool solo mode'));
       console.log(chalk.gray(`  Config: ${getBlockspoolDir(repoRoot)}/config.json`));
       console.log(chalk.gray(`  Database: ${config.dbPath}`));
-      if (remoteUrl) {
-        console.log(chalk.gray(`  Authorized: ${repoNameFromRemote(remoteUrl)}`));
-        console.log(chalk.gray(`  Registry: ~/.blockspool/allowed-repos.json`));
-      }
 
       // Show detected QA commands
       if (detectedQa.length > 0) {
@@ -227,57 +167,5 @@ export function registerLifecycleCommands(solo: Command): void {
       }
 
       console.log(chalk.green('✓ Local state cleared'));
-    });
-
-  /**
-   * solo repos - List and manage authorized repositories
-   */
-  solo
-    .command('repos')
-    .description('List and manage authorized repositories')
-    .option('--remove <remote>', 'Deauthorize a repo by remote URL or name')
-    .option('--json', 'Output as JSON')
-    .action(async (options: { remove?: string; json?: boolean }) => {
-      if (options.remove) {
-        // Try exact match first, then match by name
-        let removed = deauthorizeRepo(options.remove);
-        if (!removed) {
-          const repos = listAuthorizedRepos();
-          const byName = repos.find(r => r.name === options.remove || r.name.endsWith('/' + options.remove));
-          if (byName) {
-            removed = deauthorizeRepo(byName.remote);
-          }
-        }
-        if (removed) {
-          console.log(chalk.green(`✓ Deauthorized: ${options.remove}`));
-        } else {
-          console.log(chalk.red(`✗ Not found: ${options.remove}`));
-          console.log(chalk.gray('  Run "blockspool solo repos" to see authorized repos'));
-        }
-        return;
-      }
-
-      const repos = listAuthorizedRepos();
-
-      if (options.json) {
-        console.log(JSON.stringify(repos, null, 2));
-        return;
-      }
-
-      if (repos.length === 0) {
-        console.log(chalk.gray('No authorized repos. Run "blockspool solo init" in a repo to authorize it.'));
-        return;
-      }
-
-      console.log(chalk.bold(`Authorized repositories (${repos.length}):`));
-      console.log();
-      for (const repo of repos) {
-        console.log(`  ${chalk.cyan(repo.name)}`);
-        console.log(chalk.gray(`    Remote: ${repo.remote}`));
-        console.log(chalk.gray(`    Path:   ${repo.localPath}`));
-        console.log(chalk.gray(`    Since:  ${repo.authorizedAt}`));
-        console.log();
-      }
-      console.log(chalk.gray('Remove with: blockspool solo repos --remove <name>'));
     });
 }

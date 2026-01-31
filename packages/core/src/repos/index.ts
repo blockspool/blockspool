@@ -9,7 +9,6 @@ export * as projects from './projects.js';
 export * as tickets from './tickets.js';
 export * as runs from './runs.js';
 export * as runSteps from './run_steps.js';
-export * as learnings from './learnings.js';
 
 // Re-export types for convenience
 export type { Project } from './projects.js';

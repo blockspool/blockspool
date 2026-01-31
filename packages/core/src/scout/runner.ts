@@ -32,7 +32,7 @@ export interface RunnerResult {
  * Run Claude Code CLI with a prompt
  */
 export async function runClaude(options: RunnerOptions): Promise<RunnerResult> {
-  const { prompt, cwd, timeoutMs, model = 'sonnet', signal } = options;
+  const { prompt, cwd, timeoutMs, model = 'opus', signal } = options;
   const start = Date.now();
 
   return new Promise((resolve) => {

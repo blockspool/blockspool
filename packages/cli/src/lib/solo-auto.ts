@@ -22,7 +22,7 @@ import {
   createScoutDeps,
   formatProgress,
 } from './solo-config.js';
-import { pathsOverlap } from './solo-utils.js';
+import { pathsOverlap, runPreflightChecks } from './solo-utils.js';
 import { soloRunTicket, type RunTicketResult } from './solo-ticket.js';
 import {
   createMilestoneBranch,
@@ -556,6 +556,16 @@ export async function runAutoMode(options: {
   if (!isInitialized(repoRoot)) {
     console.log(chalk.gray('Initializing BlockSpool...'));
     await initSolo(repoRoot);
+  }
+
+  // Validate remote matches what was recorded at init
+  const preflight = await runPreflightChecks(repoRoot, { needsPr: true });
+  if (!preflight.ok) {
+    console.error(chalk.red(`✗ ${preflight.error}`));
+    process.exit(1);
+  }
+  for (const warning of preflight.warnings) {
+    console.log(chalk.yellow(`⚠ ${warning}`));
   }
 
   const config = loadConfig(repoRoot);

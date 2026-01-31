@@ -67,6 +67,7 @@ export interface SoloConfig {
       tailBytes?: number;
     };
   };
+  allowedRemote?: string;
   spindle?: Partial<SpindleConfig>;
   auto?: Partial<AutoConfig>;
 }
@@ -180,11 +181,21 @@ export async function initSolo(repoRoot: string): Promise<{ config: SoloConfig; 
 
   const detectedQa = detectQaCommands(repoRoot);
 
+  // Capture origin remote URL for safety validation
+  let allowedRemote: string | undefined;
+  try {
+    const { execSync } = await import('child_process');
+    allowedRemote = execSync('git remote get-url origin', { cwd: repoRoot, encoding: 'utf-8' }).trim();
+  } catch {
+    // No remote configured yet — that's fine
+  }
+
   const config: SoloConfig = {
     version: 1,
     repoRoot,
     createdAt: new Date().toISOString(),
     dbPath,
+    ...(allowedRemote ? { allowedRemote } : {}),
   };
 
   if (detectedQa.length > 0) {

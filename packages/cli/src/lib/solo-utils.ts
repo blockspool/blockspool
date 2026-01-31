@@ -124,6 +124,7 @@ export interface QaOutput {
  */
 export async function runPreflightChecks(repoRoot: string, opts: {
   needsPr: boolean;
+  skipRemoteCheck?: boolean;
 }): Promise<PreflightResult> {
   const warnings: string[] = [];
   const { execSync, spawnSync } = await import('child_process');
@@ -167,6 +168,30 @@ export async function runPreflightChecks(repoRoot: string, opts: {
       hasRemote: false,
       ghAuthenticated: false,
     };
+  }
+
+  // Validate origin matches the remote recorded at init time
+  if (!opts.skipRemoteCheck) {
+    try {
+      const { loadConfig } = await import('./solo-config.js');
+      const config = loadConfig(repoRoot);
+      if (config?.allowedRemote) {
+        const currentRemote = execSync('git remote get-url origin', { cwd: repoRoot, encoding: 'utf-8' }).trim();
+        if (currentRemote !== config.allowedRemote) {
+          return {
+            ok: false,
+            error: `Remote mismatch: origin points to "${currentRemote}" but solo init recorded "${config.allowedRemote}". ` +
+              'Re-run "blockspool solo init --force" if this is intentional.',
+            warnings,
+            hasRemote,
+            ghAuthenticated: false,
+          };
+        }
+      }
+    } catch {
+      // If we can't check, don't block — just warn
+      warnings.push('Could not verify origin remote against config');
+    }
   }
 
   // Check gh auth (only if --pr requested)

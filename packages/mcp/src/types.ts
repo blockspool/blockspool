@@ -112,6 +112,7 @@ export interface RunState {
   min_confidence: number;
   max_proposals_per_scout: number;
   draft_prs: boolean;
+  eco: boolean;
   hints: string[];
 
   // Spindle
@@ -214,4 +215,5 @@ export interface SessionConfig {
   max_prs?: number;
   max_cycles?: number;
   draft_prs?: boolean;
+  eco?: boolean;
 }

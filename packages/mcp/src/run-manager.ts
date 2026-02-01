@@ -116,6 +116,7 @@ export class RunManager {
       min_confidence: config.min_confidence ?? DEFAULT_MIN_CONFIDENCE,
       max_proposals_per_scout: config.max_proposals ?? DEFAULT_MAX_PROPOSALS_PER_SCOUT,
       draft_prs: config.draft_prs ?? true,
+      eco: config.eco ?? false,
       hints: [],
 
       spindle: emptySpindle(),

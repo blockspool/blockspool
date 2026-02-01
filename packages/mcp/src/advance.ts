@@ -166,7 +166,7 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
   const formula = s.formula ? loadFormula(s.formula, ctx.project.rootPath) : null;
 
   const prompt = buildScoutPrompt(s.scope, s.categories, s.min_confidence,
-    s.max_proposals_per_scout, dedupContext, formula, hints);
+    s.max_proposals_per_scout, dedupContext, formula, hints, s.eco);
 
   s.scout_cycles++;
   run.appendEvent('ADVANCE_RETURNED', { phase: 'SCOUT', has_prompt: true });
@@ -508,12 +508,14 @@ function buildScoutPrompt(
   dedupContext: string[],
   formula: Formula | null,
   hints: string[],
+  eco: boolean,
 ): string {
   const parts = [
     '# Scout Phase',
     '',
     'Scan the codebase and identify improvements. Return proposals in a `<proposals>` XML block containing a JSON array.',
     '',
+    ...(!eco ? ['**IMPORTANT:** Do not use the Task or Explore tools. Read files directly using Read, Glob, and Grep. Do not delegate to subagents.', ''] : []),
     `**Scope:** \`${scope}\``,
     `**Categories:** ${categories.join(', ')}`,
     `**Min confidence:** ${minConfidence}`,

@@ -30,6 +30,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
       max_prs: z.number().optional().describe('Max PRs to create (default: 5).'),
       max_cycles: z.number().optional().describe('Max scout→execute cycles (default: 1). Use with hours for multi-cycle runs.'),
       draft_prs: z.boolean().optional().describe('Create draft PRs (default: true).'),
+      eco: z.boolean().optional().describe('Eco mode: allow subagent delegation during scout for lower cost (default: false).'),
     },
     async (params) => {
       const state = getState();
@@ -49,6 +50,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
         max_prs: params.max_prs,
         max_cycles: params.max_cycles,
         draft_prs: params.draft_prs,
+        eco: params.eco,
       };
 
       let formulaInfo: { name: string; description: string } | undefined;

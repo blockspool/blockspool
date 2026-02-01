@@ -224,7 +224,6 @@ export class CodexScoutBackend implements ScoutBackend {
         'exec',
         '--json',
         '--sandbox', 'read-only',
-        '--ask-for-approval', 'never',
         '--output-last-message', outPath,
         '--output-schema', schemaPath,
         '--model', effectiveModel,

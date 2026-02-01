@@ -275,7 +275,7 @@ export class ClaudeExecutionBackend implements ExecutionBackend {
 /**
  * Codex CLI execution backend
  *
- * Default: `--sandbox workspace-write --ask-for-approval never` (safe unattended mode).
+ * Default: `--sandbox workspace-write` (safe unattended mode).
  * Optional: `unsafeBypassSandbox` enables `--dangerously-bypass-approvals-and-sandbox`
  * for use inside externally hardened/isolated runners only.
  */
@@ -316,7 +316,6 @@ export class CodexExecutionBackend implements ExecutionBackend {
           args.push('--dangerously-bypass-approvals-and-sandbox');
         } else {
           args.push('--sandbox', 'workspace-write');
-          args.push('--ask-for-approval', 'never');
         }
 
         args.push('--model', this.model);

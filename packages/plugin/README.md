@@ -5,22 +5,51 @@ Continuous codebase improvement for Claude Code. Scouts improvements, plans chan
 ## Installation
 
 ```bash
-# From the marketplace (recommended)
-claude plugin marketplace add blockspool/blockspool
-claude plugin install blockspool@blockspool
+# 1. Add the marketplace
+/plugin marketplace add blockspool/blockspool
 
-# Update to latest
-claude plugin update blockspool@blockspool
+# 2. Install the plugin
+/plugin install blockspool
+
+# 3. Restart Claude Code
+
+# 4. Verify
+/blockspool:run
 ```
 
-Or add the MCP server directly to your project's `.mcp.json`:
+If commands don't appear after restart, check that the plugin is enabled in `~/.claude/settings.json`:
+
+```json
+{
+  "enabledPlugins": {
+    "blockspool@blockspool": true
+  }
+}
+```
+
+### Updating
+
+```bash
+/plugin update blockspool
+```
+
+Or remove and reinstall:
+
+```bash
+/plugin remove blockspool
+/plugin install blockspool
+```
+
+### Manual MCP setup (alternative)
+
+Add the MCP server directly to your project's `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "blockspool": {
       "command": "npx",
-      "args": ["tsx", "/path/to/blockspool/packages/mcp/src/index.ts"],
+      "args": ["-y", "@blockspool/mcp"],
       "env": {}
     }
   }
@@ -83,7 +112,8 @@ Gracefully end the current session. Displays summary of work completed.
 5. **Formulas** customize what the scout looks for
 6. **Spindle** detects loops (QA ping-pong, command failures, file churn) and aborts stuck agents
 7. **Cross-run learnings** remember failures and successes across sessions
-8. **Project detection** auto-detects test runner, framework, linter, and language for correct CLI syntax
+8. **Dedup memory** tracks completed/rejected proposals with temporal decay so the scout doesn't keep re-proposing the same work
+9. **Project detection** auto-detects test runner, framework, linter, and language for correct CLI syntax
 
 ## Hooks
 
@@ -104,11 +134,11 @@ If you intend to use your subscription, make sure `ANTHROPIC_API_KEY` is **not**
 packages/plugin/
 ├── .claude-plugin/plugin.json   # Plugin manifest
 ├── .mcp.json                    # MCP server config
-├── commands/
-│   ├── auto.md                  # /blockspool:run
-│   ├── status.md                # /blockspool:status
-│   ├── nudge.md                 # /blockspool:nudge
-│   └── cancel.md                # /blockspool:cancel
-├── hooks/hooks.json             # Hook registration
+├── skills/
+│   ├── run/SKILL.md             # /blockspool:run
+│   ├── status/SKILL.md          # /blockspool:status
+│   ├── nudge/SKILL.md           # /blockspool:nudge
+│   └── cancel/SKILL.md          # /blockspool:cancel
+├── hooks/hooks.json             # Hook registration (auto-loaded)
 └── scripts/hook-driver.js       # Stop + PreToolUse hook logic
 ```

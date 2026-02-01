@@ -5,7 +5,9 @@ import {
   getAdaptiveParallelCount,
   partitionIntoWaves,
   sleep,
+  buildScoutEscalation,
 } from '../lib/solo-auto.js';
+import type { CodebaseIndex } from '../lib/codebase-index.js';
 
 describe('normalizeTitle', () => {
   it('lowercases text', () => {
@@ -158,5 +160,40 @@ describe('sleep', () => {
     vi.advanceTimersByTime(1000);
     await promise;
     vi.useRealTimers();
+  });
+});
+
+describe('buildScoutEscalation', () => {
+  const makeIndex = (modules: { path: string }[]): CodebaseIndex => ({
+    built_at: new Date().toISOString(),
+    modules: modules.map(m => ({ path: m.path, files: [], test_files: [], loc: 0 })),
+    dependency_edges: {},
+    untested_modules: [],
+    large_files: [],
+  });
+
+  it('includes retry header', () => {
+    const text = buildScoutEscalation(1, ['src'], null);
+    expect(text).toContain('Previous Attempts Found Nothing');
+  });
+
+  it('lists previously scouted dirs', () => {
+    const text = buildScoutEscalation(1, ['src', 'lib'], null);
+    expect(text).toContain('Scouted `src`');
+    expect(text).toContain('Scouted `lib`');
+  });
+
+  it('suggests unexplored modules from codebase index', () => {
+    const index = makeIndex([{ path: 'src' }, { path: 'lib' }, { path: 'packages/core' }]);
+    const text = buildScoutEscalation(1, ['src'], index);
+    expect(text).toContain('`lib`');
+    expect(text).toContain('`packages/core`');
+    expect(text).not.toContain('unexplored areas: `src`');
+  });
+
+  it('includes category-switching advice', () => {
+    const text = buildScoutEscalation(2, ['**'], null);
+    expect(text).toContain('Switch categories');
+    expect(text).toContain('Read at least 15 NEW source files');
   });
 });

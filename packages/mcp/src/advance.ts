@@ -40,6 +40,7 @@ import {
   recordAccess,
   extractTags,
 } from './learnings.js';
+import { loadDedupMemory, formatDedupForPrompt } from './dedup-memory.js';
 
 const MAX_PLAN_REJECTIONS = 3;
 const MAX_QA_RETRIES = 3;
@@ -260,6 +261,11 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
   const recentTickets = await repos.tickets.getRecentlyCompleted(db, s.project_id, 20);
   const dedupContext = recentTickets.map(t => t.title);
 
+  // Load dedup memory (with decay) — weighted, persistent awareness of completed work
+  const dedupMemory = loadDedupMemory(ctx.project.rootPath);
+  const dedupMemoryBlock = formatDedupForPrompt(dedupMemory);
+  const dedupBlock = dedupMemoryBlock ? dedupMemoryBlock + '\n\n' : '';
+
   const hints = run.consumeHints();
 
   // Load formula if specified
@@ -295,7 +301,7 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
 
   const learningsBlock = buildLearningsBlock(run, [s.scope, ...s.scouted_dirs], []);
 
-  const prompt = guidelinesBlock + metadataBlock + indexBlock + learningsBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
+  const prompt = guidelinesBlock + metadataBlock + indexBlock + dedupBlock + learningsBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
     s.max_proposals_per_scout, dedupContext, formula, hints, s.eco, s.min_impact_score, s.scouted_dirs, s.scout_exclude_dirs);
 
   // Reset scout_retries at the start of a fresh cycle (non-retry entry)

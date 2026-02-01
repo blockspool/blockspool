@@ -8,6 +8,7 @@
 import type { DatabaseAdapter, TicketCategory } from '@blockspool/core';
 import { repos } from '@blockspool/core';
 import { RunManager } from './run-manager.js';
+import { recordDedupEntries } from './dedup-memory.js';
 
 // ---------------------------------------------------------------------------
 // Proposal schema
@@ -232,6 +233,20 @@ export async function filterAndCreateTickets(
     accepted: accepted.length,
     rejected_count: rejected.length,
   });
+
+  // Record dedup memory — accepted titles as completed, duplicate rejections as attempted
+  const dedupEntries: { title: string; completed: boolean }[] = [];
+  for (const p of accepted) {
+    dedupEntries.push({ title: p.title, completed: true });
+  }
+  for (const r of rejected) {
+    if (r.reason.includes('Duplicate') && r.proposal.title) {
+      dedupEntries.push({ title: r.proposal.title, completed: false });
+    }
+  }
+  if (dedupEntries.length > 0) {
+    recordDedupEntries(run.rootPath, dedupEntries);
+  }
 
   return { accepted, rejected, created_ticket_ids: createdIds };
 }

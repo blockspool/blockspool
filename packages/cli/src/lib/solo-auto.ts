@@ -51,6 +51,10 @@ import {
 } from './proposal-review.js';
 import { detectProjectMetadata, formatMetadataForPrompt } from './project-metadata.js';
 import { DEFAULT_AUTO_CONFIG } from './solo-config.js';
+import {
+  loadDedupMemory, recordDedupEntry, recordDedupEntries, formatDedupForPrompt,
+  type DedupEntry,
+} from './dedup-memory.js';
 
 /**
  * Sleep helper
@@ -483,6 +487,53 @@ export function partitionIntoWaves<T extends { files: string[] }>(proposals: T[]
 }
 
 /**
+ * Build escalation prompt text for scout retries.
+ * Suggests unexplored modules and fresh angles when previous attempts found nothing.
+ */
+export function buildScoutEscalation(
+  retryCount: number,
+  scoutedDirs: string[],
+  codebaseIndex: CodebaseIndex | null,
+): string {
+  const parts = [
+    '## Previous Attempts Found Nothing — Fresh Approach Required',
+    '',
+  ];
+
+  if (scoutedDirs.length > 0) {
+    parts.push('### What Was Already Tried');
+    for (const dir of scoutedDirs) {
+      parts.push(`- Scouted \`${dir}\``);
+    }
+    parts.push('');
+  }
+
+  // Suggest unexplored modules from codebase index
+  const exploredSet = new Set(scoutedDirs.map(d => d.replace(/\/$/, '')));
+  const unexplored: string[] = [];
+  if (codebaseIndex) {
+    for (const mod of codebaseIndex.modules) {
+      if (!exploredSet.has(mod.path) && !exploredSet.has(mod.path + '/')) {
+        unexplored.push(mod.path);
+      }
+    }
+  }
+
+  parts.push('### What to Do Differently');
+  parts.push('');
+  parts.push('Knowing everything from the attempts above, take a completely different angle:');
+  parts.push('- Do NOT re-read the directories listed above.');
+  if (unexplored.length > 0) {
+    parts.push(`- Try unexplored areas: ${unexplored.slice(0, 8).map(d => `\`${d}\``).join(', ')}`);
+  }
+  parts.push('- Switch categories: if you looked for bugs, look for tests. If tests, try security.');
+  parts.push('- Read at least 15 NEW source files.');
+  parts.push('- If genuinely nothing to improve, explain your analysis across all attempts.');
+
+  return parts.join('\n');
+}
+
+/**
  * Run auto mode - the full "just run it" experience
  * Scout → auto-approve safe changes → run → create draft PRs
  */
@@ -641,7 +692,7 @@ export async function runAutoMode(options: {
   } else {
     console.log(chalk.gray('  Mode: Scout → Auto-approve → Run → PR'));
   }
-  console.log(chalk.gray(`  Scope: ${userScope || (isContinuous ? 'rotating' : 'src')}`));
+  console.log(chalk.gray(`  Scope: ${userScope || (isContinuous ? 'rotating' : 'auto')}`));
   console.log(chalk.gray(`  Max PRs: ${maxPrs}`));
   console.log(chalk.gray(`  Min confidence: ${minConfidence}%`));
   console.log(chalk.gray(`  Categories: ${initialCategories.allow.join(', ')}`));
@@ -720,6 +771,12 @@ export async function runAutoMode(options: {
     console.log(chalk.gray(`  Learnings loaded: ${allLearnings.length}`));
   }
 
+  // Load dedup memory (with decay)
+  let dedupMemory: DedupEntry[] = loadDedupMemory(repoRoot);
+  if (dedupMemory.length > 0) {
+    console.log(chalk.gray(`  Dedup memory loaded: ${dedupMemory.length} titles`));
+  }
+
   // Build codebase index for structural awareness
   const excludeDirs = ['node_modules', 'dist', 'build', '.git', '.blockspool', 'coverage', '__pycache__'];
   let codebaseIndex: CodebaseIndex | null = null;
@@ -765,6 +822,7 @@ export async function runAutoMode(options: {
 
   const getNextScope = (): string => {
     if (userScope) return userScope;
+    if (!isContinuous) return '**';
     const scope = defaultScopes[scopeIndex % defaultScopes.length];
     scopeIndex++;
     return scope;
@@ -878,6 +936,11 @@ export async function runAutoMode(options: {
     const pullInterval = config?.auto?.pullEveryNCycles ?? 5;
     const pullPolicy: 'halt' | 'warn' = config?.auto?.pullPolicy ?? 'halt';
     let cyclesSinceLastPull = 0;
+
+    // Scout retry/escalation state
+    const MAX_SCOUT_RETRIES = 2;
+    let scoutRetries = 0;
+    let scoutedDirs: string[] = [];
 
     do {
       cycleCount++;
@@ -999,7 +1062,12 @@ export async function runAutoMode(options: {
       const learningsSuffix = learningsPrefix ? learningsPrefix + '\n\n' : '';
       const indexPrefix = codebaseIndex ? formatIndexForPrompt(codebaseIndex, cycleCount) + '\n\n' : '';
       const metadataPrefix = metadataBlock ? metadataBlock + '\n\n' : '';
-      const basePrompt = guidelinesPrefix + metadataPrefix + indexPrefix + learningsSuffix + (cycleFormula?.prompt || '');
+      const escalationPrefix = scoutRetries > 0
+        ? buildScoutEscalation(scoutRetries, scoutedDirs, codebaseIndex) + '\n\n'
+        : '';
+      const dedupPrefix = formatDedupForPrompt(dedupMemory);
+      const dedupBlock = dedupPrefix ? dedupPrefix + '\n\n' : '';
+      const basePrompt = guidelinesPrefix + metadataPrefix + indexPrefix + dedupBlock + escalationPrefix + learningsSuffix + (cycleFormula?.prompt || '');
       const effectivePrompt = hintBlock ? (basePrompt + hintBlock) : (basePrompt || undefined);
       const scoutResult = await scoutRepo(deps, {
         path: scoutPath,
@@ -1029,13 +1097,22 @@ export async function runAutoMode(options: {
       const proposals = scoutResult.proposals;
 
       if (proposals.length === 0) {
-        console.log(chalk.gray(`  No improvements found in ${scope}`));
         if (scoutResult.errors.length > 0) {
           for (const err of scoutResult.errors) {
             console.log(chalk.yellow(`  ⚠ ${err}`));
           }
         }
+        scoutedDirs.push(scope);
+        if (scoutRetries < MAX_SCOUT_RETRIES) {
+          scoutRetries++;
+          console.log(chalk.gray(`  No improvements found in ${scope} (attempt ${scoutRetries}/${MAX_SCOUT_RETRIES + 1}). Retrying with fresh approach...`));
+          await sleep(1000);
+          continue;
+        }
+        // Exhausted retries
         if (isContinuous) {
+          scoutRetries = 0;
+          scoutedDirs = [];
           await sleep(2000);
           continue;
         } else {
@@ -1152,6 +1229,7 @@ export async function runAutoMode(options: {
 
       const approvedProposals: typeof scopeFiltered = [];
       let duplicateCount = 0;
+      const rejectedDupTitles: string[] = [];
       for (const p of scopeFiltered) {
         const dupCheck = await isDuplicateProposal(
           p,
@@ -1160,6 +1238,7 @@ export async function runAutoMode(options: {
         );
         if (dupCheck.isDuplicate) {
           duplicateCount++;
+          rejectedDupTitles.push(p.title);
           if (options.verbose) {
             console.log(chalk.gray(`  Skipping duplicate: ${p.title}`));
             console.log(chalk.gray(`    Reason: ${dupCheck.reason}`));
@@ -1169,12 +1248,27 @@ export async function runAutoMode(options: {
         }
       }
 
+      // Bump dedup memory for rejected duplicates (re-confirmation keeps them prominent)
+      if (rejectedDupTitles.length > 0) {
+        recordDedupEntries(repoRoot, rejectedDupTitles.map(t => ({ title: t, completed: false })));
+        dedupMemory = loadDedupMemory(repoRoot);
+      }
+
       if (approvedProposals.length === 0) {
         const reason = duplicateCount > 0
           ? `No new proposals (${duplicateCount} duplicates filtered)`
           : 'No proposals passed trust filter';
         console.log(chalk.gray(`  ${reason}`));
+        scoutedDirs.push(scope);
+        if (scoutRetries < MAX_SCOUT_RETRIES) {
+          scoutRetries++;
+          console.log(chalk.gray(`  Retrying with fresh approach (attempt ${scoutRetries}/${MAX_SCOUT_RETRIES + 1})...`));
+          await sleep(1000);
+          continue;
+        }
         if (isContinuous) {
+          scoutRetries = 0;
+          scoutedDirs = [];
           await sleep(2000);
           continue;
         } else {
@@ -1193,6 +1287,10 @@ export async function runAutoMode(options: {
         : `Auto-approved: ${approvedProposals.length}, processing: ${toProcess.length}`;
       console.log(chalk.gray(`  ${statsMsg}`));
       console.log();
+
+      // Reset retry state on success
+      scoutRetries = 0;
+      scoutedDirs = [];
 
       if (!isContinuous || cycleCount === 1) {
         console.log(chalk.bold('Will process:'));
@@ -1436,8 +1534,10 @@ export async function runAutoMode(options: {
           if (result.success) {
             totalPrsCreated++;
             if (result.prUrl) allPrUrls.push(result.prUrl);
+            recordDedupEntry(repoRoot, toProcess[i].title, true);
           } else {
             totalFailed++;
+            recordDedupEntry(repoRoot, toProcess[i].title, false);
           }
           console.log();
           if (i < toProcess.length - 1 && shouldContinue()) {
@@ -1484,14 +1584,19 @@ export async function runAutoMode(options: {
           });
 
           const taskResults = await Promise.allSettled(tasks);
-          for (const r of taskResults) {
+          for (let ri = 0; ri < taskResults.length; ri++) {
+            const r = taskResults[ri];
+            const proposal = wave[ri];
             if (r.status === 'fulfilled' && r.value.success) {
               totalPrsCreated++;
               if (r.value.prUrl) allPrUrls.push(r.value.prUrl);
+              recordDedupEntry(repoRoot, proposal.title, true);
             } else if (r.status === 'fulfilled') {
               totalFailed++;
+              recordDedupEntry(repoRoot, proposal.title, false);
             } else {
               totalFailed++;
+              recordDedupEntry(repoRoot, proposal.title, false);
             }
           }
         }
@@ -1522,6 +1627,11 @@ export async function runAutoMode(options: {
         } catch {
           // Non-fatal
         }
+      }
+
+      // Reload dedup memory for next cycle (picks up entries recorded this cycle)
+      if (isContinuous) {
+        dedupMemory = loadDedupMemory(repoRoot);
       }
 
       if (isContinuous && shouldContinue()) {

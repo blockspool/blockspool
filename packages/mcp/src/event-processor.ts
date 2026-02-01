@@ -14,6 +14,7 @@ import type { RawProposal } from './proposals.js';
 import { deriveScopePolicy, validatePlanScope } from './scope-policy.js';
 import { recordOutput, recordDiff, recordCommandFailure, recordPlanHash } from './spindle.js';
 import { addLearning, confirmLearning, extractTags } from './learnings.js';
+import { recordDedupEntry } from './dedup-memory.js';
 
 export interface ProcessResult {
   processed: boolean;
@@ -542,6 +543,18 @@ export async function processEvent(
     case 'PR_CREATED': {
       if (s.phase !== 'PR') {
         return { processed: true, phase_changed: false, message: 'PR created outside PR phase' };
+      }
+
+      // Record completed ticket in dedup memory (before completeTicket clears current_ticket_id)
+      if (s.current_ticket_id) {
+        try {
+          const ticket = await repos.tickets.getById(db, s.current_ticket_id);
+          if (ticket) {
+            recordDedupEntry(run.rootPath, ticket.title, true);
+          }
+        } catch {
+          // Non-fatal — dedup memory is best-effort
+        }
       }
 
       // Save PR artifact

@@ -549,6 +549,14 @@ export async function runAutoMode(options: {
   const userScope = options.scope || activeFormula?.scope;
   let scopeIndex = 0;
 
+  const git = createGitService();
+  const repoRoot = await git.findRepoRoot(process.cwd());
+
+  if (!repoRoot) {
+    console.error(chalk.red('✗ Not a git repository'));
+    process.exit(1);
+  }
+
   const DEEP_SCAN_INTERVAL = 5;
   let deepFormula: import('./formulas.js').Formula | null = null;
   let docsAuditFormula: import('./formulas.js').Formula | null = null;
@@ -639,14 +647,6 @@ export async function runAutoMode(options: {
     console.log(chalk.gray(`  Milestone mode: batch size ${batchSize}`));
   }
   console.log();
-
-  const git = createGitService();
-  const repoRoot = await git.findRepoRoot(process.cwd());
-
-  if (!repoRoot) {
-    console.error(chalk.red('✗ Not a git repository'));
-    process.exit(1);
-  }
 
   // Start stdin listener for live hints in continuous/hours mode
   let stopStdinListener: (() => void) | undefined;

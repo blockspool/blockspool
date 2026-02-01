@@ -302,7 +302,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
       '',
       '## After All Subagents Return',
       '',
-      'For each subagent result, call `blockspool_ingest_ticket_event` to record the outcome:',
+      'For each subagent result, call `blockspool_ticket_event` to record the outcome:',
       '- Success: `type: "PR_CREATED"`, `payload: { ticket_id, url, branch }`',
       '- Failure: `type: "TICKET_RESULT"`, `payload: { ticket_id, status: "failed", reason: "..." }`',
       '',

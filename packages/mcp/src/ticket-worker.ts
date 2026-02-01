@@ -442,7 +442,7 @@ function buildTicketPlanPrompt(
     `**Allowed paths:** ${ticket.allowedPaths.length > 0 ? ticket.allowedPaths.join(', ') : 'any'}`,
     `**Verification commands:** ${ticket.verificationCommands.join(', ') || 'none specified'}`,
     '',
-    'Then call `blockspool_ingest_ticket_event` with the ticket_id, type `PLAN_SUBMITTED`, and the plan as payload.',
+    'Then call `blockspool_ticket_event` with the ticket_id, type `PLAN_SUBMITTED`, and the plan as payload.',
   );
 
   return parts.join('\n');
@@ -480,7 +480,7 @@ function buildTicketExecutePrompt(
     '',
     '## When done',
     'Output a `<ticket-result>` block with status, changed_files, summary, lines_added, lines_removed.',
-    `Then call \`blockspool_ingest_ticket_event\` with ticket_id="${ticket.title}", type \`TICKET_RESULT\`, and the result as payload.`,
+    `Then call \`blockspool_ticket_event\` with ticket_id="${ticket.title}", type \`TICKET_RESULT\`, and the result as payload.`,
   );
 
   return parts.join('\n');
@@ -500,10 +500,10 @@ function buildTicketQaPrompt(
     '',
     ...ticket.verificationCommands.map(c => `\`\`\`bash\ncd ${worktreePath} && ${c}\n\`\`\``),
     '',
-    'For each command, call `blockspool_ingest_ticket_event` with type `QA_COMMAND_RESULT` and:',
+    'For each command, call `blockspool_ticket_event` with type `QA_COMMAND_RESULT` and:',
     '`{ "command": "...", "success": true/false, "output": "stdout+stderr" }`',
     '',
-    'After all commands, call `blockspool_ingest_ticket_event` with type `QA_PASSED` if all pass, or `QA_FAILED` with failure details.',
+    'After all commands, call `blockspool_ticket_event` with type `QA_PASSED` if all pass, or `QA_FAILED` with failure details.',
   ].join('\n');
 }
 
@@ -530,6 +530,6 @@ function buildTicketPrPrompt(
     '4. Push to remote: `git push -u origin <branch>`',
     `5. Create ${draftPr ? 'draft ' : ''}PR: \`gh pr create${draftPr ? ' --draft' : ''}\``,
     '',
-    'Call `blockspool_ingest_ticket_event` with type `PR_CREATED` and `{ "url": "<pr-url>", "branch": "<branch-name>" }` as payload.',
+    'Call `blockspool_ticket_event` with type `PR_CREATED` and `{ "url": "<pr-url>", "branch": "<branch-name>" }` as payload.',
   ].join('\n');
 }

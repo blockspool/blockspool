@@ -115,7 +115,7 @@ This returns an `output_file` path immediately. Use `Read` to check progress. Fo
 
 1. Wait for ALL Task tool results to return (or read background output files)
 2. Parse each subagent's output for the result block (TICKET_ID, STATUS, PR_URL, BRANCH, SUMMARY)
-3. For each ticket, call `blockspool_ingest_ticket_event` to record the outcome:
+3. For each ticket, call `blockspool_ticket_event` to record the outcome:
    - Success: `type: "PR_CREATED"`, `payload: { ticket_id, url: "<pr-url>", branch: "<branch>" }`
    - Failure: `type: "TICKET_RESULT"`, `payload: { ticket_id, status: "failed", reason: "..." }`
 4. Update task tracking: mark each ticket task as completed

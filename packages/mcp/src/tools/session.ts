@@ -378,7 +378,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
   );
 
   server.tool(
-    'blockspool_ingest_ticket_event',
+    'blockspool_ticket_event',
     'Report an event for a specific ticket (parallel mode). Used by subagents to report plan submissions, QA results, PR creation, etc.',
     {
       ticket_id: z.string().describe('The ticket ID this event belongs to.'),

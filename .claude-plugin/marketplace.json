@@ -10,14 +10,21 @@
     {
       "name": "blockspool",
       "description": "Continuous codebase improvement — scouts improvements, executes in parallel, batches into milestone PRs",
-      "version": "0.5.12",
+      "version": "0.5.14",
       "author": {
         "name": "BlockSpool",
         "email": "support@blockspool.com"
       },
       "source": "./packages/plugin",
       "category": "development",
-      "homepage": "https://github.com/blockspool/blockspool"
+      "homepage": "https://github.com/blockspool/blockspool",
+      "keywords": ["coding", "automation", "ai", "improvement", "refactoring"],
+      "skills": [
+        "./skills/run",
+        "./skills/status",
+        "./skills/nudge",
+        "./skills/cancel"
+      ]
     }
   ]
 }

@@ -1,26 +1,23 @@
 ---
 name: run
-description: Run BlockSpool — scouts, plans, executes, and PRs improvements continuously
-arguments:
-  - name: hours
-    description: Time budget for multi-cycle runs (e.g. hours=4). Omit for a single cycle.
-    required: false
-  - name: formula
-    description: Formula to use (e.g. security-audit, test-coverage, cleanup)
-    required: false
-  - name: cycles
-    description: Number of scout→execute cycles (default: 1)
-    required: false
-  - name: deep
-    description: Enable deep architectural review mode
-    required: false
-  - name: parallel
-    description: Number of tickets to execute in parallel (default 2, max 5). Set to 1 for sequential.
-    required: false
+description: Run BlockSpool — scouts, plans, executes, and PRs improvements continuously. Use when the user wants to improve their codebase, find bugs, add tests, or run autonomous coding.
+argument-hint: "[hours=N] [formula=name] [cycles=N] [deep] [parallel=N]"
 ---
 
 Start a BlockSpool session. By default runs one cycle: scout → execute tickets → PR → done.
 Pass `cycles=3` for multiple rounds or `hours=4` for time-based runs.
+
+## Arguments
+
+Parse from `$ARGUMENTS` (all optional, key=value format):
+- **hours** — Time budget for multi-cycle runs (e.g. `hours=4`)
+- **formula** — Formula to use (e.g. `security-audit`, `test-coverage`, `cleanup`)
+- **cycles** — Number of scout→execute cycles (default: 1)
+- **deep** — Enable deep architectural review mode
+- **parallel** — Concurrent tickets (default 2, max 5). Set to 1 for sequential.
+- **batch_size** — Milestone batching (merge N tickets into one PR)
+- **min_impact_score** — Filter proposals (1-10, default 3)
+- **scope** — Directory to scan (auto-detected)
 
 ## Setup
 

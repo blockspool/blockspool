@@ -201,11 +201,11 @@ Examples:
         const hasApiKey = !!process.env.CODEX_API_KEY;
         const CODEX_MODELS = [
           { key: '1', name: 'gpt-5.2-codex', desc: 'Latest (default reasoning)' },
-          { key: '2', name: 'gpt-5.2-codex-high', desc: 'High reasoning effort' },
-          { key: '3', name: 'gpt-5.2-codex-xhigh', desc: 'Max reasoning effort' },
-          { key: '4', name: 'gpt-5.1-codex-mini', desc: 'Fast, cost-effective' },
-          { key: '5', name: 'gpt-5.1-codex-max', desc: 'Extended agentic tasks' },
+          { key: '2', name: 'gpt-5.1-codex-max', desc: 'Extended agentic tasks' },
           ...(hasApiKey ? [
+            { key: '3', name: 'gpt-5.2-codex-high', desc: 'High reasoning (API key only)' },
+            { key: '4', name: 'gpt-5.2-codex-xhigh', desc: 'Max reasoning (API key only)' },
+            { key: '5', name: 'gpt-5.1-codex-mini', desc: 'Fast, cost-effective (API key only)' },
             { key: '6', name: 'gpt-5.2', desc: 'General-purpose (API key only)' },
             { key: '7', name: 'gpt-5.2-high', desc: 'General-purpose, high reasoning (API key only)' },
             { key: '8', name: 'gpt-5.2-xhigh', desc: 'General-purpose, max reasoning (API key only)' },
@@ -218,12 +218,32 @@ Examples:
         const savedConfig = earlyRoot ? loadConfig(earlyRoot) : null;
         const savedModel = savedConfig?.codexModel;
 
-        if (savedModel) {
-          options.codexModel = savedModel;
-          console.log(chalk.gray(`\nModel: ${savedModel} (saved)`));
-          console.log(chalk.gray('  Change with: blockspool --codex --codex-model <name>'));
-          console.log();
-        } else {
+        // Models that work without CODEX_API_KEY (codex login only)
+        const LOGIN_SAFE_MODELS = ['gpt-5.2-codex', 'gpt-5.1-codex-max'];
+
+        // All valid model names (for validation)
+        const ALL_MODEL_NAMES = CODEX_MODELS.map(m => m.name);
+
+        if (savedModel && ALL_MODEL_NAMES.includes(savedModel)) {
+          // Validate saved model works with current auth
+          if (!hasApiKey && !LOGIN_SAFE_MODELS.includes(savedModel)) {
+            console.log(chalk.yellow(`\nSaved model "${savedModel}" requires CODEX_API_KEY.`));
+            console.log(chalk.yellow('Please select a compatible model:\n'));
+            // Fall through to model picker below
+          } else {
+            options.codexModel = savedModel;
+            console.log(chalk.gray(`\nModel: ${options.codexModel} (saved)`));
+            console.log(chalk.gray('  Change with: blockspool --codex --codex-model <name>'));
+            console.log();
+          }
+        } else if (savedModel) {
+          // Saved model is not in valid list (e.g., renamed/removed model)
+          console.log(chalk.yellow(`\nSaved model "${savedModel}" is no longer available.`));
+          console.log(chalk.yellow('Please select a model:\n'));
+          // Fall through to model picker below
+        }
+
+        if (!options.codexModel) {
           console.log(chalk.white('\nSelect Codex model:'));
           for (const m of CODEX_MODELS) {
             console.log(chalk.gray(`  ${m.key}) ${m.name}  — ${m.desc}`));
@@ -244,7 +264,15 @@ Examples:
           }
         }
       } else if (needsCodex && options.codexModel) {
-        // --codex-model passed explicitly — persist it
+        // --codex-model passed explicitly — validate and persist it
+        const hasApiKey = !!process.env.CODEX_API_KEY;
+        const LOGIN_SAFE_MODELS = ['gpt-5.2-codex', 'gpt-5.1-codex-max'];
+        if (!hasApiKey && !LOGIN_SAFE_MODELS.includes(options.codexModel)) {
+          console.log(chalk.yellow(`\nModel "${options.codexModel}" requires CODEX_API_KEY (not available with codex login).`));
+          console.log(chalk.yellow(`Available models: ${LOGIN_SAFE_MODELS.join(', ')}`));
+          console.log(chalk.yellow('Set CODEX_API_KEY or choose a compatible model.\n'));
+          process.exit(1);
+        }
         const earlyGit = createGitService();
         const earlyRoot = await earlyGit.findRepoRoot(process.cwd());
         if (earlyRoot) {

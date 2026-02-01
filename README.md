@@ -54,6 +54,23 @@ Come back to 5 milestone PRs containing 50+ improvements.
 | **CLI + Codex** (`blockspool --codex`) | `codex login` (or `CODEX_API_KEY`) | No Anthropic key, Codex-native teams |
 | **CLI + OpenAI** (`blockspool-run --provider openai`) | `OPENAI_API_KEY` | OpenAI-native teams |
 
+### Codex model availability
+
+BlockSpool uses the official `codex exec` CLI. Not all models are available with `codex login` (ChatGPT subscription):
+
+| Model | `codex login` | `CODEX_API_KEY` |
+|-------|:---:|:---:|
+| `gpt-5.2-codex` (default) | ✅ | ✅ |
+| `gpt-5.1-codex-max` | ✅ | ✅ |
+| `gpt-5.2-codex-high` | ❌ | ✅ |
+| `gpt-5.2-codex-xhigh` | ❌ | ✅ |
+| `gpt-5.1-codex-mini` | ❌ | ✅ |
+| `gpt-5.2` / `-high` / `-xhigh` | ❌ | ✅ |
+
+These restrictions are enforced by OpenAI's Codex CLI, not BlockSpool. If your saved model becomes incompatible (e.g., you switch from API key to `codex login`), BlockSpool will prompt you to re-select.
+
+To change your saved model: `blockspool --codex --codex-model <name>`
+
 ### Hybrid mode
 
 For cost-effective runs, use Codex for scouting (cheap, high-volume) and Claude for execution (higher quality):
@@ -495,6 +512,18 @@ Yes — two ways:
 1. **Plugin** (`/blockspool:run`): Uses your Claude Code subscription directly
 2. **Codex CLI** (`blockspool --codex`): Uses `codex login` (OAuth, no API key env var needed)
 
+### Why can't I use `gpt-5.2-codex-high` with `codex login`?
+
+OpenAI's Codex CLI restricts higher-reasoning models (like `-high`, `-xhigh`) and general-purpose models (like `gpt-5.2`) to API key authentication only. This is an OpenAI limitation, not a BlockSpool one. To use these models, set `CODEX_API_KEY` in your environment. With `codex login` you can use `gpt-5.2-codex` (default) and `gpt-5.1-codex-max`.
+
+### Can third-party tools bypass these Codex model restrictions?
+
+Some third-party tools intercept Codex OAuth tokens to access restricted models. **This likely violates OpenAI's Terms of Service** — users have reported account bans for similar approaches with other providers. BlockSpool only uses the official `codex exec` CLI and respects its model restrictions.
+
+### How do I change my saved Codex model?
+
+Run `blockspool --codex --codex-model <name>`. If your saved model is no longer compatible with your auth method, BlockSpool will automatically prompt you to pick a new one.
+
 ### Will it break my code?
 
 - Every change runs through **typecheck and tests** before merging
@@ -526,6 +555,6 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>BlockSpool v0.5.12</b><br>
+  <b>BlockSpool v0.5.14</b><br>
   <i>Set it. Forget it. Merge the PRs.</i>
 </p>

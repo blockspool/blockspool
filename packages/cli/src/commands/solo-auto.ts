@@ -78,6 +78,7 @@ Examples:
     .option('--claude', 'Use Claude for both scouting and execution (default)')
     .option('--scout-backend <name>', 'LLM for scouting: claude | codex (default: claude)')
     .option('--execute-backend <name>', 'LLM for execution: claude | codex (default: claude)')
+    .option('--codex-model <model>', 'Model for Codex backend (default: codex-mini)')
     .option('--codex-unsafe-full-access', 'Use --dangerously-bypass-approvals-and-sandbox for Codex execution (requires isolated runner)')
     .action(async (mode: string | undefined, options: {
       dryRun?: boolean;
@@ -102,6 +103,7 @@ Examples:
       claude?: boolean;
       scoutBackend?: string;
       executeBackend?: string;
+      codexModel?: string;
       codexUnsafeFullAccess?: boolean;
     }) => {
       if (options.deep && !options.formula) {
@@ -187,6 +189,33 @@ Examples:
         }
       }
 
+      // Model selection for Codex
+      if (needsCodex && !options.codexModel) {
+        const CODEX_MODELS = [
+          { key: '1', name: 'gpt-5.2-codex', desc: 'Latest (default reasoning)' },
+          { key: '2', name: 'gpt-5.2-codex-high', desc: 'High reasoning effort' },
+          { key: '3', name: 'gpt-5.2-codex-xhigh', desc: 'Max reasoning effort' },
+          { key: '4', name: 'gpt-5.2', desc: 'General-purpose (default reasoning)' },
+          { key: '5', name: 'gpt-5.2-high', desc: 'General-purpose, high reasoning' },
+          { key: '6', name: 'gpt-5.2-xhigh', desc: 'General-purpose, max reasoning' },
+          { key: '7', name: 'gpt-5.1-codex-mini', desc: 'Fast, cost-effective' },
+          { key: '8', name: 'gpt-5.1-codex-max', desc: 'Extended agentic tasks' },
+        ];
+        console.log(chalk.white('\nSelect Codex model:'));
+        for (const m of CODEX_MODELS) {
+          console.log(chalk.gray(`  ${m.key}) ${m.name}  — ${m.desc}`));
+        }
+        const readline = await import('readline');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(chalk.white('Choice [1]: '), (a) => { rl.close(); resolve(a.trim() || '1'); });
+        });
+        const picked = CODEX_MODELS.find(m => m.key === answer || m.name === answer);
+        options.codexModel = picked?.name ?? answer;
+        console.log(chalk.gray(`Model: ${options.codexModel}`));
+        console.log();
+      }
+
       // Print auth summary
       if (scoutBackendName === executeBackendName) {
         const authSource = scoutBackendName === 'claude'
@@ -244,6 +273,7 @@ Examples:
           batchSize: options.batchSize,
           scoutBackend: scoutBackendName,
           executeBackend: executeBackendName,
+          codexModel: options.codexModel,
           codexUnsafeFullAccess: options.codexUnsafeFullAccess,
         });
         return;

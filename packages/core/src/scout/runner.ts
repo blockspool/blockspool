@@ -174,7 +174,7 @@ export class CodexScoutBackend implements ScoutBackend {
 
   constructor(opts?: { apiKey?: string; model?: string }) {
     this.apiKey = opts?.apiKey;
-    this.defaultModel = opts?.model ?? 'o4-mini';
+    this.defaultModel = opts?.model ?? 'gpt-5.2-codex';
   }
 
   async run(options: RunnerOptions): Promise<RunnerResult> {
@@ -187,6 +187,35 @@ export class CodexScoutBackend implements ScoutBackend {
 
     const tmpDir = mkdtempSync(join(tmpdir(), 'blockspool-codex-'));
     const outPath = join(tmpDir, 'output.md');
+    const schemaPath = join(tmpDir, 'schema.json');
+
+    // Write JSON schema so Codex returns structured output
+    writeFileSync(schemaPath, JSON.stringify({
+      type: 'object',
+      properties: {
+        proposals: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              category: { type: 'string' },
+              title: { type: 'string' },
+              description: { type: 'string' },
+              acceptance_criteria: { type: 'array', items: { type: 'string' } },
+              verification_commands: { type: 'array', items: { type: 'string' } },
+              allowed_paths: { type: 'array', items: { type: 'string' } },
+              files: { type: 'array', items: { type: 'string' } },
+              confidence: { type: 'number' },
+              impact_score: { type: 'number' },
+              rationale: { type: 'string' },
+              estimated_complexity: { type: 'string' },
+            },
+            required: ['category', 'title', 'description', 'confidence', 'impact_score', 'files'],
+          },
+        },
+      },
+      required: ['proposals'],
+    }));
 
     try {
       const effectiveModel = model ?? this.defaultModel;
@@ -197,6 +226,7 @@ export class CodexScoutBackend implements ScoutBackend {
         '--sandbox', 'read-only',
         '--ask-for-approval', 'never',
         '--output-last-message', outPath,
+        '--output-schema', schemaPath,
         '--model', effectiveModel,
         '--cd', cwd,
         '-',

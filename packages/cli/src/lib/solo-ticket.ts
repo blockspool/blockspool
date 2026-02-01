@@ -265,7 +265,7 @@ export class CodexExecutionBackend implements ExecutionBackend {
 
   constructor(opts?: { apiKey?: string; model?: string; unsafeBypassSandbox?: boolean }) {
     this.apiKey = opts?.apiKey;
-    this.model = opts?.model ?? 'o4-mini';
+    this.model = opts?.model ?? 'gpt-5.2-codex';
     this.unsafeBypassSandbox = opts?.unsafeBypassSandbox ?? false;
   }
 

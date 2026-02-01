@@ -422,6 +422,7 @@ export async function runAutoMode(options: {
   batchSize?: string;
   scoutBackend?: string;
   executeBackend?: string;
+  codexModel?: string;
   codexUnsafeFullAccess?: boolean;
 }): Promise<void> {
   // Load formula if specified
@@ -634,11 +635,12 @@ export async function runAutoMode(options: {
     let executionBackend: ExecutionBackend | undefined;
     if (options.scoutBackend === 'codex') {
       const { CodexScoutBackend } = await import('@blockspool/core/scout');
-      scoutBackend = new CodexScoutBackend({ apiKey: process.env.CODEX_API_KEY });
+      scoutBackend = new CodexScoutBackend({ apiKey: process.env.CODEX_API_KEY, model: options.codexModel });
     }
     if (options.executeBackend === 'codex') {
       executionBackend = new CodexExecutionBackend({
         apiKey: process.env.CODEX_API_KEY,
+        model: options.codexModel,
         unsafeBypassSandbox: options.codexUnsafeFullAccess,
       });
     }
@@ -770,6 +772,11 @@ export async function runAutoMode(options: {
 
       if (proposals.length === 0) {
         console.log(chalk.gray(`  No improvements found in ${scope}`));
+        if (scoutResult.errors.length > 0) {
+          for (const err of scoutResult.errors) {
+            console.log(chalk.yellow(`  ⚠ ${err}`));
+          }
+        }
         if (isContinuous) {
           await sleep(2000);
           continue;

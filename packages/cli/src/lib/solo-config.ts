@@ -146,6 +146,8 @@ export interface SoloConfig {
   retention?: Partial<RetentionConfig>;
   /** Max parallel tickets for plugin mode (default: 2, max: 5) */
   pluginParallel?: number;
+  /** Saved Codex model choice (persisted across runs) */
+  codexModel?: string;
 }
 
 /**
@@ -305,6 +307,17 @@ export function loadConfig(repoRoot: string): SoloConfig | null {
     return null;
   }
   return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+}
+
+/**
+ * Save solo config (merges updates into existing config)
+ */
+export function saveConfig(repoRoot: string, updates: Partial<SoloConfig>): void {
+  const configPath = path.join(getBlockspoolDir(repoRoot), 'config.json');
+  const existing = loadConfig(repoRoot);
+  if (!existing) return;
+  const merged = { ...existing, ...updates };
+  fs.writeFileSync(configPath, JSON.stringify(merged, null, 2));
 }
 
 /**

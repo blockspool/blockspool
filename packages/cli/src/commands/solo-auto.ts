@@ -10,6 +10,7 @@ import { createGitService } from '../lib/git.js';
 import {
   isInitialized,
   loadConfig,
+  saveConfig,
   getAdapter,
 } from '../lib/solo-config.js';
 import { soloRunTicket } from '../lib/solo-ticket.js';
@@ -207,19 +208,45 @@ Examples:
           { key: '7', name: 'gpt-5.1-codex-mini', desc: 'Fast, cost-effective' },
           { key: '8', name: 'gpt-5.1-codex-max', desc: 'Extended agentic tasks' },
         ];
-        console.log(chalk.white('\nSelect Codex model:'));
-        for (const m of CODEX_MODELS) {
-          console.log(chalk.gray(`  ${m.key}) ${m.name}  — ${m.desc}`));
+
+        // Check for saved model in config
+        const earlyGit = createGitService();
+        const earlyRoot = await earlyGit.findRepoRoot(process.cwd());
+        const savedConfig = earlyRoot ? loadConfig(earlyRoot) : null;
+        const savedModel = savedConfig?.codexModel;
+
+        if (savedModel) {
+          options.codexModel = savedModel;
+          console.log(chalk.gray(`\nModel: ${savedModel} (saved)`));
+          console.log(chalk.gray('  Change with: blockspool --codex --codex-model <name>'));
+          console.log();
+        } else {
+          console.log(chalk.white('\nSelect Codex model:'));
+          for (const m of CODEX_MODELS) {
+            console.log(chalk.gray(`  ${m.key}) ${m.name}  — ${m.desc}`));
+          }
+          const readline = await import('readline');
+          const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+          const answer = await new Promise<string>((resolve) => {
+            rl.question(chalk.white('Choice [1]: '), (a) => { rl.close(); resolve(a.trim() || '1'); });
+          });
+          const picked = CODEX_MODELS.find(m => m.key === answer || m.name === answer);
+          options.codexModel = picked?.name ?? answer;
+          console.log(chalk.gray(`Model: ${options.codexModel}`));
+          console.log();
+
+          // Persist choice
+          if (earlyRoot) {
+            saveConfig(earlyRoot, { codexModel: options.codexModel });
+          }
         }
-        const readline = await import('readline');
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const answer = await new Promise<string>((resolve) => {
-          rl.question(chalk.white('Choice [1]: '), (a) => { rl.close(); resolve(a.trim() || '1'); });
-        });
-        const picked = CODEX_MODELS.find(m => m.key === answer || m.name === answer);
-        options.codexModel = picked?.name ?? answer;
-        console.log(chalk.gray(`Model: ${options.codexModel}`));
-        console.log();
+      } else if (needsCodex && options.codexModel) {
+        // --codex-model passed explicitly — persist it
+        const earlyGit = createGitService();
+        const earlyRoot = await earlyGit.findRepoRoot(process.cwd());
+        if (earlyRoot) {
+          saveConfig(earlyRoot, { codexModel: options.codexModel });
+        }
       }
 
       // Print auth summary

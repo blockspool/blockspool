@@ -1074,7 +1074,7 @@ export async function runAutoMode(options: {
         scope,
         maxProposals: 20,
         minConfidence: Math.max((cycleFormula?.minConfidence ?? minConfidence) - 20, 30),
-        model: options.eco ? 'sonnet' : (cycleFormula?.model ?? 'opus'),
+        model: options.scoutBackend === 'codex' ? undefined : (options.eco ? 'sonnet' : (cycleFormula?.model ?? 'opus')),
         customPrompt: effectivePrompt,
         autoApprove: false,
         backend: scoutBackend,

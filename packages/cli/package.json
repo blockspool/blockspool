@@ -16,7 +16,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "blockspool": "./dist/bin/blockspool.js"
+    "blockspool": "dist/bin/blockspool.js"
   },
   "exports": {
     ".": {

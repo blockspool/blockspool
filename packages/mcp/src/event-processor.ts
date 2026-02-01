@@ -38,16 +38,36 @@ export async function processEvent(
         return { processed: true, phase_changed: false, message: 'Scout output outside SCOUT phase, ignored' };
       }
 
+      // Track explored directories for rotation across cycles
+      const exploredDirs = (payload['explored_dirs'] ?? []) as string[];
+      if (exploredDirs.length > 0) {
+        for (const dir of exploredDirs) {
+          if (!s.scouted_dirs.includes(dir)) {
+            s.scouted_dirs.push(dir);
+          }
+        }
+      }
+
       // Extract proposals from payload
+      const MAX_SCOUT_RETRIES = 2;
       const rawProposals = (payload['proposals'] ?? []) as RawProposal[];
       if (rawProposals.length === 0) {
-        // No proposals found — done
+        if (s.scout_retries < MAX_SCOUT_RETRIES) {
+          s.scout_retries++;
+          // Stay in SCOUT phase — advance() will return an escalated prompt
+          return {
+            processed: true,
+            phase_changed: false,
+            message: `No proposals found (attempt ${s.scout_retries}/${MAX_SCOUT_RETRIES + 1}). Retrying with deeper analysis.`,
+          };
+        }
+        // Exhausted retries — genuinely no work
         run.setPhase('DONE');
         return {
           processed: true,
           phase_changed: true,
           new_phase: 'DONE',
-          message: 'No proposals in scout output, transitioning to DONE',
+          message: 'No proposals in scout output after all retries, transitioning to DONE',
         };
       }
 
@@ -61,6 +81,7 @@ export async function processEvent(
       );
 
       if (result.created_ticket_ids.length > 0) {
+        s.scout_retries = 0;
         run.setPhase('NEXT_TICKET');
         return {
           processed: true,
@@ -70,13 +91,21 @@ export async function processEvent(
         };
       }
 
-      // All proposals rejected — done
+      // All proposals rejected
+      if (s.scout_retries < MAX_SCOUT_RETRIES) {
+        s.scout_retries++;
+        return {
+          processed: true,
+          phase_changed: false,
+          message: `All ${rawProposals.length} proposals rejected (attempt ${s.scout_retries}/${MAX_SCOUT_RETRIES + 1}). Retrying with deeper analysis.`,
+        };
+      }
       run.setPhase('DONE');
       return {
         processed: true,
         phase_changed: true,
         new_phase: 'DONE',
-        message: `All ${rawProposals.length} proposals rejected: ${result.rejected.map(r => r.reason).join('; ')}`,
+        message: `All ${rawProposals.length} proposals rejected after all retries: ${result.rejected.map(r => r.reason).join('; ')}`,
       };
     }
 

@@ -232,6 +232,9 @@ describe('DirectClient — events.ndjson format', () => {
     client.startSession({ step_budget: 50 });
 
     await client.advance(); // SCOUT
+    // Exhaust scout retries so empty proposals → DONE
+    const state0 = client.getState();
+    state0.scout_retries = 2;
     await client.ingestEvent('SCOUT_OUTPUT', { proposals: [] });
 
     const state = client.getState();

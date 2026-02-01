@@ -101,6 +101,7 @@ export interface RunState {
   plan_approved: boolean;
   plan_rejections: number;
   qa_retries: number;
+  scout_retries: number;
 
   // Time
   started_at: string;
@@ -116,6 +117,7 @@ export interface RunState {
   draft_prs: boolean;
   eco: boolean;
   hints: string[];
+  scout_exclude_dirs: string[];
 
   // Parallel execution
   parallel: number;
@@ -126,6 +128,9 @@ export interface RunState {
 
   // Intent tracking
   recent_intent_hashes: string[];
+
+  // Directories already explored by scout (for rotation across cycles)
+  scouted_dirs: string[];
 
   // Deferred proposals (out-of-scope, retried when scope matches)
   deferred_proposals: DeferredProposal[];
@@ -277,4 +282,5 @@ export interface SessionConfig {
   eco?: boolean;
   parallel?: number;
   min_impact_score?: number;
+  scout_exclude_dirs?: string[];
 }

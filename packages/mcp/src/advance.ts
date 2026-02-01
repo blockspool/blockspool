@@ -177,10 +177,16 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
   const projectMeta = detectProjectMetadata(ctx.project.rootPath);
   const metadataBlock = formatMetadataForPrompt(projectMeta) + '\n\n';
 
-  const prompt = guidelinesBlock + metadataBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
-    s.max_proposals_per_scout, dedupContext, formula, hints, s.eco, s.min_impact_score);
+  // Build escalation block if retrying after 0 proposals
+  const escalationBlock = s.scout_retries > 0 ? buildScoutEscalation(s.scout_retries) + '\n\n' : '';
 
-  s.scout_cycles++;
+  const prompt = guidelinesBlock + metadataBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
+    s.max_proposals_per_scout, dedupContext, formula, hints, s.eco, s.min_impact_score, s.scouted_dirs, s.scout_exclude_dirs);
+
+  // Reset scout_retries at the start of a fresh cycle (non-retry entry)
+  if (s.scout_retries === 0) {
+    s.scout_cycles++;
+  }
   run.appendEvent('ADVANCE_RETURNED', { phase: 'SCOUT', has_prompt: true });
 
   return promptResponse(run, 'SCOUT', prompt, 'Scouting for improvements', {
@@ -644,6 +650,22 @@ function terminalReason(phase: Phase): string {
 // Prompt builders
 // ---------------------------------------------------------------------------
 
+function buildScoutEscalation(retryCount: number): string {
+  return [
+    '## Previous Attempt Found Nothing',
+    '',
+    `Your previous scout attempt (attempt ${retryCount}) returned 0 proposals. This usually means you didn't read enough source files or explored config/boilerplate instead of business logic.`,
+    '',
+    'This time:',
+    '- Pick DIFFERENT directories/modules than your previous attempt',
+    '- Read at least 15 source files — focus on core business logic, handlers, services, and their tests',
+    '- Skip config files, lock files, and generated code',
+    '- Read files in related clusters (a module + its tests, a handler + its helpers)',
+    '- Look specifically for: missing tests, error handling gaps, security issues, performance problems',
+    '- If the codebase is genuinely well-maintained, explain which directories you analyzed and why no proposals were found',
+  ].join('\n');
+}
+
 function buildScoutPrompt(
   scope: string,
   categories: string[],
@@ -654,13 +676,35 @@ function buildScoutPrompt(
   hints: string[],
   eco: boolean,
   minImpactScore: number = 3,
+  scoutedDirs: string[] = [],
+  excludeDirs: string[] = [],
 ): string {
   const parts = [
     '# Scout Phase',
     '',
-    'Scan the codebase and identify improvements. Return proposals in a `<proposals>` XML block containing a JSON array.',
+    'Identify improvements by reading source code. Return proposals in a `<proposals>` XML block containing a JSON array.',
     '',
     ...(!eco ? ['**IMPORTANT:** Do not use the Task or Explore tools. Read files directly using Read, Glob, and Grep. Do not delegate to subagents.', ''] : []),
+    '## How to Scout',
+    '',
+    'STEP 1 — Discover: Use Glob to list all files in scope. Group them by directory or module (e.g. `src/auth/`, `src/api/`, `lib/utils/`). Identify entry points, core logic, and test directories.',
+    '',
+    'STEP 2 — Pick a Partition: Choose one or two directories/modules to analyze deeply this cycle. Do NOT try to skim everything — go deep on a focused slice. On future cycles, different partitions will be explored.',
+    '',
+    'STEP 3 — Read & Analyze: Use Read to open 10-15 source files within your chosen partition(s). Read related files together (e.g. a module and its tests, a handler and its helpers). For each file, look for:',
+    '  - Bugs, incorrect logic, off-by-one errors',
+    '  - Missing error handling or edge cases',
+    '  - Missing or inadequate tests for the code you read',
+    '  - Security issues (injection, auth bypass, secrets in code)',
+    '  - Performance problems (N+1 queries, unnecessary re-renders, blocking I/O)',
+    '  - Dead code, unreachable branches',
+    '  - Meaningful refactoring opportunities (not cosmetic)',
+    '',
+    'STEP 4 — Propose: Only after reading source files, write proposals with specific file paths and line-level detail.',
+    '',
+    'DO NOT run lint or typecheck commands as a substitute for reading code.',
+    'DO NOT propose changes unless you have READ the files you are proposing to change.',
+    '',
     `**Scope:** \`${scope}\``,
     `**Categories:** ${categories.join(', ')}`,
     `**Min confidence:** ${minConfidence}`,
@@ -668,6 +712,9 @@ function buildScoutPrompt(
     `**Max proposals:** ${maxProposals}`,
     '',
     '**DO NOT propose changes to these files** (read-only context): CLAUDE.md, .claude/**',
+    ...(excludeDirs.length > 0 ? [
+      `**Skip these directories when scouting** (build artifacts, vendor, generated): ${excludeDirs.map(d => `\`${d}\``).join(', ')}`,
+    ] : []),
     '',
     '## Quality Bar',
     '',
@@ -677,6 +724,16 @@ function buildScoutPrompt(
     '- Focus on: bugs, missing tests, security issues, performance problems, correctness, and meaningful refactors.',
     '',
   ];
+
+  if (scoutedDirs.length > 0) {
+    parts.push('## Already Explored (prefer unexplored directories)');
+    parts.push('');
+    parts.push('These directories were analyzed in previous scout cycles. Prefer exploring different areas first:');
+    for (const dir of scoutedDirs) {
+      parts.push(`- \`${dir}\``);
+    }
+    parts.push('');
+  }
 
   if (dedupContext.length > 0) {
     parts.push('**Already completed (do not duplicate):**');
@@ -737,7 +794,10 @@ function buildScoutPrompt(
     '</proposals>',
     '```',
     '',
-    'Then call `blockspool_ingest_event` with type `SCOUT_OUTPUT` and `{ "proposals": [...] }` as payload.',
+    'Then call `blockspool_ingest_event` with type `SCOUT_OUTPUT` and payload:',
+    '`{ "proposals": [...], "explored_dirs": ["src/auth/", "src/api/"] }`',
+    '',
+    'The `explored_dirs` field should list the top-level directories you analyzed (e.g. `src/services/`, `lib/utils/`). This is used to rotate to unexplored areas in future cycles.',
   );
 
   return parts.join('\n');

@@ -38,6 +38,17 @@ const DEFAULT_MIN_IMPACT_SCORE = 3;
 const DEFAULT_MAX_PROPOSALS_PER_SCOUT = 5;
 const DEFAULT_SCOPE = '**';
 const DEFAULT_CATEGORIES = ['refactor', 'docs', 'test', 'perf', 'security'];
+const DEFAULT_SCOUT_EXCLUDE_DIRS = [
+  'node_modules',
+  'dist',
+  'build',
+  '.next',
+  'coverage',
+  'assets',
+  'public/static',
+  'vendor',
+  '.git',
+];
 
 function emptySpindle(): SpindleState {
   return {
@@ -110,6 +121,7 @@ export class RunManager {
       plan_approved: false,
       plan_rejections: 0,
       qa_retries: 0,
+      scout_retries: 0,
 
       started_at: now.toISOString(),
       expires_at: expiresAt,
@@ -123,12 +135,14 @@ export class RunManager {
       draft_prs: config.draft_prs ?? true,
       eco: config.eco ?? false,
       hints: [],
+      scout_exclude_dirs: config.scout_exclude_dirs ?? DEFAULT_SCOUT_EXCLUDE_DIRS,
 
       parallel: Math.min(Math.max(config.parallel ?? 2, 1), 5),
       ticket_workers: {},
 
       spindle: emptySpindle(),
       recent_intent_hashes: [],
+      scouted_dirs: [],
       deferred_proposals: [],
 
       project_metadata: null,

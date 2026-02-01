@@ -318,9 +318,24 @@ describe('processEvent SCOUT_OUTPUT', () => {
     expect(result.message).toContain('Created 1');
   });
 
-  it('transitions to DONE when no proposals', async () => {
+  it('retries scout when no proposals and retries remaining', async () => {
     const s = run.require();
     s.phase = 'SCOUT';
+    s.scout_retries = 0;
+
+    const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
+      proposals: [],
+    });
+
+    expect(result.phase_changed).toBe(false);
+    expect(s.scout_retries).toBe(1);
+    expect(result.message).toContain('Retrying');
+  });
+
+  it('transitions to DONE when no proposals and retries exhausted', async () => {
+    const s = run.require();
+    s.phase = 'SCOUT';
+    s.scout_retries = 2;
 
     const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
       proposals: [],
@@ -330,9 +345,24 @@ describe('processEvent SCOUT_OUTPUT', () => {
     expect(result.new_phase).toBe('DONE');
   });
 
-  it('transitions to DONE when all proposals rejected', async () => {
+  it('retries scout when all proposals rejected and retries remaining', async () => {
     const s = run.require();
     s.phase = 'SCOUT';
+    s.scout_retries = 0;
+
+    const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
+      proposals: [makeProposal({ confidence: 10, title: 'Too low' })],
+    });
+
+    expect(result.phase_changed).toBe(false);
+    expect(s.scout_retries).toBe(1);
+    expect(result.message).toContain('Retrying');
+  });
+
+  it('transitions to DONE when all proposals rejected and retries exhausted', async () => {
+    const s = run.require();
+    s.phase = 'SCOUT';
+    s.scout_retries = 2;
 
     const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
       proposals: [makeProposal({ confidence: 10, title: 'Too low' })],

@@ -19,8 +19,70 @@
  */
 
 import { readFileSync, existsSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
-import { minimatch } from 'minimatch';
+import { join, resolve as resolvePath } from 'node:path';
+
+/**
+ * Simple glob matching (no external dependencies).
+ * Supports: *, **, ?, {a,b}, [abc]
+ */
+function simpleMatch(pattern, str) {
+  // Convert glob pattern to regex
+  let i = 0;
+  let regex = '^';
+  const len = pattern.length;
+
+  while (i < len) {
+    const c = pattern[i];
+    if (c === '*') {
+      if (pattern[i + 1] === '*') {
+        // ** matches any number of path segments
+        if (pattern[i + 2] === '/') {
+          regex += '(?:.*/)?';
+          i += 3;
+        } else {
+          regex += '.*';
+          i += 2;
+        }
+      } else {
+        // * matches anything except /
+        regex += '[^/]*';
+        i++;
+      }
+    } else if (c === '?') {
+      regex += '[^/]';
+      i++;
+    } else if (c === '{') {
+      const close = pattern.indexOf('}', i);
+      if (close !== -1) {
+        const alternatives = pattern.slice(i + 1, close).split(',');
+        regex += '(?:' + alternatives.map(a => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
+        i = close + 1;
+      } else {
+        regex += '\\{';
+        i++;
+      }
+    } else if (c === '[') {
+      const close = pattern.indexOf(']', i);
+      if (close !== -1) {
+        regex += pattern.slice(i, close + 1);
+        i = close + 1;
+      } else {
+        regex += '\\[';
+        i++;
+      }
+    } else {
+      regex += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      i++;
+    }
+  }
+  regex += '$';
+
+  try {
+    return new RegExp(regex).test(str);
+  } catch {
+    return false;
+  }
+}
 
 const hookType = process.argv[2]; // "stop" or "PreToolUse"
 
@@ -128,7 +190,7 @@ if (hookType === 'PreToolUse') {
 
     // Check denied paths
     for (const deniedGlob of (policy.denied_paths ?? [])) {
-      if (minimatch(filePath, deniedGlob, { dot: true })) {
+      if (simpleMatch(deniedGlob, filePath)) {
         deny(`File ${filePath} matches denied path: ${deniedGlob}`);
       }
     }
@@ -144,7 +206,7 @@ if (hookType === 'PreToolUse') {
     // Check allowed paths (empty = everything allowed)
     const allowedPaths = policy.allowed_paths ?? [];
     if (allowedPaths.length > 0) {
-      const isAllowed = allowedPaths.some(glob => minimatch(filePath, glob, { dot: true }));
+      const isAllowed = allowedPaths.some(glob => simpleMatch(glob, filePath));
       if (!isAllowed) {
         deny(`File ${filePath} is outside allowed paths: ${allowedPaths.join(', ')}`);
       }

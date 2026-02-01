@@ -1,6 +1,6 @@
 {
   "name": "@blockspool/cli",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "BlockSpool CLI - Continuous codebase improvement tool",
   "author": "BlockSpool",
   "homepage": "https://blockspool.com",

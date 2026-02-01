@@ -557,6 +557,8 @@ export async function runAutoMode(options: {
     process.exit(1);
   }
 
+  const config = loadConfig(repoRoot);
+
   const DEEP_SCAN_INTERVAL = 5;
   let deepFormula: import('./formulas.js').Formula | null = null;
   let docsAuditFormula: import('./formulas.js').Formula | null = null;
@@ -678,7 +680,6 @@ export async function runAutoMode(options: {
     console.log(chalk.yellow(`⚠ ${warning}`));
   }
 
-  const config = loadConfig(repoRoot);
   const adapter = await getAdapter(repoRoot);
 
   // Determine guidelines backend based on execution/scout backend

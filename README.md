@@ -116,6 +116,8 @@ Final Summary
 | **Formulas** | Repeatable recipes: `--formula security-audit`, `--formula test-coverage` |
 | **Deep Mode** | Principal-engineer-level architectural review (`--deep`) |
 | **Impact Scoring** | Proposals ranked by `impact x confidence`, not confidence alone |
+| **Quality Gating** | Minimum impact score filter (default: 3) rejects low-value lint/cleanup proposals |
+| **Project Detection** | Auto-detects test runner (vitest, jest, pytest, cargo test, go test, rspec, etc.), framework, linter, language, and monorepo tool — ensures correct CLI syntax in prompts |
 | **Spindle** | Loop detection prevents runaway agents |
 | **Guidelines Context** | Loads CLAUDE.md (Claude) or AGENTS.md (Codex) into every prompt; auto-creates baseline if missing |
 
@@ -245,9 +247,9 @@ The BlockSpool plugin runs inside Claude Code sessions:
 ```
 
 The plugin uses Claude Code's own auth — no API key needed. It includes:
-- **Parallel execution** — spawns Task subagents per ticket in isolated worktrees (default: 2, max: 5)
-- **Project detection** — auto-detects test runner, framework, linter, and language for correct CLI syntax
-- **Quality gating** — minimum impact score filter rejects low-value lint/cleanup proposals
+- **Parallel execution** — spawns Task subagents per ticket in isolated worktrees (default: 2, max: 5). Each subagent gets a self-contained inline prompt — no MCP access needed.
+- **Project detection** — auto-detects test runner, framework, linter, and language for correct CLI syntax (supports Node, Python, Rust, Go, Ruby, Elixir, Java, C#, PHP, Swift)
+- **Quality gating** — minimum impact score filter (default: 3, configurable via `min_impact_score`) rejects low-value lint/cleanup proposals
 - **Stop hook** — prevents Claude from exiting mid-session
 - **PreToolUse hook** — enforces file scope per ticket (worktree-aware in parallel mode)
 - **MCP tools** — session management, scouting, execution, git, per-ticket advance
@@ -391,7 +393,9 @@ Optional `.blockspool/config.json`:
     "pullPolicy": "halt",
     "guidelinesRefreshCycles": 10,
     "autoCreateGuidelines": true,
-    "guidelinesPath": null
+    "guidelinesPath": null,
+    "minImpactScore": 3,
+    "pluginParallel": 2
   },
   "retention": {
     "maxRuns": 50,
@@ -415,6 +419,8 @@ Optional `.blockspool/config.json`:
 | `guidelinesRefreshCycles` | `10` | Re-read guidelines file every N cycles during long runs (0 = disabled) |
 | `autoCreateGuidelines` | `true` | Auto-create baseline AGENTS.md/CLAUDE.md if none exists (set `false` to disable) |
 | `guidelinesPath` | `null` | Custom path to guidelines file relative to repo root (e.g. `"docs/CONVENTIONS.md"`). Set to `false` to disable guidelines entirely. `null` = default search. |
+| `minImpactScore` | `3` | Minimum impact score (1-10) for proposals. Filters out low-value lint/cleanup. |
+| `pluginParallel` | `2` | Number of parallel tickets in plugin mode (max: 5). Set to 1 for sequential. |
 
 ---
 

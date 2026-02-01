@@ -242,6 +242,8 @@ export interface ParallelTicketInfo {
   title: string;
   description: string;
   constraints: AdvanceConstraints;
+  /** Self-contained prompt for a Task subagent — no MCP tools needed */
+  inline_prompt: string;
 }
 
 export interface AdvanceResponse {

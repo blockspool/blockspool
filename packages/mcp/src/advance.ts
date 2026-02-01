@@ -255,15 +255,65 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
           required_commands: ticket.verificationCommands ?? [],
           plan_required: policy.plan_required,
         },
+        inline_prompt: '', // filled below
       });
     }
 
     run.setPhase('PARALLEL_EXECUTE');
+
+    // Build inline prompts for each ticket — subagents are self-contained
+    const guidelines = loadGuidelines(ctx.project.rootPath);
+    const guidelinesBlock = guidelines ? formatGuidelinesForPrompt(guidelines) + '\n\n' : '';
+    const projectMeta = detectProjectMetadata(ctx.project.rootPath);
+    const metadataBlock = formatMetadataForPrompt(projectMeta) + '\n\n';
+
+    for (const pt of parallelTickets) {
+      const ticket = readyTickets.find(t => t.id === pt.ticket_id)!;
+      pt.inline_prompt = buildInlineTicketPrompt(
+        ticket, pt.constraints, guidelinesBlock, metadataBlock, s.draft_prs,
+      );
+    }
+
+    // Build orchestration prompt for the main agent
+    const ticketList = parallelTickets.map((t, i) =>
+      `${i + 1}. **${t.title}** (ID: \`${t.ticket_id}\`)`
+    ).join('\n');
+
+    const orchestrationPrompt = [
+      `# Parallel Execution — ${parallelTickets.length} tickets`,
+      '',
+      ticketList,
+      '',
+      '## Instructions',
+      '',
+      'Use the **Task tool** to spawn one subagent per ticket. Send ALL Task calls in a **single message** for concurrency.',
+      '',
+      'For each ticket in `parallel_tickets`:',
+      '```',
+      'Task({',
+      '  subagent_type: "general-purpose",',
+      '  description: "Ticket: <title>",',
+      '  prompt: parallel_tickets[i].inline_prompt',
+      '})',
+      '```',
+      '',
+      'The `inline_prompt` field contains everything the subagent needs — no MCP tools required.',
+      'Subagents will edit code, run tests, commit, push, and create PRs independently.',
+      '',
+      '## After All Subagents Return',
+      '',
+      'For each subagent result, call `blockspool_ingest_ticket_event` to record the outcome:',
+      '- Success: `type: "PR_CREATED"`, `payload: { ticket_id, url, branch }`',
+      '- Failure: `type: "TICKET_RESULT"`, `payload: { ticket_id, status: "failed", reason: "..." }`',
+      '',
+      'Then call `blockspool_advance` to continue.',
+    ].join('\n');
+
     return {
       next_action: 'PARALLEL_EXECUTE',
       phase: 'PARALLEL_EXECUTE',
-      prompt: null,
-      reason: `Dispatching ${readyTickets.length} tickets for parallel execution`,
+      prompt: orchestrationPrompt,
+      reason: `Dispatching ${parallelTickets.length} tickets for parallel execution`,
       constraints: emptyConstraints(),
       digest: run.buildDigest(),
       parallel_tickets: parallelTickets,
@@ -765,6 +815,101 @@ function buildQaPrompt(ticket: { title: string; verificationCommands: string[] }
     '`{ "command": "...", "success": true/false, "output": "stdout+stderr" }`',
     '',
     'After all commands, call `blockspool_ingest_event` with type `QA_PASSED` if all pass, or `QA_FAILED` with failure details.',
+  ].join('\n');
+}
+
+function buildInlineTicketPrompt(
+  ticket: { id: string; title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[] },
+  constraints: AdvanceConstraints,
+  guidelinesBlock: string,
+  metadataBlock: string,
+  draftPr: boolean,
+): string {
+  const slug = ticket.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+  const branch = `blockspool/${ticket.id}/${slug}`;
+  const worktree = `.blockspool/worktrees/${ticket.id}`;
+
+  const verifyBlock = constraints.required_commands.length > 0
+    ? constraints.required_commands.map(c => `\`\`\`bash\n${c}\n\`\`\``).join('\n')
+    : '```bash\nnpm test\n```';
+
+  return [
+    `# BlockSpool Ticket: ${ticket.title}`,
+    '',
+    guidelinesBlock,
+    metadataBlock,
+    ticket.description ?? '',
+    '',
+    '## Constraints',
+    '',
+    `- **Allowed paths:** ${constraints.allowed_paths.length > 0 ? constraints.allowed_paths.join(', ') : 'any'}`,
+    `- **Denied paths:** ${constraints.denied_paths.length > 0 ? constraints.denied_paths.join(', ') : 'none'}`,
+    `- **Max files:** ${constraints.max_files || 'unlimited'}`,
+    `- **Max lines:** ${constraints.max_lines || 'unlimited'}`,
+    '',
+    '## Step 1 — Set up worktree',
+    '',
+    '```bash',
+    `git worktree add ${worktree} -b ${branch}`,
+    '```',
+    '',
+    `All work MUST happen inside \`${worktree}/\`. Do NOT modify files in the main working tree.`,
+    '',
+    '## Step 2 — Implement the change',
+    '',
+    '- Read the relevant files first to understand the current state.',
+    '- Make minimal, focused changes that match the ticket description.',
+    '- Only modify files within the allowed paths.',
+    '- Follow any project guidelines provided above.',
+    '',
+    '## Step 3 — Verify',
+    '',
+    'Run verification commands inside the worktree:',
+    '',
+    '```bash',
+    `cd ${worktree}`,
+    '```',
+    '',
+    verifyBlock,
+    '',
+    'If tests fail, fix the issues and re-run. Do not skip verification.',
+    '',
+    '## Step 4 — Commit and push',
+    '',
+    '```bash',
+    `cd ${worktree}`,
+    'git add -A',
+    `git commit -m "${ticket.title}"`,
+    `git push -u origin ${branch}`,
+    '```',
+    '',
+    '## Step 5 — Create PR',
+    '',
+    `Create a ${draftPr ? 'draft ' : ''}pull request:`,
+    '',
+    '```bash',
+    `cd ${worktree}`,
+    `gh pr create --title "${ticket.title}" ${draftPr ? '--draft ' : ''}--body "$(cat <<'EOF'`,
+    ticket.description?.slice(0, 500) ?? ticket.title,
+    '',
+    'Generated by BlockSpool',
+    `EOF`,
+    `)"`,
+    '```',
+    '',
+    '## Output',
+    '',
+    'When done, output a summary in this exact format:',
+    '',
+    '```',
+    `TICKET_ID: ${ticket.id}`,
+    'STATUS: success | failed',
+    'PR_URL: <url or "none">',
+    `BRANCH: ${branch}`,
+    'SUMMARY: <one line summary of what was done>',
+    '```',
+    '',
+    'If anything goes wrong and you cannot complete the ticket, output STATUS: failed with a reason.',
   ].join('\n');
 }
 

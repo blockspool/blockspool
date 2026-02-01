@@ -76,95 +76,50 @@ TaskUpdate({ taskId: "<id>", status: "completed" })
 
 When advance returns `next_action: "PARALLEL_EXECUTE"`, spawn one subagent per ticket using the **Task tool**.
 
+Each ticket in `parallel_tickets` has an `inline_prompt` field — a complete, self-contained prompt that includes guidelines, project metadata, constraints, worktree setup, implementation steps, QA verification, and PR creation. Subagents do **NOT** need MCP tools — they only use Bash, Read, Edit, Write, Glob, and Grep.
+
 ### Why `general-purpose` (not `Bash`)
 
-Subagents need MCP tool access (`blockspool_advance_ticket`, `blockspool_ingest_ticket_event`) plus file editing tools (Read, Edit, Write, Glob, Grep) plus Bash for git/test commands. Only `general-purpose` subagents have access to all of these. `Bash` subagents only have the Bash tool.
+Subagents need file editing tools (Read, Edit, Write, Glob, Grep) plus Bash for git/test commands. Only `general-purpose` subagents have access to all of these. `Bash` subagents only have the Bash tool.
 
 ### Launching — Single Message, All At Once
 
-You **MUST** send all Task tool calls in a **single message** so they run concurrently. Example with 2 tickets:
+You **MUST** send all Task tool calls in a **single message** so they run concurrently:
 
 ```
-// In ONE message, call Task twice:
-Task({ subagent_type: "general-purpose", description: "Execute ticket: Fix auth bug", prompt: "..." })
-Task({ subagent_type: "general-purpose", description: "Execute ticket: Add tests", prompt: "..." })
+// In ONE message, call Task for each ticket in parallel_tickets:
+Task({ subagent_type: "general-purpose", description: "Ticket: <title>", prompt: parallel_tickets[0].inline_prompt })
+Task({ subagent_type: "general-purpose", description: "Ticket: <title>", prompt: parallel_tickets[1].inline_prompt })
 ```
 
 If you send them in separate messages, they run sequentially — defeating the purpose.
 
+The `inline_prompt` field contains everything the subagent needs. Use it directly as the `prompt` parameter — do not modify it.
+
 ### Background Execution (Optional)
 
-For long-running tickets (complex changes, multi-file refactors), you can use `run_in_background: true`:
+For long-running tickets, use `run_in_background: true`:
 
 ```
 Task({
   subagent_type: "general-purpose",
-  description: "Execute ticket: <title>",
+  description: "Ticket: <title>",
   run_in_background: true,
-  prompt: "..."
+  prompt: parallel_tickets[i].inline_prompt
 })
 ```
 
-This returns an `output_file` path immediately. Use `Read` to check progress, or wait for the background task notification. This keeps you responsive while tickets execute.
-
-For short sessions (1 cycle, few tickets), foreground is simpler — just wait for all to return.
-
-### Subagent Prompt Template
-
-For each ticket in `parallel_tickets`, fill in this template as the `prompt` parameter:
-
-```
-You are executing a BlockSpool ticket in an isolated git worktree.
-
-**Ticket ID:** {ticket_id}
-**Title:** {title}
-**Description:** {description}
-
-**Constraints:**
-- Allowed paths: {constraints.allowed_paths}
-- Denied paths: {constraints.denied_paths}
-- Max files: {constraints.max_files}
-- Max lines: {constraints.max_lines}
-- Verification commands: {constraints.required_commands}
-
-## Setup
-
-1. Create the worktree if it doesn't exist:
-   ```bash
-   git worktree add .blockspool/worktrees/{ticket_id} -b blockspool/{ticket_id}/{slug}
-   ```
-2. All work MUST happen inside `.blockspool/worktrees/{ticket_id}`
-
-## Execution Loop
-
-Repeat until done:
-
-1. Call `blockspool_advance_ticket` with `ticket_id: "{ticket_id}"`
-2. Read the response:
-   - `action: "PROMPT"` → Execute the prompt (read files, edit code, run tests, create PR)
-   - `action: "DONE"` → Ticket complete, stop
-   - `action: "FAILED"` → Ticket failed, stop
-3. After executing the prompt, report results via `blockspool_ingest_ticket_event`:
-   - For plans: `type: "PLAN_SUBMITTED"`, `payload: { ticket_id, files_to_touch, estimated_lines, risk_level, ... }`
-   - For execution: `type: "TICKET_RESULT"`, `payload: { status: "done", changed_files, lines_added, lines_removed, summary }`
-   - For QA commands: `type: "QA_COMMAND_RESULT"`, `payload: { command, success, output }`
-   - For QA summary: `type: "QA_PASSED"` or `type: "QA_FAILED"`, `payload: { ... }`
-   - For PR: `type: "PR_CREATED"`, `payload: { url, branch }`
-4. Go back to step 1
-
-## Important
-
-- Stay inside the worktree directory for all file operations
-- Follow the constraints strictly — the scope policy hook will block out-of-scope writes
-- Do NOT modify files in the main working tree — only in your worktree
-- Use the exact test runner syntax from the verification commands (do not guess CLI flags)
-```
+This returns an `output_file` path immediately. Use `Read` to check progress. For short sessions, foreground is simpler.
 
 ### After All Subagents Complete
 
 1. Wait for ALL Task tool results to return (or read background output files)
-2. Update task tracking: mark each ticket task as completed
-3. Call `blockspool_advance` to continue (next batch or next scout cycle)
+2. Parse each subagent's output for the result block (TICKET_ID, STATUS, PR_URL, BRANCH, SUMMARY)
+3. For each ticket, call `blockspool_ingest_ticket_event` to record the outcome:
+   - Success: `type: "PR_CREATED"`, `payload: { ticket_id, url: "<pr-url>", branch: "<branch>" }`
+   - Failure: `type: "TICKET_RESULT"`, `payload: { ticket_id, status: "failed", reason: "..." }`
+4. Update task tracking: mark each ticket task as completed
+5. Call `blockspool_advance` to continue (next batch or next scout cycle)
 
 ### Sequential Fallback
 

@@ -16,7 +16,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "blockspool-mcp": "./dist/index.js"
+    "blockspool-mcp": "dist/index.js"
   },
   "exports": {
     ".": {
@@ -39,7 +39,7 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "tsc"
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "blockspool",

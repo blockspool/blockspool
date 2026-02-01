@@ -11,15 +11,11 @@ BlockSpool scouts your codebase for improvements, executes them in parallel, and
 ### Inside Claude Code (recommended)
 
 ```bash
-# Add the marketplace and install the plugin
-claude plugin marketplace add blockspool/blockspool
-claude plugin install blockspool@blockspool
+# Install the plugin (inside any Claude Code session)
+/plugin marketplace add blockspool/blockspool
 
-# Then inside any Claude Code session:
+# Then run:
 /blockspool:run
-
-# Update to the latest version:
-claude plugin update blockspool@blockspool
 ```
 
 The plugin uses your Claude Code subscription — no API key needed. It scouts, executes, creates PRs, and prevents Claude from exiting until the session is done.

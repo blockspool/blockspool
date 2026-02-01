@@ -2,6 +2,7 @@
  * Solo mode continuous execution
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import chalk from 'chalk';
 import { spawnSync } from 'node:child_process';
@@ -660,9 +661,22 @@ export async function runAutoMode(options: {
   const statusLines = statusResult.stdout?.toString().trim().split('\n').filter(Boolean) || [];
   const modifiedFiles = statusLines.filter(line => !line.startsWith('??'));
   if (modifiedFiles.length > 0 && !options.dryRun) {
-    console.error(chalk.red('✗ Working tree has uncommitted changes'));
-    console.error(chalk.gray('  Commit or stash your changes first'));
-    process.exit(1);
+    // Auto-commit .gitignore if it's the only change (from blockspool init)
+    const onlyGitignore = modifiedFiles.length === 1 &&
+      modifiedFiles[0].trim().endsWith('.gitignore');
+    if (onlyGitignore) {
+      const gitignorePath = path.join(repoRoot, '.gitignore');
+      const content = fs.readFileSync(gitignorePath, 'utf-8');
+      if (content.includes('.blockspool')) {
+        spawnSync('git', ['add', '.gitignore'], { cwd: repoRoot });
+        spawnSync('git', ['commit', '-m', 'chore: add .blockspool to .gitignore'], { cwd: repoRoot });
+        console.log(chalk.gray('  Auto-committed .gitignore update'));
+      }
+    } else {
+      console.error(chalk.red('✗ Working tree has uncommitted changes'));
+      console.error(chalk.gray('  Commit or stash your changes first'));
+      process.exit(1);
+    }
   }
 
   if (!isInitialized(repoRoot)) {

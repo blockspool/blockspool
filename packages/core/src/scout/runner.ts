@@ -190,6 +190,7 @@ export class CodexScoutBackend implements ScoutBackend {
     const schemaPath = join(tmpDir, 'schema.json');
 
     // Write JSON schema so Codex returns structured output
+    // OpenAI requires additionalProperties: false on every object
     writeFileSync(schemaPath, JSON.stringify({
       type: 'object',
       properties: {
@@ -210,11 +211,14 @@ export class CodexScoutBackend implements ScoutBackend {
               rationale: { type: 'string' },
               estimated_complexity: { type: 'string' },
             },
-            required: ['category', 'title', 'description', 'confidence', 'impact_score', 'files'],
+            required: ['category', 'title', 'description', 'confidence', 'impact_score', 'files',
+              'acceptance_criteria', 'verification_commands', 'allowed_paths', 'rationale', 'estimated_complexity'],
+            additionalProperties: false,
           },
         },
       },
       required: ['proposals'],
+      additionalProperties: false,
     }));
 
     try {

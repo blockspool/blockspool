@@ -188,7 +188,7 @@ function normalizeProposal(
     }
 
     // Validate category
-    const validCategories: ProposalCategory[] = ['refactor', 'docs', 'test', 'perf', 'security'];
+    const validCategories: ProposalCategory[] = ['refactor', 'docs', 'test', 'perf', 'security', 'fix', 'cleanup', 'types'];
     if (!validCategories.includes(proposal.category)) {
       return null;
     }

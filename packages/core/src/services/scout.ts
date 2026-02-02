@@ -19,6 +19,7 @@ import {
   type ScoutResult as ScanResult,
   type TicketProposal,
   type ScoutBackend,
+  type ProposalCategory,
 } from '../scout/index.js';
 
 /**
@@ -66,7 +67,7 @@ export interface ScoutRepoOptions {
   /** Glob pattern for files */
   scope?: string;
   /** Filter to categories */
-  types?: Array<'refactor' | 'docs' | 'test' | 'perf' | 'security'>;
+  types?: ProposalCategory[];
   /** Maximum proposals */
   maxProposals?: number;
   /** Minimum confidence threshold */

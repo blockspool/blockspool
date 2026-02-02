@@ -394,6 +394,9 @@ export function displayProposal(proposal: TicketProposal, index: number): void {
     test: chalk.green,
     perf: chalk.magenta,
     security: chalk.red,
+    fix: chalk.redBright,
+    cleanup: chalk.gray,
+    types: chalk.blue,
   };
 
   const color = categoryColors[proposal.category] || chalk.white;

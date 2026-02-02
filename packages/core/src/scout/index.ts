@@ -284,7 +284,7 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
     maxProposals = 10,
     minConfidence = 50,
     projectPath = process.cwd(),
-    timeoutMs = 120000,
+    timeoutMs: userTimeoutMs,
     signal,
     onProgress,
     recentlyCompletedTitles,
@@ -295,6 +295,9 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
   } = options;
 
   const scoutBackend: ScoutBackend = backend ?? new ClaudeScoutBackend();
+  // Codex needs more time per batch since batches are larger with token-based packing
+  const defaultTimeout = scoutBackend.name === 'codex' ? 300000 : 120000;
+  const timeoutMs = userTimeoutMs ?? defaultTimeout;
 
   const startTime = Date.now();
   const errors: string[] = [];

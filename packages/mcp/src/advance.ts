@@ -889,7 +889,7 @@ function buildScoutPrompt(
     '',
     '- Any proposal that creates new test files (.test.ts, .spec.ts) or adds test coverage MUST use category "test" — NEVER label test-writing as "fix", "refactor", or any other category.',
     '- If "test" is not in the categories list above, do NOT propose writing new tests. Focus on the allowed categories only.',
-    '- If "test" IS allowed, generate at most 1 test proposal per batch. The majority must be non-test.',
+    '- If "test" IS allowed, you may generate test proposals freely.',
     '',
   ];
 

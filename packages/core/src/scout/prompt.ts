@@ -70,7 +70,7 @@ ${categoryFilter}
 - **perf**: Performance optimizations, algorithmic improvements
 - **security**: Security vulnerabilities, input validation, auth issues
 - **docs**: Missing/outdated documentation, comments, README updates
-- **test**: Missing tests, edge cases, coverage gaps (LIMIT: max 1 per batch)
+- **test**: Missing tests, edge cases, coverage gaps
 
 ## Requirements
 
@@ -88,16 +88,10 @@ ${categoryFilter}
 
 3. Generate at most ${maxProposals} proposals, prioritized by impact.
 
-4. CRITICAL: Category diversity is MANDATORY. You MUST NOT generate more than
-   1 test proposal per batch. The majority of proposals MUST be refactor, perf,
-   security, fix, or cleanup. If you can only think of test improvements, look
-   harder for refactoring opportunities, dead code, performance issues, or
-   security concerns. A batch of all-test proposals will be rejected.
-
-5. CATEGORY HONESTY: Any proposal that creates new test files (.test.ts, .spec.ts)
+4. CATEGORY HONESTY: Any proposal that creates new test files (.test.ts, .spec.ts)
    or whose primary goal is adding test coverage MUST use category "test" — never
    disguise test-writing as "fix", "refactor", or any other category. Mislabeled
-   proposals will be reclassified and filtered.
+   proposals will be automatically reclassified and may be filtered out.
 ${protectedNote}${strategicFocus}${recentContext}
 
 ## Files to Analyze

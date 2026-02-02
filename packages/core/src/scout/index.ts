@@ -295,8 +295,8 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
   } = options;
 
   const scoutBackend: ScoutBackend = backend ?? new ClaudeScoutBackend();
-  // Codex needs more time per batch since batches are larger with token-based packing
-  const defaultTimeout = scoutBackend.name === 'codex' ? 300000 : 120000;
+  // Codex needs more time per batch: cold start + large token-packed batches
+  const defaultTimeout = scoutBackend.name === 'codex' ? 600000 : 120000;
   const timeoutMs = userTimeoutMs ?? defaultTimeout;
 
   const startTime = Date.now();

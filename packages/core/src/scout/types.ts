@@ -82,6 +82,8 @@ export interface ScoutOptions {
   maxFiles?: number;
   /** Max parallel scout batches (default: auto — 4 for codex, 3 for claude) */
   scoutConcurrency?: number;
+  /** Module groups for dependency-aware batching. When provided, files are grouped by module instead of arbitrary token packing. */
+  moduleGroups?: import('./scanner.js').ModuleGroup[];
 }
 
 /**

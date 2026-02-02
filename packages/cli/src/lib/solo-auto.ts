@@ -25,7 +25,7 @@ import {
   formatProgress,
 } from './solo-config.js';
 import { runPreflightChecks } from './solo-utils.js';
-import { recordCycle, isDocsAuditDue, recordDocsAudit, deferProposal, popDeferredForScope } from './run-state.js';
+import { recordCycle, readRunState, isDocsAuditDue, recordDocsAudit, deferProposal, popDeferredForScope } from './run-state.js';
 import { soloRunTicket, runClaude, type RunTicketResult, type ExecutionBackend, CodexExecutionBackend } from './solo-ticket.js';
 import {
   createMilestoneBranch,
@@ -46,6 +46,11 @@ import {
   buildCodebaseIndex, refreshCodebaseIndex, hasStructuralChanges,
   formatIndexForPrompt, type CodebaseIndex,
 } from './codebase-index.js';
+import {
+  loadOrBuildSectors, refreshSectors, pickNextSector, recordScanResult,
+  saveSectors,
+  type SectorState,
+} from './sectors.js';
 import {
   buildProposalReviewPrompt, parseReviewedProposals, applyReviewToProposals,
 } from './proposal-review.js';
@@ -466,7 +471,6 @@ export async function runAutoMode(options: {
   const milestoneMode = batchSize !== undefined && batchSize > 0;
 
   const userScope = options.scope || activeFormula?.scope;
-  let scopeIndex = 0;
 
   const git = createGitService();
   const repoRoot = await git.findRepoRoot(process.cwd());
@@ -712,25 +716,36 @@ export async function runAutoMode(options: {
   let totalMilestonePrs = 0;
   const milestoneTicketSummaries: string[] = [];
 
+  // Sector-based scanning state
+  let sectorState: SectorState | null = null;
+  let currentSectorId: string | null = null;
+  let currentSectorCycle: number = 0;
+
+  if (codebaseIndex) {
+    try {
+      sectorState = loadOrBuildSectors(
+        repoRoot,
+        codebaseIndex.modules,
+      );
+      console.log(chalk.gray(`  Sectors loaded: ${sectorState.sectors.length} sector(s)`));
+    } catch {
+      // Non-fatal — fall back to broad scan
+    }
+  }
+
   const getNextScope = (): string => {
     if (userScope) return userScope;
-    // First cycle: broad scan. Subsequent cycles: dive into specific modules from the codebase index.
-    if (scopeIndex === 0) {
-      scopeIndex++;
-      return '**';
+    if (sectorState) {
+      const rs = readRunState(repoRoot);
+      currentSectorCycle = rs.totalCycles;
+      const pick = pickNextSector(sectorState, currentSectorCycle);
+      if (pick) {
+        currentSectorId = pick.sector.path;
+        return pick.scope;
+      }
     }
-    // Use codebase index modules sorted by file count (largest first) for deeper scans
-    const modulePaths = codebaseIndex?.modules
-      ?.filter(m => m.purpose !== 'tests' && m.purpose !== 'config')
-      ?.sort((a, b) => b.file_count - a.file_count)
-      ?.map(m => m.path + '/**') ?? [];
-    if (modulePaths.length > 0) {
-      const scope = modulePaths[(scopeIndex - 1) % modulePaths.length];
-      scopeIndex++;
-      return scope;
-    }
-    // Fallback: re-scan broad
-    scopeIndex++;
+    // Fallback: broad scan
+    currentSectorId = null;
     return '**';
   };
 
@@ -1028,6 +1043,10 @@ export async function runAutoMode(options: {
           timeoutMs: scoutTimeoutMs,
           maxFiles: maxScoutFiles,
           scoutConcurrency,
+          moduleGroups: codebaseIndex?.modules.map(m => ({
+            path: m.path,
+            dependencies: codebaseIndex!.dependency_edges[m.path],
+          })),
           onProgress: (progress: ScoutProgress) => {
             // Switch to multi-line display when batch statuses arrive
             if (progress.batchStatuses && progress.totalBatches && progress.totalBatches > 1) {
@@ -1055,6 +1074,13 @@ export async function runAutoMode(options: {
       if (batchProgressRef.current) {
         const count = scoutResult.proposals.length;
         batchProgressRef.current.stop(chalk.green(`Scouting complete — ${count} proposal${count !== 1 ? 's' : ''} found`));
+      }
+
+      // Record scan immediately so sectors cool down even with 0 proposals.
+      // Use currentSectorCycle (captured at pick time) so pick and record are consistent.
+      if (sectorState && currentSectorId) {
+        recordScanResult(sectorState, currentSectorId, currentSectorCycle, scoutResult.proposals.length);
+        saveSectors(repoRoot, sectorState);
       }
 
       const proposals = scoutResult.proposals;
@@ -1602,10 +1628,12 @@ export async function runAutoMode(options: {
       currentlyProcessing = false;
 
       // Record cycle completion for cross-session tracking
-      recordCycle(repoRoot);
+      const updatedRunState = recordCycle(repoRoot);
       if (isDocsAuditCycle) {
         recordDocsAudit(repoRoot);
       }
+
+      // Sector scan already recorded right after scout returns (before 0-proposal branches)
 
       // Periodic learnings consolidation
       if (cycleCount % 10 === 0 && autoConf.learningsEnabled) {
@@ -1619,6 +1647,17 @@ export async function runAutoMode(options: {
           codebaseIndex = refreshCodebaseIndex(codebaseIndex, repoRoot, excludeDirs);
           if (options.verbose) {
             console.log(chalk.gray(`  Codebase index refreshed: ${codebaseIndex.modules.length} modules`));
+          }
+          // Rebuild sectors from updated index, preserving scan history
+          if (sectorState) {
+            sectorState = refreshSectors(
+              repoRoot,
+              sectorState,
+              codebaseIndex.modules,
+            );
+            if (options.verbose) {
+              console.log(chalk.gray(`  Sectors refreshed: ${sectorState.sectors.length} sector(s)`));
+            }
           }
         } catch {
           // Non-fatal

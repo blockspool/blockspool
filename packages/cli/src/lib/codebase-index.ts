@@ -40,7 +40,7 @@ export interface LargeFileEntry {
 // Source file extensions
 // ---------------------------------------------------------------------------
 
-const SOURCE_EXTENSIONS = new Set([
+export const SOURCE_EXTENSIONS = new Set([
   '.ts', '.js', '.py', '.rs', '.go', '.rb', '.java', '.cs', '.ex', '.php', '.swift',
 ]);
 

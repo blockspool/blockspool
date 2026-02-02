@@ -94,6 +94,8 @@ export interface ScoutRepoOptions {
   maxFiles?: number;
   /** Max parallel scout batches (default: auto — 4 for codex, 3 for claude) */
   scoutConcurrency?: number;
+  /** Module groups for dependency-aware batching */
+  moduleGroups?: import('../scout/scanner.js').ModuleGroup[];
 }
 
 /**
@@ -222,6 +224,7 @@ export async function scoutRepo(
       batchTokenBudget: opts.batchTokenBudget,
       maxFiles: opts.maxFiles,
       scoutConcurrency: opts.scoutConcurrency,
+      moduleGroups: opts.moduleGroups,
       onProgress: (p) => {
         report({
           phase: 'analyzing',

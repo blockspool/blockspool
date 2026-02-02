@@ -7,7 +7,7 @@
 import { nanoid } from '../utils/id.js';
 import { buildScoutPrompt } from './prompt.js';
 import { runClaude, parseClaudeOutput, ClaudeScoutBackend, type ScoutBackend } from './runner.js';
-import { scanFiles, batchFiles, batchFilesByTokens, type ScannedFile } from './scanner.js';
+import { scanFiles, batchFiles, batchFilesByTokens, batchFilesByModule, type ScannedFile } from './scanner.js';
 import type {
   ScoutOptions,
   ScoutResult,
@@ -22,7 +22,7 @@ export { runClaude, parseClaudeOutput, ClaudeScoutBackend, CodexScoutBackend, Co
 export { KimiScoutBackend } from './kimi-runner.js';
 export { OpenAILocalScoutBackend } from './openai-local-runner.js';
 export { McpBatchServer } from './mcp-batch-server.js';
-export { scanFiles, batchFiles, batchFilesByTokens, estimateTokens, type ScannedFile } from './scanner.js';
+export { scanFiles, batchFiles, batchFilesByTokens, batchFilesByModule, estimateTokens, type ScannedFile, type ModuleGroup } from './scanner.js';
 
 /**
  * Default verification commands by category
@@ -353,7 +353,9 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
     const backendName = scoutBackend.name;
     const defaultBudget = backendName === 'codex' ? 20000 : 10000;
     const budget = options.batchTokenBudget ?? defaultBudget;
-    const batches = batchFilesByTokens(files, budget);
+    const batches = options.moduleGroups?.length
+      ? batchFilesByModule(files, options.moduleGroups, budget)
+      : batchFilesByTokens(files, budget);
     const maxBatches = Math.min(batches.length, 20); // Cap at 20 batches
 
     // Helper to process a single batch result

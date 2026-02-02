@@ -258,3 +258,139 @@ export function batchFilesByTokens(
   if (current.length > 0) batches.push(current);
   return batches;
 }
+
+/**
+ * Module group definition for dependency-aware batching.
+ */
+export interface ModuleGroup {
+  /** Module directory path (e.g., "src/services") */
+  path: string;
+  /** Paths of modules this one imports from */
+  dependencies?: string[];
+}
+
+/**
+ * Group files into batches by module boundaries, keeping related files together.
+ *
+ * Files are first assigned to their module (by longest matching directory prefix).
+ * Modules + their dependencies are packed into the same batch when they fit the token budget.
+ * Orphan files (not matching any module) are batched together at the end.
+ */
+export function batchFilesByModule(
+  files: ScannedFile[],
+  modules: ModuleGroup[],
+  maxTokensPerBatch: number = 12000,
+): ScannedFile[][] {
+  if (modules.length === 0) {
+    return batchFilesByTokens(files, maxTokensPerBatch);
+  }
+
+  // Sort modules by path length descending so longer prefixes match first
+  const sortedModules = [...modules].sort((a, b) => b.path.length - a.path.length);
+
+  // Assign each file to its module
+  const moduleFiles = new Map<string, ScannedFile[]>();
+  const orphans: ScannedFile[] = [];
+
+  for (const file of files) {
+    const normalized = file.path.replace(/\\/g, '/');
+    let assigned = false;
+    for (const mod of sortedModules) {
+      const modPath = mod.path.replace(/\\/g, '/');
+      if (normalized === modPath || normalized.startsWith(modPath + '/')) {
+        const existing = moduleFiles.get(mod.path) || [];
+        existing.push(file);
+        moduleFiles.set(mod.path, existing);
+        assigned = true;
+        break;
+      }
+    }
+    if (!assigned) {
+      orphans.push(file);
+    }
+  }
+
+  // Build adjacency: modules that should be batched together (via dependencies)
+  const depMap = new Map<string, Set<string>>();
+  for (const mod of modules) {
+    if (!depMap.has(mod.path)) depMap.set(mod.path, new Set());
+    for (const dep of mod.dependencies || []) {
+      // Only link if both modules have files in this scan
+      if (moduleFiles.has(dep)) {
+        depMap.get(mod.path)!.add(dep);
+        if (!depMap.has(dep)) depMap.set(dep, new Set());
+        depMap.get(dep)!.add(mod.path);
+      }
+    }
+  }
+
+  // Group connected modules via union-find
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    if (!parent.has(x)) parent.set(x, x);
+    if (parent.get(x) !== x) parent.set(x, find(parent.get(x)!));
+    return parent.get(x)!;
+  };
+  const union = (a: string, b: string) => {
+    parent.set(find(a), find(b));
+  };
+
+  for (const [mod, deps] of depMap) {
+    for (const dep of deps) {
+      union(mod, dep);
+    }
+  }
+
+  // Collect module clusters
+  const clusters = new Map<string, string[]>();
+  for (const modPath of moduleFiles.keys()) {
+    const root = find(modPath);
+    const existing = clusters.get(root) || [];
+    existing.push(modPath);
+    clusters.set(root, existing);
+  }
+
+  // Build batches: pack each cluster into batches respecting token budget
+  const batches: ScannedFile[][] = [];
+
+  for (const clusterMods of clusters.values()) {
+    // Collect all files from this cluster
+    const clusterFiles: ScannedFile[] = [];
+    for (const mod of clusterMods) {
+      clusterFiles.push(...(moduleFiles.get(mod) || []));
+    }
+
+    // Pack within the cluster using token budget
+    let current: ScannedFile[] = [];
+    let currentTokens = 0;
+
+    for (const file of clusterFiles) {
+      const tokens = estimateTokens(file.content);
+      if (tokens >= maxTokensPerBatch) {
+        if (current.length > 0) {
+          batches.push(current);
+          current = [];
+          currentTokens = 0;
+        }
+        batches.push([file]);
+        continue;
+      }
+      if (currentTokens + tokens > maxTokensPerBatch && current.length > 0) {
+        batches.push(current);
+        current = [];
+        currentTokens = 0;
+      }
+      current.push(file);
+      currentTokens += tokens;
+    }
+    if (current.length > 0) batches.push(current);
+  }
+
+  // Batch orphans
+  if (orphans.length > 0) {
+    const orphanBatches = batchFilesByTokens(orphans, maxTokensPerBatch);
+    batches.push(...orphanBatches);
+  }
+
+  return batches;
+}

@@ -170,7 +170,7 @@ Final Summary
 | **Scope Enforcement** | Each ticket is sandboxed to specific file paths |
 | **Scope Expansion** | Auto-expands for root configs, cross-package, sibling files |
 | **Deduplication** | Title similarity + git branch matching + temporal-decay memory prevents duplicates |
-| **Trust Ladder** | All categories enabled by default; use `--safe` to restrict to refactor, test, docs, types, perf |
+| **Trust Ladder** | refactor, docs, types, perf, security, fix, cleanup by default; `--tests` to include tests; `--safe` to restrict |
 | **Formulas** | Repeatable recipes: `--formula security-audit`, `--formula test-coverage` |
 | **Deep Mode** | Principal-engineer-level architectural review (`--deep`) |
 | **Impact Scoring** | Proposals ranked by `impact x confidence`, not confidence alone |
@@ -428,12 +428,16 @@ BlockSpool uses a trust ladder to control what changes are auto-approved:
 
 | Mode | Categories | Use Case |
 |------|------------|----------|
-| **Default** | refactor, test, docs, types, perf, security, fix, cleanup | All improvements |
-| **Safe** | refactor, test, docs, types, perf | Conservative — use `--safe` |
+| **Default** | refactor, docs, types, perf, security, fix, cleanup | All improvements (no tests) |
+| **--tests** | + test | Opt-in to test proposals |
+| **--safe** | refactor, docs, types, perf | Conservative — no security/fix/cleanup |
 
 ```bash
-# Default (all categories)
+# Default (no test proposals)
 blockspool
+
+# Include test proposals
+blockspool --tests
 
 # Safe mode (restricted)
 blockspool --safe
@@ -594,7 +598,7 @@ Run `blockspool --codex --codex-model <name>`. If your saved model is no longer 
 
 ### Why does it keep generating mostly test proposals?
 
-Earlier versions could produce test-heavy batches. v0.5.26 adds **scout diversification** — the scout prompt limits test proposals to 2 per batch, and `maxTestRatio` (default 0.4) enforces a category balance at the filter layer. Refactors and perf improvements get priority.
+Earlier versions could produce test-heavy batches. v0.5.27 adds **scout diversification** — the scout prompt limits test proposals to 2 per batch, and `maxTestRatio` (default 0.4) enforces a category balance at the filter layer. Refactors and perf improvements get priority.
 
 ### Can I use local models like Qwen, DeepSeek, or Llama?
 
@@ -623,6 +627,6 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>BlockSpool v0.5.26</b><br>
+  <b>BlockSpool v0.5.27</b><br>
   <i>Set it. Forget it. Merge the PRs.</i>
 </p>

@@ -84,8 +84,8 @@ function balanceProposals<T extends { category: string; impact_score?: number | 
     (a, b) => (b.impact_score ?? 5) - (a.impact_score ?? 5),
   );
 
-  // Allow more tests if there aren't enough non-tests to fill the batch
-  const allowedTests = Math.max(maxTests, total - nonTests.length);
+  // Hard-cap tests — even if ALL proposals are tests, keep at most maxTests (min 1)
+  const allowedTests = Math.max(maxTests, 1);
   const keptTests = sortedTests.slice(0, allowedTests);
 
   return [...nonTests, ...keptTests];
@@ -383,6 +383,7 @@ export async function runAutoMode(options: {
   maxPrs?: string;
   minConfidence?: string;
   safe?: boolean;
+  tests?: boolean;
   draft?: boolean;
   yes?: boolean;
   minutes?: string;
@@ -489,16 +490,20 @@ export async function runAutoMode(options: {
     return null;
   };
   const getCycleCategories = (formula: typeof activeFormula) => {
-    const allow = formula?.categories
+    let allow = formula?.categories
       ? formula.categories as string[]
       : options.safe
-        ? ['refactor', 'test', 'docs', 'types', 'perf']
-        : ['refactor', 'test', 'docs', 'types', 'perf', 'security', 'fix', 'cleanup'];
+        ? ['refactor', 'docs', 'types', 'perf']
+        : ['refactor', 'docs', 'types', 'perf', 'security', 'fix', 'cleanup'];
+    // --tests flag opts in to test proposals
+    if (options.tests && !allow.includes('test')) {
+      allow = [...allow, 'test'];
+    }
     const block = formula?.categories
       ? []
       : options.safe
-        ? ['deps', 'auth', 'config', 'migration', 'security', 'fix', 'cleanup']
-        : ['deps', 'auth', 'config', 'migration'];
+        ? ['deps', 'auth', 'config', 'migration', 'security', 'fix', 'cleanup', ...(options.tests ? [] : ['test'])]
+        : ['deps', 'auth', 'config', 'migration', ...(options.tests ? [] : ['test'])];
     return { allow, block };
   };
 

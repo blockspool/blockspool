@@ -108,7 +108,7 @@ export interface AutoConfig {
  * Default auto config - conservative "safe demo" settings
  */
 export const DEFAULT_AUTO_CONFIG: AutoConfig = {
-  allowCategories: ['refactor', 'test', 'docs', 'types', 'perf', 'security', 'fix', 'cleanup'],
+  allowCategories: ['refactor', 'docs', 'types', 'perf', 'security', 'fix', 'cleanup'],
   blockCategories: ['deps', 'auth', 'config', 'migration'],
   minConfidence: 55,
   maxPrs: 3,

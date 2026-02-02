@@ -205,7 +205,7 @@ export async function filterAndCreateTickets(
   const maxTests = Math.floor(scoredProposals.length * MAX_TEST_RATIO);
   const accepted = testProposals.length <= maxTests
     ? scoredProposals
-    : [...nonTestProposals, ...testProposals.slice(0, Math.max(maxTests, scoredProposals.length - nonTestProposals.length))];
+    : [...nonTestProposals, ...testProposals.slice(0, Math.max(maxTests, 1))];
 
   // Step 6: Create tickets
   const ticketInputs = accepted.map(p => ({

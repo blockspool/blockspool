@@ -63,16 +63,14 @@ ${categoryFilter}
 
 ## Categories
 
-- **refactor**: Code quality, readability, maintainability improvements including:
-  - DRY violations (duplicate code that should be consolidated)
-  - Dead code removal (unused functions, imports, variables)
-  - Over-engineering (unnecessary abstractions, premature optimization)
-  - Inconsistent patterns (code that doesn't match surrounding conventions)
-  - Bloat cleanup (removing complexity that doesn't add value)
-- **docs**: Missing/outdated documentation, comments, README updates
-- **test**: Missing tests, edge cases, coverage gaps
+- **refactor**: Code quality, readability, maintainability improvements (DRY violations, dead code, over-engineering, inconsistent patterns)
+- **fix**: Bug fixes, incorrect logic, broken edge cases
+- **cleanup**: Dead code removal, unused imports, bloat reduction
+- **types**: Type safety improvements, missing types, type narrowing
 - **perf**: Performance optimizations, algorithmic improvements
 - **security**: Security vulnerabilities, input validation, auth issues
+- **docs**: Missing/outdated documentation, comments, README updates
+- **test**: Missing tests, edge cases, coverage gaps (LIMIT: max 1 per batch)
 
 ## Requirements
 
@@ -90,9 +88,11 @@ ${categoryFilter}
 
 3. Generate at most ${maxProposals} proposals, prioritized by impact.
 
-4. Diversify across categories. Aim for a balanced mix — do not generate
-   more than 2 test proposals per batch. Prioritize refactors and performance
-   improvements. Tests should complement code changes, not dominate.
+4. CRITICAL: Category diversity is MANDATORY. You MUST NOT generate more than
+   1 test proposal per batch. The majority of proposals MUST be refactor, perf,
+   security, fix, or cleanup. If you can only think of test improvements, look
+   harder for refactoring opportunities, dead code, performance issues, or
+   security concerns. A batch of all-test proposals will be rejected.
 ${protectedNote}${strategicFocus}${recentContext}
 
 ## Files to Analyze
@@ -106,7 +106,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 {
   "proposals": [
     {
-      "category": "refactor|docs|test|perf|security",
+      "category": "refactor|fix|cleanup|types|perf|security|docs|test",
       "title": "Short actionable title (imperative mood)",
       "description": "What needs to be done and why",
       "acceptance_criteria": ["Criterion 1", "Criterion 2"],

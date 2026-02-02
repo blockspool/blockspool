@@ -324,8 +324,8 @@ describe('DEFAULT_AUTO_CONFIG', () => {
     expect(DEFAULT_AUTO_CONFIG.allowCategories).toContain('refactor');
   });
 
-  it('includes test in allowCategories', () => {
-    expect(DEFAULT_AUTO_CONFIG.allowCategories).toContain('test');
+  it('excludes test from default allowCategories (opt-in via --tests)', () => {
+    expect(DEFAULT_AUTO_CONFIG.allowCategories).not.toContain('test');
   });
 
   it('includes security in allowCategories', () => {

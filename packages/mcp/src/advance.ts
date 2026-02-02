@@ -883,7 +883,13 @@ function buildScoutPrompt(
     '- Proposals must have **real user or developer impact** — not just lint cleanup or style nits.',
     '- Do NOT propose fixes for lint warnings, unused variables, or cosmetic issues unless they cause actual bugs or test failures.',
     '- If project guidelines are provided above, **respect them**. Do NOT propose changes the guidelines explicitly discourage (e.g., "avoid over-engineering", "don\'t change code you didn\'t touch").',
-    '- Focus on: bugs, missing tests, security issues, performance problems, correctness, and meaningful refactors.',
+    '- Focus on: bugs, security issues, performance problems, correctness, and meaningful refactors.',
+    '',
+    '## Category Rules',
+    '',
+    '- Any proposal that creates new test files (.test.ts, .spec.ts) or adds test coverage MUST use category "test" — NEVER label test-writing as "fix", "refactor", or any other category.',
+    '- If "test" is not in the categories list above, do NOT propose writing new tests. Focus on the allowed categories only.',
+    '- If "test" IS allowed, generate at most 1 test proposal per batch. The majority must be non-test.',
     '',
   ];
 

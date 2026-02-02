@@ -1168,9 +1168,7 @@ export async function runAutoMode(options: {
                 original_scope: scope,
                 deferredAt: Date.now(),
               });
-              if (options.verbose) {
-                console.log(chalk.gray(`  Deferred (out of scope): ${p.title}`));
-              }
+              console.log(chalk.gray(`  ✗ Out of scope (${normalizedScope}): ${p.title}`));
               return false;
             }
             return true;
@@ -1189,8 +1187,8 @@ export async function runAutoMode(options: {
         if (dupCheck.isDuplicate) {
           duplicateCount++;
           rejectedDupTitles.push(p.title);
+          console.log(chalk.gray(`  ✗ Duplicate: ${p.title}`));
           if (options.verbose) {
-            console.log(chalk.gray(`  Skipping duplicate: ${p.title}`));
             console.log(chalk.gray(`    Reason: ${dupCheck.reason}`));
           }
         } else {

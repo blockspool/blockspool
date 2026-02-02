@@ -1198,15 +1198,18 @@ export async function runAutoMode(options: {
         }
       }
 
+      let rejectedByCategory = 0;
+      let rejectedByScope = 0;
       const categoryFiltered = proposals.filter((p) => {
         const category = (p.category || 'refactor').toLowerCase();
-        const confidence = p.confidence || 50;
 
         if (blockCategories.some(blocked => category.includes(blocked))) {
+          rejectedByCategory++;
           console.log(chalk.gray(`  ✗ Blocked category (${category}): ${p.title}`));
           return false;
         }
         if (!allowCategories.some(allowed => category.includes(allowed))) {
+          rejectedByCategory++;
           console.log(chalk.gray(`  ✗ Category not allowed (${category}): ${p.title}`));
           return false;
         }
@@ -1222,6 +1225,7 @@ export async function runAutoMode(options: {
               f.startsWith(normalizedScope) || f.startsWith(normalizedScope + '/')
             );
             if (!allInScope) {
+              rejectedByScope++;
               deferProposal(repoRoot, {
                 category: p.category,
                 title: p.title,
@@ -1274,9 +1278,13 @@ export async function runAutoMode(options: {
       approvedProposals.push(...balanced);
 
       if (approvedProposals.length === 0) {
-        const reason = duplicateCount > 0
-          ? `No new proposals (${duplicateCount} duplicates filtered)`
-          : 'No proposals passed trust filter';
+        const parts: string[] = [];
+        if (rejectedByCategory > 0) parts.push(`${rejectedByCategory} blocked by category`);
+        if (rejectedByScope > 0) parts.push(`${rejectedByScope} out of scope`);
+        if (duplicateCount > 0) parts.push(`${duplicateCount} duplicates`);
+        const reason = parts.length > 0
+          ? `No proposals approved (${parts.join(', ')})`
+          : 'No proposals passed filters';
         console.log(chalk.gray(`  ${reason}`));
         scoutedDirs.push(scope);
         if (scoutRetries < MAX_SCOUT_RETRIES) {

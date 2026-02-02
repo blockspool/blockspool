@@ -15,7 +15,7 @@ export type TicketStatus =
   | 'blocked'
   | 'aborted';
 
-export type TicketCategory = 'refactor' | 'docs' | 'test' | 'perf' | 'security';
+export type TicketCategory = 'refactor' | 'docs' | 'test' | 'perf' | 'security' | 'fix' | 'cleanup' | 'types';
 
 export interface Ticket {
   id: string;

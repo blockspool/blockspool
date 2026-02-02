@@ -170,7 +170,7 @@ Final Summary
 | **Scope Enforcement** | Each ticket is sandboxed to specific file paths |
 | **Scope Expansion** | Auto-expands for root configs, cross-package, sibling files |
 | **Deduplication** | Title similarity + git branch matching + temporal-decay memory prevents duplicates |
-| **Trust Ladder** | Safe categories by default (refactor, test, docs, types, perf) |
+| **Trust Ladder** | All categories enabled by default; use `--safe` to restrict to refactor, test, docs, types, perf |
 | **Formulas** | Repeatable recipes: `--formula security-audit`, `--formula test-coverage` |
 | **Deep Mode** | Principal-engineer-level architectural review (`--deep`) |
 | **Impact Scoring** | Proposals ranked by `impact x confidence`, not confidence alone |
@@ -245,8 +245,8 @@ blockspool --codex --cycles 3
 # Dry run (show what would happen)
 blockspool --dry-run
 
-# Include more categories
-blockspool --aggressive
+# Restrict to safe categories only
+blockspool --safe
 
 # Focus on specific improvements
 blockspool --formula security-audit
@@ -428,15 +428,15 @@ BlockSpool uses a trust ladder to control what changes are auto-approved:
 
 | Mode | Categories | Use Case |
 |------|------------|----------|
-| **Default** | refactor, test, docs, types, perf | Safe default |
-| **Aggressive** | + security, fix, cleanup | When you want more |
+| **Default** | refactor, test, docs, types, perf, security, fix, cleanup | All improvements |
+| **Safe** | refactor, test, docs, types, perf | Conservative — use `--safe` |
 
 ```bash
-# Default (safe)
+# Default (all categories)
 blockspool
 
-# Aggressive (more categories)
-blockspool --aggressive
+# Safe mode (restricted)
+blockspool --safe
 ```
 
 ---
@@ -560,7 +560,7 @@ BlockSpool adds:
 - **Milestone batching** (coherent PRs, not 50 tiny ones)
 - **Parallel execution** with conflict-aware scheduling
 - **Deduplication** (won't recreate similar work)
-- **Trust ladder** (safe categories by default)
+- **Trust ladder** (all categories by default, `--safe` to restrict)
 - **Scope enforcement** (sandboxes each ticket to specific paths)
 
 ### Can I use it without an API key?
@@ -589,7 +589,7 @@ Run `blockspool --codex --codex-model <name>`. If your saved model is no longer 
 - All changes are **draft PRs** by default
 - Only touches files in scoped directories
 - Failed tickets are automatically **blocked**, not merged
-- Trust ladder limits to safe categories
+- Trust ladder controls approved categories (all by default, `--safe` to restrict)
 - **QA retry with test fix** — if a refactor breaks tests, BlockSpool retries once by expanding scope to include test files and fixing them (without reverting the refactor)
 
 ### Why does it keep generating mostly test proposals?

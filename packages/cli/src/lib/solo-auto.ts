@@ -382,7 +382,7 @@ export async function runAutoMode(options: {
   scope?: string;
   maxPrs?: string;
   minConfidence?: string;
-  aggressive?: boolean;
+  safe?: boolean;
   draft?: boolean;
   yes?: boolean;
   minutes?: string;
@@ -491,14 +491,14 @@ export async function runAutoMode(options: {
   const getCycleCategories = (formula: typeof activeFormula) => {
     const allow = formula?.categories
       ? formula.categories as string[]
-      : options.aggressive
-        ? ['refactor', 'test', 'docs', 'types', 'perf', 'security']
-        : ['refactor', 'test', 'docs', 'types', 'perf'];
+      : options.safe
+        ? ['refactor', 'test', 'docs', 'types', 'perf']
+        : ['refactor', 'test', 'docs', 'types', 'perf', 'security', 'fix', 'cleanup'];
     const block = formula?.categories
       ? []
-      : options.aggressive
-        ? ['deps', 'migration', 'config']
-        : ['deps', 'migration', 'config', 'security'];
+      : options.safe
+        ? ['deps', 'auth', 'config', 'migration', 'security', 'fix', 'cleanup']
+        : ['deps', 'auth', 'config', 'migration'];
     return { allow, block };
   };
 

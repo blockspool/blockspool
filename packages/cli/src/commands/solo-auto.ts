@@ -37,9 +37,9 @@ The default mode is the full "just run it" experience:
 4. Creates draft PRs for review
 5. Stops after reaching PR limit (default: 3)
 
-Trust Ladder (use --aggressive for more):
-  Default:   refactor, test, docs, types, perf (safe categories only)
-  Aggressive: + security fixes (still excludes deps, migrations)
+Trust Ladder:
+  Default:   refactor, test, docs, types, perf, security, fix, cleanup (all)
+  Safe:      refactor, test, docs, types, perf (use --safe to restrict)
 
 Backend Lanes:
   --claude (default):  scout + execute with Claude  (ANTHROPIC_API_KEY)
@@ -62,8 +62,8 @@ Examples:
     .option('--dry-run', 'Show what would be done without making changes')
     .option('--scope <path>', 'Directory to scout (default: src, rotates in continuous mode)')
     .option('--max-prs <n>', 'Maximum PRs to create (default: 3, or 20 in continuous mode)')
-    .option('--min-confidence <n>', 'Minimum confidence for auto-approve (default: 70)')
-    .option('--aggressive', 'Include more categories (security fixes, etc.)')
+    .option('--min-confidence <n>', 'Minimum confidence for auto-approve (default: 55)')
+    .option('--safe', 'Restrict to safe categories only (refactor, test, docs, types, perf)')
     .option('--no-draft', 'Create regular PRs instead of drafts')
     .option('--yes', 'Skip confirmation prompt')
     .option('--minutes <n>', 'Run for N minutes (enables continuous mode)')
@@ -102,7 +102,7 @@ Examples:
       scope?: string;
       maxPrs?: string;
       minConfidence?: string;
-      aggressive?: boolean;
+      safe?: boolean;
       draft?: boolean;
       yes?: boolean;
       minutes?: string;

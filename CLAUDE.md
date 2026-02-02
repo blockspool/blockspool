@@ -20,7 +20,7 @@ blockspool nudge "focus on auth"               # Steer a running session
 - **Claude Code CLI** for execution (default model: **opus**)
 - **Ready-for-review PRs** with single commits
 - **Deduplication** to avoid recreating similar work
-- **Trust ladder** (safe categories by default)
+- **Trust ladder** (all categories by default; `--safe` to restrict)
 - **Formulas** for repeatable recipes: `--formula security-audit`
 - **Deep mode** (`--deep`) for architectural/structural review
 - **Impact scoring** — proposals ranked by `impact x confidence`

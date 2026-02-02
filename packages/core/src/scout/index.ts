@@ -33,6 +33,9 @@ const DEFAULT_VERIFICATION_COMMANDS: Record<ProposalCategory, string[]> = {
   test: ['npm run build', 'npm test'],
   perf: ['npm run build'],
   security: ['npm run build'],
+  fix: ['npm run build', 'npm test'],
+  cleanup: ['npm run build'],
+  types: ['npm run build'],
 };
 
 /**

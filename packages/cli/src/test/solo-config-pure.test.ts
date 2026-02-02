@@ -328,8 +328,12 @@ describe('DEFAULT_AUTO_CONFIG', () => {
     expect(DEFAULT_AUTO_CONFIG.allowCategories).toContain('test');
   });
 
-  it('has blockCategories containing security', () => {
-    expect(DEFAULT_AUTO_CONFIG.blockCategories).toContain('security');
+  it('includes security in allowCategories', () => {
+    expect(DEFAULT_AUTO_CONFIG.allowCategories).toContain('security');
+  });
+
+  it('does not block security by default', () => {
+    expect(DEFAULT_AUTO_CONFIG.blockCategories).not.toContain('security');
   });
 
   it('has minConfidence of 55', () => {

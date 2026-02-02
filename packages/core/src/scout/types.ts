@@ -5,7 +5,7 @@
 /**
  * Proposal categories
  */
-export type ProposalCategory = 'refactor' | 'docs' | 'test' | 'perf' | 'security';
+export type ProposalCategory = 'refactor' | 'docs' | 'test' | 'perf' | 'security' | 'fix' | 'cleanup' | 'types';
 
 /**
  * Complexity levels
@@ -154,7 +154,7 @@ export const PROPOSAL_SCHEMA = {
           'estimated_complexity',
         ],
         properties: {
-          category: { type: 'string', enum: ['refactor', 'docs', 'test', 'perf', 'security'] },
+          category: { type: 'string', enum: ['refactor', 'docs', 'test', 'perf', 'security', 'fix', 'cleanup', 'types'] },
           title: { type: 'string' },
           description: { type: 'string' },
           acceptance_criteria: { type: 'array', items: { type: 'string' } },

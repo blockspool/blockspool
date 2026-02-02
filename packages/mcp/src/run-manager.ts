@@ -39,7 +39,7 @@ const DEFAULT_MIN_CONFIDENCE = 55;
 const DEFAULT_MIN_IMPACT_SCORE = 3;
 const DEFAULT_MAX_PROPOSALS_PER_SCOUT = 5;
 const DEFAULT_SCOPE = '**';
-const DEFAULT_CATEGORIES = ['refactor', 'docs', 'test', 'perf', 'security'];
+const DEFAULT_CATEGORIES = ['refactor', 'docs', 'test', 'perf', 'security', 'fix', 'cleanup', 'types'];
 const DEFAULT_SCOUT_EXCLUDE_DIRS = [
   'node_modules',
   'dist',

@@ -76,6 +76,8 @@ export interface ScoutOptions {
   backend?: import('./runner.js').ScoutBackend;
   /** Files the scout can read but must NOT propose changes to */
   protectedFiles?: string[];
+  /** Token budget per batch (default: auto based on backend) */
+  batchTokenBudget?: number;
 }
 
 /**

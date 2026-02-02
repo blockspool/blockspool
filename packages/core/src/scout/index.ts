@@ -7,7 +7,7 @@
 import { nanoid } from '../utils/id.js';
 import { buildScoutPrompt } from './prompt.js';
 import { runClaude, parseClaudeOutput, ClaudeScoutBackend, type ScoutBackend } from './runner.js';
-import { scanFiles, batchFiles, type ScannedFile } from './scanner.js';
+import { scanFiles, batchFiles, batchFilesByTokens, type ScannedFile } from './scanner.js';
 import type {
   ScoutOptions,
   ScoutResult,
@@ -19,7 +19,7 @@ import type {
 export * from './types.js';
 export { buildScoutPrompt, buildCategoryPrompt } from './prompt.js';
 export { runClaude, parseClaudeOutput, ClaudeScoutBackend, CodexScoutBackend, type ScoutBackend } from './runner.js';
-export { scanFiles, batchFiles, type ScannedFile } from './scanner.js';
+export { scanFiles, batchFiles, batchFilesByTokens, estimateTokens, type ScannedFile } from './scanner.js';
 
 /**
  * Default verification commands by category
@@ -340,9 +340,13 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
     });
 
     // Phase 2: Batch files and analyze
-    const batches = batchFiles(files, 3);
+    const backendName = scoutBackend.name;
+    const defaultBudget = backendName === 'codex' ? 20000 : 10000;
+    const budget = options.batchTokenBudget ?? defaultBudget;
+    const batches = batchFilesByTokens(files, budget);
     const maxBatches = Math.min(batches.length, 20); // Cap at 20 batches
 
+    let filesProcessed = 0;
     for (let i = 0; i < maxBatches; i++) {
       // Check for cancellation
       if (signal?.aborted) {
@@ -358,13 +362,14 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
       const batch = batches[i];
       report({
         phase: 'analyzing',
-        filesScanned: i * 3,
+        filesScanned: filesProcessed,
         totalFiles: files.length,
         proposalsFound: proposals.length,
         currentBatch: i + 1,
         totalBatches: maxBatches,
         currentFile: batch[0]?.path,
       });
+      filesProcessed += batch.length;
 
       // Build prompt for this batch
       const prompt = buildScoutPrompt({

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { batchFiles, scanFiles } from '../scout/scanner.js';
+import { batchFiles, batchFilesByTokens, estimateTokens, scanFiles } from '../scout/scanner.js';
 import type { ScannedFile } from '../scout/scanner.js';
 
 function makeFile(p: string, content = 'x', size = 1): ScannedFile {
@@ -149,5 +149,74 @@ describe('scanFiles', () => {
     expect(files).toHaveLength(1);
     expect(files[0].content).toBe('hello world');
     expect(files[0].size).toBe(11);
+  });
+});
+
+describe('estimateTokens', () => {
+  it('returns ~content.length/4', () => {
+    expect(estimateTokens('abcdefgh')).toBe(2);
+    expect(estimateTokens('a')).toBe(1);
+    expect(estimateTokens('abcde')).toBe(2); // ceil(5/4)
+    expect(estimateTokens('')).toBe(0);
+  });
+});
+
+describe('batchFilesByTokens', () => {
+  it('empty input returns empty array', () => {
+    expect(batchFilesByTokens([])).toEqual([]);
+  });
+
+  it('small files pack together up to budget', () => {
+    // Each file ~10 tokens (40 chars)
+    const files = Array.from({ length: 5 }, (_, i) =>
+      makeFile(`f${i}.ts`, 'x'.repeat(40), 40),
+    );
+    // Budget of 30 tokens fits 3 files (10+10+10=30), then 2 in next batch
+    const batches = batchFilesByTokens(files, 30);
+    expect(batches).toHaveLength(2);
+    expect(batches[0]).toHaveLength(3);
+    expect(batches[1]).toHaveLength(2);
+  });
+
+  it('large file gets its own batch', () => {
+    const small = makeFile('small.ts', 'x'.repeat(40), 40); // 10 tokens
+    const large = makeFile('large.ts', 'x'.repeat(400), 400); // 100 tokens
+    const batches = batchFilesByTokens([small, large], 50);
+    expect(batches).toHaveLength(2);
+    expect(batches[0]).toEqual([small]);
+    expect(batches[1]).toEqual([large]);
+  });
+
+  it('flushes current batch before oversized file', () => {
+    const a = makeFile('a.ts', 'x'.repeat(20), 20); // 5 tokens
+    const big = makeFile('big.ts', 'x'.repeat(200), 200); // 50 tokens
+    const b = makeFile('b.ts', 'x'.repeat(20), 20); // 5 tokens
+    const batches = batchFilesByTokens([a, big, b], 30);
+    expect(batches).toHaveLength(3);
+    expect(batches[0]).toEqual([a]);
+    expect(batches[1]).toEqual([big]);
+    expect(batches[2]).toEqual([b]);
+  });
+
+  it('mix of sizes produces balanced batches', () => {
+    const files = [
+      makeFile('tiny.ts', 'x'.repeat(4), 4),     // 1 token
+      makeFile('small.ts', 'x'.repeat(40), 40),   // 10 tokens
+      makeFile('med.ts', 'x'.repeat(80), 80),     // 20 tokens
+      makeFile('big.ts', 'x'.repeat(120), 120),   // 30 tokens
+    ];
+    // Budget 30: tiny(1)+small(10)+med(20)=31 > 30, so tiny+small then med, then big
+    const batches = batchFilesByTokens(files, 30);
+    expect(batches).toHaveLength(3);
+    expect(batches[0].map(f => f.path)).toEqual(['tiny.ts', 'small.ts']);
+    expect(batches[1].map(f => f.path)).toEqual(['med.ts']);
+    expect(batches[2].map(f => f.path)).toEqual(['big.ts']);
+  });
+
+  it('single file within budget returns one batch', () => {
+    const f = makeFile('a.ts', 'hello', 5);
+    const batches = batchFilesByTokens([f], 100);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toEqual([f]);
   });
 });

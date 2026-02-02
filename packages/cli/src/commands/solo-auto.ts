@@ -82,6 +82,7 @@ Examples:
     .option('--codex-model <model>', 'Model for Codex backend (default: codex-mini)')
     .option('--codex-unsafe-full-access', 'Use --dangerously-bypass-approvals-and-sandbox for Codex execution (requires isolated runner)')
     .option('--include-claude-md', 'Allow the scout to propose changes to CLAUDE.md and .claude/ (excluded by default)')
+    .option('--batch-token-budget <n>', 'Token budget per scout batch (default: auto based on backend)')
     .option('--no-docs-audit', 'Disable automatic docs-audit cycles')
     .option('--docs-audit-interval <n>', 'Run docs-audit every N cycles (default: 3)')
     .action(async (mode: string | undefined, options: {
@@ -110,6 +111,7 @@ Examples:
       codexModel?: string;
       codexUnsafeFullAccess?: boolean;
       includeClaudeMd?: boolean;
+      batchTokenBudget?: string;
       docsAudit?: boolean;
       docsAuditInterval?: string;
     }) => {

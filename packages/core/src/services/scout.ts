@@ -87,6 +87,8 @@ export interface ScoutRepoOptions {
   backend?: ScoutBackend;
   /** Files the scout can read but must NOT propose changes to */
   protectedFiles?: string[];
+  /** Token budget per scout batch (default: auto based on backend) */
+  batchTokenBudget?: number;
 }
 
 /**
@@ -200,6 +202,7 @@ export async function scoutRepo(
       customPrompt: opts.customPrompt,
       backend: opts.backend,
       protectedFiles: opts.protectedFiles,
+      batchTokenBudget: opts.batchTokenBudget,
       onProgress: (p) => {
         report({
           phase: 'analyzing',

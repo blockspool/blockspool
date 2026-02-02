@@ -215,3 +215,46 @@ export function batchFiles(files: ScannedFile[], batchSize: number = 3): Scanned
 
   return batches;
 }
+
+/**
+ * Estimate token count for a string (~4 chars per token)
+ */
+export function estimateTokens(content: string): number {
+  return Math.ceil(content.length / 4);
+}
+
+/**
+ * Group files into batches by token budget instead of fixed count.
+ * Packs small files together; oversized files get their own batch.
+ */
+export function batchFilesByTokens(
+  files: ScannedFile[],
+  maxTokensPerBatch: number = 12000,
+): ScannedFile[][] {
+  const batches: ScannedFile[][] = [];
+  let current: ScannedFile[] = [];
+  let currentTokens = 0;
+
+  for (const file of files) {
+    const tokens = estimateTokens(file.content);
+    // If single file exceeds budget, give it its own batch
+    if (tokens >= maxTokensPerBatch) {
+      if (current.length > 0) {
+        batches.push(current);
+        current = [];
+        currentTokens = 0;
+      }
+      batches.push([file]);
+      continue;
+    }
+    if (currentTokens + tokens > maxTokensPerBatch && current.length > 0) {
+      batches.push(current);
+      current = [];
+      currentTokens = 0;
+    }
+    current.push(file);
+    currentTokens += tokens;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}

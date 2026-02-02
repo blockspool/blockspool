@@ -87,6 +87,8 @@ export interface AutoConfig {
   learningsBudget: number;
   /** Weight decay per session (default: 3) */
   learningsDecayRate: number;
+  /** Token budget per scout batch (default: auto based on backend — 20k codex, 10k claude) */
+  batchTokenBudget?: number;
 }
 
 /**

@@ -411,7 +411,8 @@ Optional `.blockspool/config.json`:
     "autoCreateGuidelines": true,
     "guidelinesPath": null,
     "minImpactScore": 3,
-    "pluginParallel": 2
+    "pluginParallel": 2,
+    "batchTokenBudget": 20000
   },
   "retention": {
     "maxRuns": 50,
@@ -437,6 +438,7 @@ Optional `.blockspool/config.json`:
 | `guidelinesPath` | `null` | Custom path to guidelines file relative to repo root (e.g. `"docs/CONVENTIONS.md"`). Set to `false` to disable guidelines entirely. `null` = default search. |
 | `minImpactScore` | `3` | Minimum impact score (1-10) for proposals. Filters out low-value lint/cleanup. |
 | `pluginParallel` | `2` | Number of parallel tickets in plugin mode (max: 5). Set to 1 for sequential. |
+| `batchTokenBudget` | auto | Token budget per scout batch. Default: 20k (Codex), 10k (Claude). Higher = fewer batches, faster scouting. |
 
 ---
 
@@ -555,6 +557,6 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>BlockSpool v0.5.17</b><br>
+  <b>BlockSpool v0.5.18</b><br>
   <i>Set it. Forget it. Merge the PRs.</i>
 </p>

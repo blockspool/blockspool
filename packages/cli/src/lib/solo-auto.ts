@@ -450,8 +450,8 @@ export async function runAutoMode(options: {
     console.log();
   }
 
-  const maxCycles = options.cycles ? parseInt(options.cycles, 10) : 1;
-  const isContinuous = options.continuous || options.hours !== undefined || options.minutes !== undefined || maxCycles > 1;
+  const maxCycles = options.cycles ? parseInt(options.cycles, 10) : 3;
+  const isContinuous = options.continuous || options.hours !== undefined || options.minutes !== undefined || maxCycles > 3;
   const totalMinutes = (options.hours ? parseFloat(options.hours) * 60 : 0)
     + (options.minutes ? parseFloat(options.minutes) : 0) || undefined;
   const endTime = totalMinutes ? Date.now() + (totalMinutes * 60 * 1000) : undefined;
@@ -715,8 +715,12 @@ export async function runAutoMode(options: {
 
   const getNextScope = (): string => {
     if (userScope) return userScope;
-    if (!isContinuous) return '**';
-    const scope = defaultScopes[scopeIndex % defaultScopes.length];
+    // First cycle: broad scan. Subsequent cycles: rotate through subdirectories for depth.
+    if (scopeIndex === 0) {
+      scopeIndex++;
+      return '**';
+    }
+    const scope = defaultScopes[(scopeIndex - 1) % defaultScopes.length];
     scopeIndex++;
     return scope;
   };
@@ -1240,42 +1244,24 @@ export async function runAutoMode(options: {
       approvedProposals.push(...balanced);
 
       if (approvedProposals.length === 0) {
-        // Rescue: if proposals exist but all failed confidence, take the best one on retry
-        const confidenceRejected = proposals.filter(p => {
-          const cat = (p.category || 'refactor').toLowerCase();
-          const conf = p.confidence || 50;
-          return conf < minConfidence
-            && !blockCategories.some(b => cat.includes(b))
-            && allowCategories.some(a => cat.includes(a));
-        });
-
-        if (confidenceRejected.length > 0 && scoutRetries > 0) {
-          // On retry, accept the best proposal even if below threshold
-          const best = confidenceRejected.sort((a, b) =>
-            ((b.impact_score ?? 5) * (b.confidence || 50)) - ((a.impact_score ?? 5) * (a.confidence || 50))
-          )[0];
-          console.log(chalk.yellow(`  ↳ Rescuing best below-threshold proposal: ${best.title} (${best.confidence}% conf)`));
-          approvedProposals.push(best);
+        const reason = duplicateCount > 0
+          ? `No new proposals (${duplicateCount} duplicates filtered)`
+          : 'No proposals passed trust filter';
+        console.log(chalk.gray(`  ${reason}`));
+        scoutedDirs.push(scope);
+        if (scoutRetries < MAX_SCOUT_RETRIES) {
+          scoutRetries++;
+          console.log(chalk.gray(`  Retrying with fresh approach (attempt ${scoutRetries}/${MAX_SCOUT_RETRIES + 1})...`));
+          await sleep(1000);
+          continue;
+        }
+        if (isContinuous) {
+          scoutRetries = 0;
+          scoutedDirs = [];
+          await sleep(2000);
+          continue;
         } else {
-          const reason = duplicateCount > 0
-            ? `No new proposals (${duplicateCount} duplicates filtered)`
-            : 'No proposals passed trust filter';
-          console.log(chalk.gray(`  ${reason}`));
-          scoutedDirs.push(scope);
-          if (scoutRetries < MAX_SCOUT_RETRIES) {
-            scoutRetries++;
-            console.log(chalk.gray(`  Retrying with fresh approach (attempt ${scoutRetries}/${MAX_SCOUT_RETRIES + 1})...`));
-            await sleep(1000);
-            continue;
-          }
-          if (isContinuous) {
-            scoutRetries = 0;
-            scoutedDirs = [];
-            await sleep(2000);
-            continue;
-          } else {
-            break;
-          }
+          break;
         }
       }
 

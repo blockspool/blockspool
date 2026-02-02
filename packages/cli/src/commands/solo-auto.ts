@@ -70,7 +70,7 @@ Examples:
     .option('--yes', 'Skip confirmation prompt')
     .option('--minutes <n>', 'Run for N minutes (enables continuous mode)')
     .option('--hours <n>', 'Run for N hours (enables continuous mode)')
-    .option('--cycles <n>', 'Number of scout→execute cycles (default: 1)')
+    .option('--cycles <n>', 'Number of scout→execute cycles (default: 3)')
     .option('--continuous', 'Run continuously until stopped or PR limit reached')
     .option('-v, --verbose', 'Show detailed output')
     .option('--branch <name>', 'Target branch (default: current)')

@@ -18,6 +18,52 @@ import { recordOutput, recordDiff, recordCommandFailure, recordPlanHash } from '
 import { addLearning, confirmLearning, extractTags } from './learnings.js';
 import { recordDedupEntry } from './dedup-memory.js';
 
+// ---------------------------------------------------------------------------
+// Helpers — shared sector & dedup recording
+// ---------------------------------------------------------------------------
+
+function recordSectorOutcome(
+  rootPath: string,
+  sectorPath: string | undefined,
+  outcome: 'success' | 'failure',
+): void {
+  if (!sectorPath) return;
+  try {
+    const sectorsPath = path.join(rootPath, '.blockspool', 'sectors.json');
+    if (!fs.existsSync(sectorsPath)) return;
+    const sectorsData = JSON.parse(fs.readFileSync(sectorsPath, 'utf8'));
+    if (sectorsData?.version !== 2 || !Array.isArray(sectorsData.sectors)) return;
+    const sector = sectorsData.sectors.find((sec: { path: string }) => sec.path === sectorPath);
+    if (!sector) return;
+    if (outcome === 'failure') {
+      sector.failureCount = (sector.failureCount ?? 0) + 1;
+    } else {
+      sector.successCount = (sector.successCount ?? 0) + 1;
+    }
+    fs.writeFileSync(sectorsPath, JSON.stringify(sectorsData, null, 2), 'utf8');
+  } catch {
+    // Non-fatal
+  }
+}
+
+async function recordTicketDedup(
+  db: DatabaseAdapter,
+  rootPath: string,
+  ticketId: string | null,
+  completed: boolean,
+  reason?: string,
+): Promise<void> {
+  if (!ticketId) return;
+  try {
+    const ticket = await repos.tickets.getById(db, ticketId);
+    if (ticket) {
+      recordDedupEntry(rootPath, ticket.title, completed, reason);
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
 export interface ProcessResult {
   processed: boolean;
   phase_changed: boolean;
@@ -466,35 +512,9 @@ export async function processEvent(
             tags: extractTags(ticket?.allowedPaths ?? [], ticket?.verificationCommands ?? []),
           });
         }
-        // Record failed ticket in dedup memory
-        if (s.current_ticket_id) {
-          try {
-            const ticket = await repos.tickets.getById(db, s.current_ticket_id);
-            if (ticket) {
-              recordDedupEntry(run.rootPath, ticket.title, false, 'agent_error');
-            }
-          } catch {
-            // Non-fatal
-          }
-        }
-        // Record sector failure
-        if (s.current_sector_path) {
-          try {
-            const sectorsPath = path.join(run.rootPath, '.blockspool', 'sectors.json');
-            if (fs.existsSync(sectorsPath)) {
-              const sectorsData = JSON.parse(fs.readFileSync(sectorsPath, 'utf8'));
-              if (sectorsData?.version === 2 && Array.isArray(sectorsData.sectors)) {
-                const sector = sectorsData.sectors.find((sec: { path: string }) => sec.path === s.current_sector_path);
-                if (sector) {
-                  sector.failureCount = (sector.failureCount ?? 0) + 1;
-                  fs.writeFileSync(sectorsPath, JSON.stringify(sectorsData, null, 2), 'utf8');
-                }
-              }
-            }
-          } catch {
-            // Non-fatal
-          }
-        }
+        // Record failed ticket in dedup memory + sector failure
+        await recordTicketDedup(db, run.rootPath, s.current_ticket_id, false, 'agent_error');
+        recordSectorOutcome(run.rootPath, s.current_sector_path, 'failure');
         // Fail the ticket, move to next
         if (s.current_ticket_id) {
           await repos.tickets.updateStatus(db, s.current_ticket_id, 'blocked');
@@ -632,35 +652,9 @@ export async function processEvent(
             tags: extractTags(ticket?.allowedPaths ?? [], ticket?.verificationCommands ?? []),
           });
         }
-        // Record failed ticket in dedup memory
-        if (s.current_ticket_id) {
-          try {
-            const ticket = await repos.tickets.getById(db, s.current_ticket_id);
-            if (ticket) {
-              recordDedupEntry(run.rootPath, ticket.title, false, 'qa_failed');
-            }
-          } catch {
-            // Non-fatal
-          }
-        }
-        // Record sector failure
-        if (s.current_sector_path) {
-          try {
-            const sectorsPath = path.join(run.rootPath, '.blockspool', 'sectors.json');
-            if (fs.existsSync(sectorsPath)) {
-              const sectorsData = JSON.parse(fs.readFileSync(sectorsPath, 'utf8'));
-              if (sectorsData?.version === 2 && Array.isArray(sectorsData.sectors)) {
-                const sector = sectorsData.sectors.find((sec: { path: string }) => sec.path === s.current_sector_path);
-                if (sector) {
-                  sector.failureCount = (sector.failureCount ?? 0) + 1;
-                  fs.writeFileSync(sectorsPath, JSON.stringify(sectorsData, null, 2), 'utf8');
-                }
-              }
-            }
-          } catch {
-            // Non-fatal
-          }
-        }
+        // Record failed ticket in dedup memory + sector failure
+        await recordTicketDedup(db, run.rootPath, s.current_ticket_id, false, 'qa_failed');
+        recordSectorOutcome(run.rootPath, s.current_sector_path, 'failure');
         // Give up on this ticket
         if (s.current_ticket_id) {
           await repos.tickets.updateStatus(db, s.current_ticket_id, 'blocked');
@@ -693,36 +687,9 @@ export async function processEvent(
         return { processed: true, phase_changed: false, message: 'PR created outside PR phase' };
       }
 
-      // Record completed ticket in dedup memory (before completeTicket clears current_ticket_id)
-      if (s.current_ticket_id) {
-        try {
-          const ticket = await repos.tickets.getById(db, s.current_ticket_id);
-          if (ticket) {
-            recordDedupEntry(run.rootPath, ticket.title, true);
-          }
-        } catch {
-          // Non-fatal — dedup memory is best-effort
-        }
-      }
-
-      // Record sector success
-      if (s.current_sector_path) {
-        try {
-          const sectorsPath = path.join(run.rootPath, '.blockspool', 'sectors.json');
-          if (fs.existsSync(sectorsPath)) {
-            const sectorsData = JSON.parse(fs.readFileSync(sectorsPath, 'utf8'));
-            if (sectorsData?.version === 2 && Array.isArray(sectorsData.sectors)) {
-              const sector = sectorsData.sectors.find((sec: { path: string }) => sec.path === s.current_sector_path);
-              if (sector) {
-                sector.successCount = (sector.successCount ?? 0) + 1;
-                fs.writeFileSync(sectorsPath, JSON.stringify(sectorsData, null, 2), 'utf8');
-              }
-            }
-          }
-        } catch {
-          // Non-fatal
-        }
-      }
+      // Record completed ticket in dedup memory + sector success (before completeTicket clears current_ticket_id)
+      await recordTicketDedup(db, run.rootPath, s.current_ticket_id, true);
+      recordSectorOutcome(run.rootPath, s.current_sector_path, 'success');
 
       // Save PR artifact
       run.saveArtifact(

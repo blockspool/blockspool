@@ -1,8 +1,7 @@
 /**
  * Proposal filtering, dedup, scoring, and ticket creation.
  *
- * Used by the event processor when SCOUT_OUTPUT is ingested,
- * and by the blockspool_submit_proposals tool.
+ * Used by the event processor when SCOUT_OUTPUT is ingested.
  */
 
 import type { DatabaseAdapter, TicketCategory } from '@blockspool/core';

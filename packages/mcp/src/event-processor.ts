@@ -466,7 +466,8 @@ export async function processEvent(
 
       const status = payload['status'] as string;
 
-      if (status === 'done') {
+      // Accept both 'done' and 'success' as completion status
+      if (status === 'done' || status === 'success') {
         // Validate changed_files against plan (if plan exists)
         const changedFiles = (payload['changed_files'] ?? []) as string[];
         const linesAdded = (payload['lines_added'] ?? 0) as number;

@@ -86,18 +86,6 @@ function execStatusToStepStatus(exec: ExecResult): 'success' | 'failed' | 'cance
 }
 
 /**
- * Extract flat fields from ExecOutput for repo methods
- */
-function flattenOutput(output: ExecOutput, prefix: 'stdout' | 'stderr') {
-  return {
-    [`${prefix}Path`]: output.path,
-    [`${prefix}Bytes`]: output.bytes,
-    [`${prefix}Truncated`]: output.truncated,
-    [`${prefix}Tail`]: output.tail,
-  };
-}
-
-/**
  * Run QA commands and record results
  */
 export async function runQa(

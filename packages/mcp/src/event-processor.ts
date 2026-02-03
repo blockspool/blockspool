@@ -52,10 +52,12 @@ async function recordTicketDedup(
   ticketId: string | null,
   completed: boolean,
   reason?: string,
+  /** Pass a pre-fetched ticket to avoid a redundant DB lookup */
+  prefetchedTicket?: { title: string } | null,
 ): Promise<void> {
   if (!ticketId) return;
   try {
-    const ticket = await repos.tickets.getById(db, ticketId);
+    const ticket = prefetchedTicket ?? await repos.tickets.getById(db, ticketId);
     if (ticket) {
       recordDedupEntry(rootPath, ticket.title, completed, reason);
     }
@@ -501,10 +503,11 @@ export async function processEvent(
       }
 
       if (status === 'failed') {
+        // Fetch ticket once for both learning and dedup
+        const ticket = s.current_ticket_id ? await repos.tickets.getById(db, s.current_ticket_id) : null;
         // Record learning on ticket failure
         if (s.learnings_enabled) {
           const reason = (payload['reason'] as string) ?? 'Execution failed';
-          const ticket = s.current_ticket_id ? await repos.tickets.getById(db, s.current_ticket_id) : null;
           addLearning(run.rootPath, {
             text: `Ticket failed on ${ticket?.title ?? 'unknown'} — ${reason}`.slice(0, 200),
             category: 'warning',
@@ -513,7 +516,7 @@ export async function processEvent(
           });
         }
         // Record failed ticket in dedup memory + sector failure
-        await recordTicketDedup(db, run.rootPath, s.current_ticket_id, false, 'agent_error');
+        await recordTicketDedup(db, run.rootPath, s.current_ticket_id, false, 'agent_error', ticket);
         recordSectorOutcome(run.rootPath, s.current_sector_path, 'failure');
         // Fail the ticket, move to next
         if (s.current_ticket_id) {
@@ -640,11 +643,12 @@ export async function processEvent(
       s.qa_retries++;
 
       if (s.qa_retries >= 3) {
+        // Fetch ticket once for both learning and dedup
+        const ticket = s.current_ticket_id ? await repos.tickets.getById(db, s.current_ticket_id) : null;
         // Record learning on final QA failure
         if (s.learnings_enabled) {
           const failedCmds = (payload['failed_commands'] ?? payload['command'] ?? '') as string;
           const errorSummary = ((payload['error'] ?? payload['output'] ?? '') as string).slice(0, 100);
-          const ticket = s.current_ticket_id ? await repos.tickets.getById(db, s.current_ticket_id) : null;
           addLearning(run.rootPath, {
             text: `QA fails on ${ticket?.title ?? 'unknown'} — ${errorSummary || failedCmds}`.slice(0, 200),
             category: 'gotcha',
@@ -653,7 +657,7 @@ export async function processEvent(
           });
         }
         // Record failed ticket in dedup memory + sector failure
-        await recordTicketDedup(db, run.rootPath, s.current_ticket_id, false, 'qa_failed');
+        await recordTicketDedup(db, run.rootPath, s.current_ticket_id, false, 'qa_failed', ticket);
         recordSectorOutcome(run.rootPath, s.current_sector_path, 'failure');
         // Give up on this ticket
         if (s.current_ticket_id) {

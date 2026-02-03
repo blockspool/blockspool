@@ -68,7 +68,8 @@ export async function isDuplicateProposal(
   }
 
   for (const branch of openPrBranches) {
-    const branchTitle = branch.replace(/^blockspool\/tkt_[a-z0-9]+$/, '').replace(/-/g, ' ');
+    // Extract slug from branch name (e.g., 'blockspool/tkt_abc123/fix-login-bug' -> 'fix login bug')
+    const branchTitle = branch.replace(/^blockspool\/tkt_[a-z0-9]+\//, '').replace(/-/g, ' ');
     if (branchTitle && titleSimilarity(proposal.title, branchTitle) >= similarityThreshold) {
       return { isDuplicate: true, reason: `Open PR branch: ${branch}` };
     }

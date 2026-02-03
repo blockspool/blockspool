@@ -367,7 +367,7 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
 
   // Delivery mode resolution
   const deliveryMode = options.deliveryMode ?? autoConf.deliveryMode ?? 'direct';
-  const directBranch = options.directBranch ?? autoConf.directBranch ?? 'blockspool';
+  const directBranch = options.directBranch ?? autoConf.directBranch ?? 'blockspool-direct';
   const directFinalize = options.directFinalize ?? autoConf.directFinalize ?? 'pr';
   {
     console.log(chalk.gray(`  Delivery: ${deliveryMode}${deliveryMode === 'direct' ? ` (branch: ${directBranch}, finalize: ${directFinalize})` : ''}`));

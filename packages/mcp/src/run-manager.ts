@@ -125,7 +125,7 @@ export class RunManager {
       tickets_blocked: 0,
       prs_created: 0,
       scout_cycles: 0,
-      max_cycles: config.max_cycles ?? 1,
+      max_cycles: config.max_cycles ?? (isContinuous ? 999 : 1),
       max_prs: effectiveMaxPrs,
 
       current_ticket_id: null,

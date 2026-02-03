@@ -280,7 +280,18 @@ export async function ensureDirectBranch(repoRoot: string, branchName: string, b
         // Continue with what we have
       }
       const base = await gitExec(`git rev-parse --verify "origin/${baseBranch}" 2>/dev/null || git rev-parse --verify "${baseBranch}"`, { cwd: repoRoot });
-      await gitExec(`git checkout -b "${branchName}" ${base.trim()}`, { cwd: repoRoot });
+      try {
+        await gitExec(`git checkout -b "${branchName}" ${base.trim()}`, { cwd: repoRoot });
+      } catch (err: any) {
+        if (err?.message?.includes('cannot lock ref') || err?.stderr?.includes('cannot lock ref')) {
+          throw new Error(
+            `Cannot create branch "${branchName}" — a conflicting ref exists (e.g. "${branchName}/*" branches).\n` +
+            `This happens when milestone or ticket branches like "${branchName}/milestone-*" exist.\n` +
+            `Fix: delete the conflicting branches with \`git branch -D <branch>\` or set a different \`directBranch\` in .blockspool/config.json.`
+          );
+        }
+        throw err;
+      }
     }
   });
 }

@@ -180,22 +180,24 @@ export async function createMany(
   }>,
   attempt: number = 1
 ): Promise<RunStep[]> {
-  const created: RunStep[] = [];
+  return db.withTransaction(async () => {
+    const created: RunStep[] = [];
 
-  for (let i = 0; i < steps.length; i++) {
-    const step = await create(db, {
-      runId,
-      attempt,
-      ordinal: i,
-      name: steps[i].name,
-      cmd: steps[i].cmd,
-      cwd: steps[i].cwd,
-      timeoutMs: steps[i].timeoutMs,
-    });
-    created.push(step);
-  }
+    for (let i = 0; i < steps.length; i++) {
+      const step = await create(db, {
+        runId,
+        attempt,
+        ordinal: i,
+        name: steps[i].name,
+        cmd: steps[i].cmd,
+        cwd: steps[i].cwd,
+        timeoutMs: steps[i].timeoutMs,
+      });
+      created.push(step);
+    }
 
-  return created;
+    return created;
+  });
 }
 
 /**

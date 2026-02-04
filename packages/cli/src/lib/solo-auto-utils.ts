@@ -7,16 +7,23 @@
  */
 export function computeTicketTimeout(
   proposal: { estimated_complexity?: string; category?: string },
-  config?: { categoryTimeouts?: Record<string, number> },
+  config?: { categoryTimeouts?: Record<string, number>; timeoutMultiplier?: number },
 ): number {
+  const multiplier = config?.timeoutMultiplier ?? 1;
+  const cap = 1_800_000; // 30 min hard cap
+
   if (config?.categoryTimeouts?.[proposal.category ?? ''])
-    return Math.min(config.categoryTimeouts[proposal.category!], 1_200_000);
+    return Math.min(config.categoryTimeouts[proposal.category!] * multiplier, cap);
+
+  let base: number;
   switch (proposal.estimated_complexity) {
-    case 'trivial': return 180_000;
-    case 'simple': return 300_000;
-    case 'complex': return 900_000;
-    default: return 600_000;
+    case 'trivial': base = 240_000; break;   // 4 min
+    case 'simple':  base = 600_000; break;   // 10 min
+    case 'complex': base = 1_200_000; break; // 20 min
+    default:        base = 900_000; break;   // 15 min
   }
+
+  return Math.min(Math.round(base * multiplier), cap);
 }
 
 /**

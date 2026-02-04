@@ -107,11 +107,13 @@ export interface AutoConfig {
   directBranch?: string;
   /** End-of-session action for direct mode: pr | merge | none (default: 'pr') */
   directFinalize?: 'pr' | 'merge' | 'none';
+  /** Multiplier applied to ticket execution timeouts (e.g. 1.5 for slower backends). Auto-set for non-Claude backends. */
+  timeoutMultiplier?: number;
   /** Per-backend overrides */
-  claude?: { scoutConcurrency?: number; batchTokenBudget?: number };
-  codex?: { scoutConcurrency?: number; batchTokenBudget?: number };
-  kimi?: { scoutConcurrency?: number; batchTokenBudget?: number; scoutTimeoutMs?: number };
-  local?: { scoutConcurrency?: number; batchTokenBudget?: number; scoutTimeoutMs?: number; maxIterations?: number };
+  claude?: { scoutConcurrency?: number; batchTokenBudget?: number; timeoutMultiplier?: number };
+  codex?: { scoutConcurrency?: number; batchTokenBudget?: number; timeoutMultiplier?: number };
+  kimi?: { scoutConcurrency?: number; batchTokenBudget?: number; scoutTimeoutMs?: number; timeoutMultiplier?: number };
+  local?: { scoutConcurrency?: number; batchTokenBudget?: number; scoutTimeoutMs?: number; maxIterations?: number; timeoutMultiplier?: number };
 }
 
 /**

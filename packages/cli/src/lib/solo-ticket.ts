@@ -4,6 +4,8 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { DatabaseAdapter } from '@blockspool/core/db';
 import {
   runQa,
@@ -47,6 +49,50 @@ import type {
 } from './solo-ticket-types.js';
 import { EXECUTE_STEPS } from './solo-ticket-types.js';
 
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Detect package manager from lockfiles and install deps in worktree.
+ * Returns silently if no Node.js project detected or install fails.
+ */
+async function installWorktreeDeps(
+  worktreePath: string,
+  verbose: boolean,
+  onProgress: (msg: string) => void,
+): Promise<void> {
+  // Only install if package.json exists but node_modules doesn't
+  if (!fs.existsSync(path.join(worktreePath, 'package.json'))) return;
+  if (fs.existsSync(path.join(worktreePath, 'node_modules'))) return;
+
+  // Detect package manager from lockfiles
+  let pm = 'npm';
+  let installArgs = ['install', '--ignore-scripts', '--no-audit', '--no-fund'];
+  if (fs.existsSync(path.join(worktreePath, 'pnpm-lock.yaml'))) {
+    pm = 'pnpm';
+    installArgs = ['install', '--frozen-lockfile', '--ignore-scripts'];
+  } else if (fs.existsSync(path.join(worktreePath, 'yarn.lock'))) {
+    pm = 'yarn';
+    installArgs = ['install', '--frozen-lockfile', '--ignore-scripts'];
+  } else if (fs.existsSync(path.join(worktreePath, 'bun.lockb')) || fs.existsSync(path.join(worktreePath, 'bun.lock'))) {
+    pm = 'bun';
+    installArgs = ['install', '--frozen-lockfile'];
+  }
+
+  onProgress(`Installing dependencies (${pm})...`);
+  try {
+    await execFileAsync(pm, installArgs, {
+      cwd: worktreePath,
+      timeout: 120_000, // 2 min cap
+    });
+  } catch (err) {
+    // Non-fatal: agent can still try to install itself, or QA will catch it
+    if (verbose) {
+      const msg = err instanceof Error ? err.message : String(err);
+      onProgress(`Warning: worktree dep install failed: ${msg}`);
+    }
+  }
+}
 
 /**
  * Execute a ticket in isolation with step tracking
@@ -236,6 +282,9 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
     });
 
     await markStep('worktree', 'success', { metadata: { branchName, worktreePath } });
+
+    // Install dependencies in worktree (needed for monorepos where node_modules isn't shared)
+    await installWorktreeDeps(worktreePath, verbose, onProgress);
 
     // Step 2: Run agent
     await markStep('agent', 'started');

@@ -115,21 +115,23 @@ export async function markSuccess(
   id: string,
   metadata?: Record<string, unknown>
 ): Promise<Run | null> {
-  const existing = await getById(db, id);
-  if (!existing) return null;
+  return db.withTransaction(async () => {
+    const existing = await getById(db, id);
+    if (!existing) return null;
 
-  const merged = { ...existing.metadata, ...metadata };
+    const merged = { ...existing.metadata, ...metadata };
 
-  await db.query(
-    `UPDATE runs SET
-      status = 'success',
-      completed_at = datetime('now'),
-      metadata = $1
-     WHERE id = $2`,
-    [JSON.stringify(merged), id]
-  );
+    await db.query(
+      `UPDATE runs SET
+        status = 'success',
+        completed_at = datetime('now'),
+        metadata = $1
+       WHERE id = $2`,
+      [JSON.stringify(merged), id]
+    );
 
-  return getById(db, id);
+    return getById(db, id);
+  });
 }
 
 /**
@@ -141,23 +143,25 @@ export async function markFailure(
   error: Error | string,
   metadata?: Record<string, unknown>
 ): Promise<Run | null> {
-  const existing = await getById(db, id);
-  if (!existing) return null;
+  return db.withTransaction(async () => {
+    const existing = await getById(db, id);
+    if (!existing) return null;
 
-  const merged = { ...existing.metadata, ...metadata };
-  const errorMsg = error instanceof Error ? error.message : error;
+    const merged = { ...existing.metadata, ...metadata };
+    const errorMsg = error instanceof Error ? error.message : error;
 
-  await db.query(
-    `UPDATE runs SET
-      status = 'failure',
-      completed_at = datetime('now'),
-      error = $1,
-      metadata = $2
-     WHERE id = $3`,
-    [errorMsg, JSON.stringify(merged), id]
-  );
+    await db.query(
+      `UPDATE runs SET
+        status = 'failure',
+        completed_at = datetime('now'),
+        error = $1,
+        metadata = $2
+       WHERE id = $3`,
+      [errorMsg, JSON.stringify(merged), id]
+    );
 
-  return getById(db, id);
+    return getById(db, id);
+  });
 }
 
 /**

@@ -140,7 +140,9 @@ export function writeRunState(repoRoot: string, state: RunState): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(fp, JSON.stringify(state, null, 2) + '\n');
+  const tmp = fp + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n');
+  fs.renameSync(tmp, fp);
 }
 
 /**

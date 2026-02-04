@@ -37,7 +37,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
   }
 
   // User confirmation on first cycle
-  if (state.cycleCount === 1 && !state.options.yes) {
+  if (state.cycleCount === 1 && !state.options.yes && !state.isContinuous) {
     const readline = await import('readline');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const confirmMsg = state.isContinuous

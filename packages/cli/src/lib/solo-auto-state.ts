@@ -567,6 +567,11 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
       baseUrl: execBackendName === 'openai-local' ? options.localUrl : undefined,
       maxIterations: options.localMaxIterations ? parseInt(options.localMaxIterations, 10) : undefined,
     });
+
+    // Non-Claude backends (Codex, Kimi) are slower — apply timeout multiplier
+    if (!autoConf.timeoutMultiplier) {
+      autoConf.timeoutMultiplier = 1.5;
+    }
   }
 
   // Detect base branch

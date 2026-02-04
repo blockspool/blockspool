@@ -34,13 +34,15 @@ import {
 } from '../lib/spindle/index.js';
 import { createExecRunner } from '../lib/exec.js';
 import { createLogger } from '../lib/logger.js';
-import { getBlockspoolDir } from './solo-config.js';
+import { getBlockspoolDir, type SoloConfig } from './solo-config.js';
 import { normalizeQaConfig } from './solo-utils.js';
 import { withGitMutex, gitExec, gitExecFile, cleanupWorktree } from './solo-git.js';
 import { generateSpindleRecommendations } from './solo-ci.js';
 import { ClaudeExecutionBackend, type ExecutionBackend } from './execution-backends/index.js';
 import { buildTicketPrompt } from './solo-prompt-builder.js';
 import { isTestFailure, extractTestFilesFromQaOutput } from './solo-qa-retry.js';
+import { recordBaselineResult, recordQaCommandResult } from './qa-stats.js';
+import { recordQualitySignal } from './run-state.js';
 import type {
   FailureReason,
   RunTicketResult,
@@ -93,6 +95,48 @@ async function installWorktreeDeps(
       onProgress(`Warning: worktree dep install failed: ${msg}`);
     }
   }
+}
+
+/**
+ * Run QA commands to capture baseline pass/fail state.
+ * Returns a map of command name → passed (true/false).
+ * Lightweight — no DB records, no artifacts, just exit codes.
+ * Async to avoid blocking the event loop during long QA runs.
+ */
+export async function captureQaBaseline(
+  cwd: string,
+  config: SoloConfig,
+  onProgress?: (msg: string) => void,
+  projectRoot?: string,
+): Promise<Map<string, boolean>> {
+  const baseline = new Map<string, boolean>();
+  const qaConfig = normalizeQaConfig(config);
+
+  for (const cmd of qaConfig.commands) {
+    onProgress?.(`  baseline: running ${cmd.name}...`);
+    const cmdCwd = cmd.cwd && cmd.cwd !== '.'
+      ? path.resolve(cwd, cmd.cwd)
+      : cwd;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile('sh', ['-c', cmd.cmd], {
+          cwd: cmdCwd,
+          timeout: cmd.timeoutMs ?? 120_000,
+          maxBuffer: 10 * 1024 * 1024,
+        }, (err) => err ? reject(err) : resolve());
+      });
+      baseline.set(cmd.name, true);
+      onProgress?.(`  baseline: ${cmd.name} ✓`);
+      if (projectRoot) recordBaselineResult(projectRoot, cmd.name, true);
+    } catch {
+      baseline.set(cmd.name, false);
+      onProgress?.(`  baseline: ${cmd.name} ✗ (pre-existing failure)`);
+      if (projectRoot) recordBaselineResult(projectRoot, cmd.name, false);
+    }
+  }
+
+  return baseline;
 }
 
 /**
@@ -304,6 +348,23 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
       cwd: worktreePath,
     })).trim();
     const baselineFiles = new Set(parseChangedFiles(baselineStatus));
+
+    // QA baseline: use cycle-level cache if provided, else capture per-ticket
+    let qaBaseline: Map<string, boolean> | null = opts.qaBaseline ?? null;
+    if (!qaBaseline && !skipQa && config?.qa?.commands?.length && !config?.qa?.disableBaseline) {
+      onProgress('Capturing QA baseline...');
+      qaBaseline = await captureQaBaseline(worktreePath, config, onProgress);
+    }
+
+    if (qaBaseline) {
+      const preExisting = [...qaBaseline.entries()].filter(([, passed]) => !passed);
+      if (preExisting.length > 0) {
+        onProgress(`QA baseline: ${preExisting.length} pre-existing failure(s) — will be skipped`);
+        for (const [name] of preExisting) {
+          onProgress(`  ⚠ ${name} already failing before agent`);
+        }
+      }
+    }
 
     // Step 2: Run agent
     await markStep('agent', 'started');
@@ -730,6 +791,33 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
       await markStep('qa', 'started');
 
       const qaConfig = normalizeQaConfig(config);
+
+      // Filter out pre-existing failures BEFORE running QA.
+      // runQa breaks on first failure — if a pre-existing failure is hit first,
+      // subsequent commands never run and agent-introduced regressions go undetected.
+      let effectiveQaConfig = qaConfig;
+      const skippedCommands: string[] = [];
+      if (qaBaseline) {
+        const passingCommands = qaConfig.commands.filter(cmd => {
+          if (qaBaseline.get(cmd.name) === false) {
+            skippedCommands.push(cmd.name);
+            return false;
+          }
+          return true;
+        });
+        if (skippedCommands.length > 0) {
+          onProgress(`QA: skipping ${skippedCommands.length} pre-existing failure(s): ${skippedCommands.join(', ')}`);
+          effectiveQaConfig = { ...qaConfig, commands: passingCommands };
+        }
+      }
+
+      // If all commands were pre-existing failures, skip QA entirely
+      if (effectiveQaConfig.commands.length === 0) {
+        onProgress('QA: all commands were pre-existing failures — skipping');
+        await markStep('qa', 'success', {
+          metadata: { allPreExisting: true, skippedCommands },
+        });
+      } else {
       const exec = createExecRunner({
         defaultMaxLogBytes: qaConfig.artifacts.maxLogBytes,
         defaultTailBytes: qaConfig.artifacts.tailBytes,
@@ -746,18 +834,19 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
         {
           projectId: project.id,
           repoRoot: worktreePath,
-          config: qaConfig,
+          config: effectiveQaConfig,
         }
       );
 
       if (qaResult.status !== 'success') {
+        const failedStep = qaResult.failedAt?.stepName ?? 'unknown step';
+
         await markStep('qa', 'failed', {
-          errorMessage: `QA failed at ${qaResult.failedAt?.stepName ?? 'unknown step'}`,
+          errorMessage: `QA failed at ${failedStep}`,
           metadata: { qaRunId: qaResult.runId },
         });
+        recordQualitySignal(repoRoot, 'qa_fail');
         await skipRemaining(6, 'QA failed');
-
-        const failedStep = qaResult.failedAt?.stepName ?? 'unknown step';
 
         // Record command failure for spindle tracking
         recordCommandFailure(spindleState, failedStep, `QA failed at ${failedStep}`);
@@ -783,6 +872,28 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
               errorParts.push('');
               errorParts.push(`Error: ${failedStepInfo.errorMessage}`);
             }
+          }
+
+          // Record per-command QA stats on failure path
+          try {
+            for (const step of qaDetails.steps) {
+              recordQaCommandResult(repoRoot, step.name, {
+                passed: step.status === 'success',
+                durationMs: step.durationMs ?? 0,
+                timedOut: (step.signal === 'SIGTERM') || false,
+                skippedPreExisting: false,
+              });
+            }
+            for (const name of skippedCommands) {
+              recordQaCommandResult(repoRoot, name, {
+                passed: false,
+                durationMs: 0,
+                timedOut: false,
+                skippedPreExisting: true,
+              });
+            }
+          } catch {
+            // Non-fatal
           }
         }
 
@@ -874,12 +985,13 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
                 // Re-run QA
                 const retryQaResult = await runQa(
                   { db: adapter, exec, logger },
-                  { projectId: project.id, repoRoot: worktreePath, config: qaConfig },
+                  { projectId: project.id, repoRoot: worktreePath, config: effectiveQaConfig },
                 );
 
                 if (retryQaResult.status === 'success') {
                   onProgress('QA retry succeeded after fixing tests');
                   await markStep('qa', 'success', { metadata: { qaRunId: retryQaResult.runId, qaRetried: true } });
+                  recordQualitySignal(repoRoot, 'qa_pass');
                   // Fall through to push/PR steps below
                 } else {
                   errorParts.push('');
@@ -960,7 +1072,40 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
         }
       }
 
-      await markStep('qa', 'success', { metadata: { qaRunId: qaResult.runId } });
+      await markStep('qa', 'success', {
+        metadata: {
+          qaRunId: qaResult.runId,
+          ...(skippedCommands.length > 0 ? { skippedPreExisting: skippedCommands } : {}),
+        },
+      });
+      recordQualitySignal(repoRoot, 'qa_pass');
+
+      // Record per-command QA stats
+      try {
+        const qaStatsDetails = await getQaRunDetails(adapter, qaResult.runId);
+        if (qaStatsDetails) {
+          for (const step of qaStatsDetails.steps) {
+            recordQaCommandResult(repoRoot, step.name, {
+              passed: step.status === 'success',
+              durationMs: step.durationMs ?? 0,
+              timedOut: (step.signal === 'SIGTERM') || false,
+              skippedPreExisting: false,
+            });
+          }
+        }
+        for (const name of skippedCommands) {
+          recordQaCommandResult(repoRoot, name, {
+            passed: false,
+            durationMs: 0,
+            timedOut: false,
+            skippedPreExisting: true,
+          });
+        }
+      } catch {
+        // Non-fatal — stats recording failure shouldn't block execution
+      }
+
+      } // end effectiveQaConfig.commands.length > 0
     } else {
       await markStep('qa', 'skipped', { errorMessage: skipQa ? 'Skipped by flag' : 'No QA configured' });
     }

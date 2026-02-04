@@ -39,7 +39,7 @@ describe('detectQaCommands', () => {
 
   it('detects test script', async () => {
     const { detectQaCommands } = await import('../lib/solo-config.js');
-    mockedFs.existsSync.mockReturnValue(true);
+    mockedFs.existsSync.mockImplementation((p: fs.PathLike) => String(p).endsWith('package.json'));
     mockedFs.readFileSync.mockReturnValue(
       JSON.stringify({ scripts: { test: 'vitest' } }),
     );
@@ -51,7 +51,7 @@ describe('detectQaCommands', () => {
 
   it('detects lint script', async () => {
     const { detectQaCommands } = await import('../lib/solo-config.js');
-    mockedFs.existsSync.mockReturnValue(true);
+    mockedFs.existsSync.mockImplementation((p: fs.PathLike) => String(p).endsWith('package.json'));
     mockedFs.readFileSync.mockReturnValue(
       JSON.stringify({ scripts: { lint: 'eslint .' } }),
     );
@@ -63,7 +63,7 @@ describe('detectQaCommands', () => {
 
   it('detects typecheck script', async () => {
     const { detectQaCommands } = await import('../lib/solo-config.js');
-    mockedFs.existsSync.mockReturnValue(true);
+    mockedFs.existsSync.mockImplementation((p: fs.PathLike) => String(p).endsWith('package.json'));
     mockedFs.readFileSync.mockReturnValue(
       JSON.stringify({ scripts: { typecheck: 'tsc --noEmit' } }),
     );
@@ -75,7 +75,7 @@ describe('detectQaCommands', () => {
 
   it('detects build script', async () => {
     const { detectQaCommands } = await import('../lib/solo-config.js');
-    mockedFs.existsSync.mockReturnValue(true);
+    mockedFs.existsSync.mockImplementation((p: fs.PathLike) => String(p).endsWith('package.json'));
     mockedFs.readFileSync.mockReturnValue(
       JSON.stringify({ scripts: { build: 'tsc' } }),
     );
@@ -87,14 +87,14 @@ describe('detectQaCommands', () => {
 
   it('returns empty on JSON parse error', async () => {
     const { detectQaCommands } = await import('../lib/solo-config.js');
-    mockedFs.existsSync.mockReturnValue(true);
+    mockedFs.existsSync.mockImplementation((p: fs.PathLike) => String(p).endsWith('package.json'));
     mockedFs.readFileSync.mockReturnValue('not json');
     expect(detectQaCommands('/repo')).toEqual([]);
   });
 
   it('sorts by priority (typecheck before test)', async () => {
     const { detectQaCommands } = await import('../lib/solo-config.js');
-    mockedFs.existsSync.mockReturnValue(true);
+    mockedFs.existsSync.mockImplementation((p: fs.PathLike) => String(p).endsWith('package.json'));
     mockedFs.readFileSync.mockReturnValue(
       JSON.stringify({ scripts: { test: 'vitest', typecheck: 'tsc' } }),
     );
@@ -105,7 +105,7 @@ describe('detectQaCommands', () => {
 
   it('does not add duplicate scripts', async () => {
     const { detectQaCommands } = await import('../lib/solo-config.js');
-    mockedFs.existsSync.mockReturnValue(true);
+    mockedFs.existsSync.mockImplementation((p: fs.PathLike) => String(p).endsWith('package.json'));
     mockedFs.readFileSync.mockReturnValue(
       JSON.stringify({ scripts: { lint: 'eslint .', 'lint:fix': 'eslint . --fix' } }),
     );

@@ -123,6 +123,8 @@ export interface RunTicketOptions {
   confidence?: number;
   /** Estimated complexity from scout — used to add planning preamble */
   complexity?: string;
+  /** Pre-captured QA baseline from cycle-level cache. If provided, skips per-ticket capture. */
+  qaBaseline?: Map<string, boolean>;
 }
 
 /**

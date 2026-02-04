@@ -226,12 +226,21 @@ export async function countByStatus(
     [projectId]
   );
 
-  const counts: Record<string, number> = {};
+  const counts: Record<TicketStatus, number> = {
+    backlog: 0,
+    ready: 0,
+    leased: 0,
+    in_progress: 0,
+    in_review: 0,
+    done: 0,
+    blocked: 0,
+    aborted: 0,
+  };
   for (const row of result.rows) {
-    counts[row.status] = parseInt(row.count, 10);
+    counts[row.status as TicketStatus] = parseInt(row.count, 10);
   }
 
-  return counts as Record<TicketStatus, number>;
+  return counts;
 }
 
 /**

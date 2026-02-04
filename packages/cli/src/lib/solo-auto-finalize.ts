@@ -15,7 +15,7 @@ import {
   autoMergePr,
 } from './solo-git.js';
 import { recordMergeOutcome, saveSectors } from './sectors.js';
-import { displayConvergenceSummary, recordSessionHistory, displayFinalSummary, type SessionSummaryContext } from './solo-session-summary.js';
+import { displayConvergenceSummary, displayWheelHealth, recordSessionHistory, displayFinalSummary, type SessionSummaryContext } from './solo-session-summary.js';
 
 export async function finalizeSession(state: AutoSessionState): Promise<void> {
   try {
@@ -161,8 +161,11 @@ async function finalizeSafe(state: AutoSessionState): Promise<void> {
     userScope: state.userScope,
     parallelExplicit: state.parallelExplicit,
     parallelOption: state.options.parallel,
+    effectiveMinConfidence: state.effectiveMinConfidence,
+    originalMinConfidence: state.autoConf.minConfidence ?? 20,
   };
   displayConvergenceSummary(summaryCtx);
+  displayWheelHealth(summaryCtx);
   await recordSessionHistory(summaryCtx);
   displayFinalSummary(summaryCtx);
 

@@ -12,6 +12,8 @@ import type { TicketProposal, ProposalCategory } from '@blockspool/core/scout';
 import { createGitService } from './git.js';
 import { createLogger } from './logger.js';
 import type { SpindleConfig } from './spindle/index.js';
+import { detectProjectMetadata } from './project-metadata/index.js';
+import { LINTER_COMMANDS, TYPE_CHECKER_COMMANDS } from './tool-command-map.js';
 
 /**
  * Retention configuration — caps on unbounded state accumulation.
@@ -166,6 +168,8 @@ export interface SoloConfig {
       maxLogBytes?: number;
       tailBytes?: number;
     };
+    /** Disable QA baseline capture — all failures treated as real (default: false) */
+    disableBaseline?: boolean;
   };
   allowedRemote?: string;
   spindle?: Partial<SpindleConfig>;
@@ -220,10 +224,7 @@ export function detectQaCommands(repoRoot: string): DetectedQaCommand[] {
   const commands: DetectedQaCommand[] = [];
   const packageJsonPath = path.join(repoRoot, 'package.json');
 
-  if (!fs.existsSync(packageJsonPath)) {
-    return commands;
-  }
-
+  if (fs.existsSync(packageJsonPath)) {
   try {
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
     const scripts = packageJson.scripts || {};
@@ -259,15 +260,54 @@ export function detectQaCommands(repoRoot: string): DetectedQaCommand[] {
       }
     }
 
-    const order = ['typecheck', 'lint', 'check', 'test', 'build'];
-    commands.sort((a, b) => {
-      const aIdx = order.findIndex(o => a.name.startsWith(o));
-      const bIdx = order.findIndex(o => b.name.startsWith(o));
-      return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
-    });
   } catch {
     // Ignore JSON parse errors
   }
+  } // end if packageJsonPath exists
+
+  // Fall through to project metadata detection for non-Node projects
+  // (or Node projects missing scripts). Dedup against already-added names.
+  try {
+    const addedNames = new Set(commands.map(c => c.name));
+    const meta = detectProjectMetadata(repoRoot);
+
+    if (meta.test_runner && !addedNames.has('test')) {
+      commands.push({
+        name: 'test',
+        cmd: meta.test_runner.run_command,
+        source: 'detected',
+      });
+      addedNames.add('test');
+    }
+
+    if (meta.linter && LINTER_COMMANDS[meta.linter] && !addedNames.has('lint')) {
+      commands.push({
+        name: 'lint',
+        cmd: LINTER_COMMANDS[meta.linter],
+        source: 'detected',
+      });
+      addedNames.add('lint');
+    }
+
+    if (meta.type_checker && TYPE_CHECKER_COMMANDS[meta.type_checker] && !addedNames.has('typecheck')) {
+      commands.push({
+        name: 'typecheck',
+        cmd: TYPE_CHECKER_COMMANDS[meta.type_checker],
+        source: 'detected',
+      });
+      addedNames.add('typecheck');
+    }
+  } catch {
+    // Metadata detection failed — non-fatal
+  }
+
+  // Sort by priority order
+  const order = ['typecheck', 'lint', 'check', 'test', 'build'];
+  commands.sort((a, b) => {
+    const aIdx = order.findIndex(o => a.name.startsWith(o));
+    const bIdx = order.findIndex(o => b.name.startsWith(o));
+    return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+  });
 
   return commands;
 }

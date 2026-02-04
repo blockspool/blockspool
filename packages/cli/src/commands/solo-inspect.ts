@@ -338,6 +338,31 @@ export function registerInspectCommands(solo: Command): void {
             });
           }
 
+          // Add wheel data to JSON output
+          try {
+            const { readRunState: readRS, getQualityRate: getQR } = await import('../lib/run-state.js');
+            const { loadQaStats: loadQS } = await import('../lib/qa-stats.js');
+            const { loadLearnings: loadL } = await import('../lib/learnings.js');
+            const rs = readRS(repoRoot);
+            const qaS = loadQS(repoRoot);
+            const allL = loadL(repoRoot, 0);
+            (output as any).wheel = {
+              qualityRate: getQR(repoRoot),
+              qualitySignals: rs.qualitySignals ?? null,
+              disabledCommands: qaS.disabledCommands,
+              processInsights: allL.filter(l => l.source.type === 'process_insight').length,
+              qaCommands: Object.fromEntries(
+                Object.entries(qaS.commands).map(([k, v]) => [k, {
+                  successRate: v.totalRuns > 0 ? v.successes / v.totalRuns : 1,
+                  avgDurationMs: v.avgDurationMs,
+                  totalRuns: v.totalRuns,
+                }]),
+              ),
+            };
+          } catch {
+            // Non-fatal
+          }
+
           console.log(JSON.stringify(output, null, 2));
           return;
         }
@@ -467,6 +492,57 @@ export function registerInspectCommands(solo: Command): void {
           if (summary.activeRuns > 0) {
             console.log(`    ${chalk.cyan('active runs')}: ${summary.activeRuns}`);
           }
+        }
+
+        // Wheel health section
+        try {
+          const { readRunState, getQualityRate } = await import('../lib/run-state.js');
+          const { loadQaStats } = await import('../lib/qa-stats.js');
+          const { loadLearnings } = await import('../lib/learnings.js');
+
+          const rs = readRunState(repoRoot);
+          const qualityRate = getQualityRate(repoRoot);
+          const qaStats = loadQaStats(repoRoot);
+          const allLearnings = loadLearnings(repoRoot, 0);
+
+          const qs = rs.qualitySignals;
+          const qualityPct = Math.round(qualityRate * 100);
+          const processInsights = allLearnings.filter(l => l.source.type === 'process_insight');
+          const originalConf = 20;
+          const confDelta = (rs as any).effectiveMinConfidence !== undefined
+            ? (rs as any).effectiveMinConfidence - originalConf : 0;
+
+          console.log();
+          console.log(`  ${chalk.cyan('Wheel:')}`);
+          if (qs && qs.totalTickets > 0) {
+            console.log(`    Quality rate: ${qualityPct}%    (first-pass: ${qs.firstPassSuccess}/${qs.totalTickets}, QA: ${qs.qaPassed}/${qs.qaPassed + qs.qaFailed})`);
+          } else {
+            console.log(chalk.gray('    Quality rate: 100% (no data)'));
+          }
+          console.log(`    Confidence: ${originalConf + confDelta}       (original: ${originalConf}${confDelta !== 0 ? `, delta: ${confDelta > 0 ? '+' : ''}${confDelta}` : ''})`);
+          if (qaStats.disabledCommands.length > 0) {
+            console.log(`    Disabled commands:    ${qaStats.disabledCommands.map(d => d.name).join(', ')}`);
+          } else {
+            console.log('    Disabled commands:    none');
+          }
+          console.log(`    Meta-learnings:       ${processInsights.length} process insights`);
+
+          const cmdEntries = Object.values(qaStats.commands);
+          if (cmdEntries.length > 0) {
+            console.log('    QA command stats:');
+            for (const s of cmdEntries) {
+              const rate = s.totalRuns > 0 ? Math.round(s.successes / s.totalRuns * 100) : 100;
+              const avgMs = s.avgDurationMs;
+              const avgStr = avgMs >= 1000 ? `${(avgMs / 1000).toFixed(1)}s` : `${avgMs}ms`;
+              console.log(`      ${s.name}:  ${rate}% success, avg ${avgStr}  (${s.totalRuns} runs)`);
+            }
+          }
+
+          if (options.json) {
+            // Wheel section for JSON mode is handled via output.wheel below
+          }
+        } catch {
+          // Non-fatal — wheel data may not exist yet
         }
 
       } finally {

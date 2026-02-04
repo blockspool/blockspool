@@ -18,6 +18,8 @@ import { deriveScopePolicy, validatePlanScope } from './scope-policy.js';
 import { recordOutput, recordDiff, recordCommandFailure, recordPlanHash } from './spindle.js';
 import { addLearning, confirmLearning, extractTags } from './learnings.js';
 import { recordDedupEntry } from './dedup-memory.js';
+import { recordQualitySignal } from './run-state-bridge.js';
+import { recordQaCommandResult } from './qa-stats.js';
 import { ingestTicketEvent } from './ticket-worker.js';
 
 // ---------------------------------------------------------------------------
@@ -582,11 +584,21 @@ export async function processEvent(
       const command = payload['command'] as string;
       const success = payload['success'] as boolean;
       const output = (payload['output'] ?? '') as string;
+      const durationMs = (payload['durationMs'] ?? 0) as number;
+      const timedOut = (payload['timedOut'] ?? false) as boolean;
 
       // Record command failure in spindle state
       if (!success) {
         recordCommandFailure(s.spindle, command, output);
       }
+
+      // Record QA command stats for pottery wheel tracking
+      recordQaCommandResult(run.rootPath, command, {
+        passed: success,
+        durationMs,
+        timedOut,
+        skippedPreExisting: false,
+      });
 
       // Save command output as artifact
       const cmdSlug = command.replace(/[^a-z0-9]/gi, '-').slice(0, 30);
@@ -614,6 +626,9 @@ export async function processEvent(
         }
         s.injected_learning_ids = [];
       }
+
+      // Record quality signal for pottery wheel tracking
+      recordQualitySignal(run.rootPath, 'qa_pass');
 
       // Record success learning
       if (s.learnings_enabled && s.current_ticket_id) {
@@ -677,6 +692,9 @@ export async function processEvent(
       if (s.phase !== 'QA') {
         return { processed: true, phase_changed: false, message: 'QA failed outside QA phase' };
       }
+
+      // Record quality signal for pottery wheel tracking
+      recordQualitySignal(run.rootPath, 'qa_fail');
 
       // Record QA failure in spindle (for stall detection — no progress)
       recordDiff(s.spindle, null);

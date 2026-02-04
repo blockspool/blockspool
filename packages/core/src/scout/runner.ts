@@ -383,7 +383,7 @@ export class CodexMcpScoutBackend implements ScoutBackend {
       mcpServers: {
         'batch-server': {
           command: 'node',
-          args: [serverScript, '--data', dataPath],
+          args: [serverScript, '--data', dataPath, '--results-dir', tmpDir],
         },
       },
     };

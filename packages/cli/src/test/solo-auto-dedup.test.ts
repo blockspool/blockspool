@@ -2,8 +2,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { DatabaseAdapter } from '@blockspool/core/db';
 
 // Mock child_process
+// execFile must call its callback with { stdout, stderr } because promisify
+// on a vi.fn() uses generic wrapping (no custom symbol), and gitExecFile
+// accesses result.stdout.
 vi.mock('node:child_process', () => ({
   spawnSync: vi.fn(),
+  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, callback: Function) => {
+    const cb = typeof _opts === 'function' ? _opts : callback;
+    if (typeof cb === 'function') {
+      (cb as Function)(null, { stdout: '', stderr: '' });
+    }
+  }),
 }));
 
 // Mock the repos
@@ -19,7 +28,7 @@ import {
   normalizeTitle,
   titleSimilarity,
 } from '../lib/solo-auto.js';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFile } from 'node:child_process';
 import { tickets } from '@blockspool/core/repos';
 
 function makeFakeDb(): DatabaseAdapter {
@@ -135,21 +144,21 @@ describe('getDeduplicationContext', () => {
   it('queries open PR branches', async () => {
     const db = makeFakeDb();
     vi.mocked(tickets.listByProject).mockResolvedValue([]);
-    vi.mocked(spawnSync).mockReturnValue({
-      stdout: '  origin/blockspool/tkt_abc123\n  origin/blockspool/tkt_def456\n',
-      stderr: '',
-      status: 0,
-      pid: 0,
-      output: [],
-      signal: null,
-    } as any);
+    vi.mocked(execFile).mockImplementation((_cmd: any, _args: any, _opts: any, callback: any) => {
+      const cb = typeof _opts === 'function' ? _opts : callback;
+      if (typeof cb === 'function') {
+        cb(null, { stdout: '  origin/blockspool/tkt_abc123\n  origin/blockspool/tkt_def456\n', stderr: '' });
+      }
+      return undefined as any;
+    });
 
     const ctx = await getDeduplicationContext(db, 'proj_1', '/repo');
 
-    expect(spawnSync).toHaveBeenCalledWith(
+    expect(execFile).toHaveBeenCalledWith(
       'git',
       ['branch', '-r', '--list', 'origin/blockspool/*'],
       expect.objectContaining({ cwd: '/repo', encoding: 'utf-8' }),
+      expect.any(Function),
     );
     expect(ctx.openPrBranches).toContain('blockspool/tkt_abc123');
     expect(ctx.openPrBranches).toContain('blockspool/tkt_def456');

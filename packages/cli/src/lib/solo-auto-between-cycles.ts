@@ -20,6 +20,8 @@ import {
   computeCoverage, suggestScopeAdjustment, getSectorCategoryAffinity,
 } from './sectors.js';
 import { loadDedupMemory } from './dedup-memory.js';
+import { calibrateConfidence } from './qa-stats.js';
+import { extractMetaLearnings } from './meta-learnings.js';
 import {
   refreshCodebaseIndex, hasStructuralChanges,
 } from './codebase-index.js';
@@ -72,6 +74,23 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
     }
   }
 
+  // Stats-based confidence calibration
+  if (state.cycleCount > 5) {
+    try {
+      const confDelta = calibrateConfidence(
+        state.repoRoot,
+        state.effectiveMinConfidence,
+        state.autoConf.minConfidence ?? 20,
+      );
+      if (confDelta !== 0) {
+        state.effectiveMinConfidence += confDelta;
+        console.log(chalk.gray(`  Confidence calibration: ${confDelta > 0 ? '+' : ''}${confDelta} → ${state.effectiveMinConfidence}`));
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
   // Backpressure from open PRs (skip in direct mode)
   if (state.isContinuous && state.pendingPrUrls.length > 0 && state.deliveryMode !== 'direct') {
     const openRatio = state.pendingPrUrls.length / state.maxPrs;
@@ -86,6 +105,18 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
         console.log(chalk.gray(`  Light backpressure (${state.pendingPrUrls.length}/${state.maxPrs} open) — raising confidence +15`));
       }
     }
+  }
+
+  // Clamp confidence to prevent runaway compounding from stacking adjustments
+  const CONFIDENCE_FLOOR = 0;
+  const CONFIDENCE_CEILING = 80;
+  if (state.effectiveMinConfidence > CONFIDENCE_CEILING) {
+    if (state.options.verbose) {
+      console.log(chalk.gray(`  Confidence clamped: ${state.effectiveMinConfidence} → ${CONFIDENCE_CEILING} (ceiling)`));
+    }
+    state.effectiveMinConfidence = CONFIDENCE_CEILING;
+  } else if (state.effectiveMinConfidence < CONFIDENCE_FLOOR) {
+    state.effectiveMinConfidence = CONFIDENCE_FLOOR;
   }
 
   // Rebuild taste profile every 10 cycles
@@ -260,6 +291,37 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     const rs = readRunState(state.repoRoot);
     rs.recentCycles = pushCycleSummary(rs.recentCycles ?? [], cycleSummary);
     writeRunState(state.repoRoot, rs);
+  }
+
+  // Meta-learning extraction (aggregate pattern detection)
+  let metaInsightsAdded = 0;
+  if (state.autoConf.learningsEnabled && state.cycleCount >= 3) {
+    try {
+      metaInsightsAdded = extractMetaLearnings({
+        projectRoot: state.repoRoot,
+        cycleOutcomes: state.cycleOutcomes,
+        allOutcomes: state.allTicketOutcomes,
+        learningsEnabled: state.autoConf.learningsEnabled,
+        existingLearnings: state.allLearnings,
+      });
+      if (metaInsightsAdded > 0 && state.options.verbose) {
+        console.log(chalk.gray(`  Meta-learnings: ${metaInsightsAdded} process insight(s) extracted`));
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  // Wheel diagnostics one-liner (always shown, not verbose-gated)
+  if (state.cycleCount >= 2) {
+    const qualityRate = getQualityRate(state.repoRoot);
+    const qualityPct = Math.round(qualityRate * 100);
+    const { loadQaStats: loadQa } = await import('./qa-stats.js');
+    const qaStore = loadQa(state.repoRoot);
+    const disabledCount = qaStore.disabledCommands.length;
+    const confValue = state.effectiveMinConfidence;
+    const insightsStr = metaInsightsAdded > 0 ? ` | insights +${metaInsightsAdded}` : '';
+    console.log(chalk.gray(`  Wheel: quality ${qualityPct}% | confidence ${confValue} | disabled ${disabledCount}${insightsStr}`));
   }
 
   // Convergence metrics

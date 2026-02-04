@@ -3,7 +3,9 @@
  */
 
 import chalk from 'chalk';
-import { readRunState } from './run-state.js';
+import { readRunState, getQualityRate } from './run-state.js';
+import { loadQaStats } from './qa-stats.js';
+import { loadLearnings } from './learnings.js';
 import { computeCoverage, type SectorState } from './sectors.js';
 import { computeConvergenceMetrics } from './cycle-context.js';
 import { formatElapsed } from './solo-auto-utils.js';
@@ -33,6 +35,8 @@ export interface SessionSummaryContext {
   userScope: string | undefined;
   parallelExplicit: boolean;
   parallelOption: string | undefined;
+  effectiveMinConfidence?: number;
+  originalMinConfidence?: number;
 }
 
 /**
@@ -54,6 +58,67 @@ export function displayConvergenceSummary(ctx: SessionSummaryContext): void {
   if (!isNaN(metrics.mergeRate)) console.log(chalk.gray(`  Merge rate: ${Math.round(metrics.mergeRate * 100)}%`));
   if (metrics.velocity.prsPerHour > 0) console.log(chalk.gray(`  Velocity: ${metrics.velocity.prsPerHour.toFixed(1)} PRs/h`));
   console.log(chalk.gray(`  Suggested action: ${metrics.suggestedAction}`));
+}
+
+/**
+ * Display wheel health summary at end of session.
+ */
+export function displayWheelHealth(ctx: SessionSummaryContext): void {
+  const { repoRoot } = ctx;
+  const qualityRate = getQualityRate(repoRoot);
+  const rs = readRunState(repoRoot);
+  const qs = rs.qualitySignals;
+  const qaStats = loadQaStats(repoRoot);
+  const allLearnings = loadLearnings(repoRoot, 0);
+
+  const qualityPct = Math.round(qualityRate * 100);
+  const qualityColor = qualityRate > 0.8 ? chalk.green
+    : qualityRate >= 0.5 ? chalk.yellow
+    : chalk.red;
+
+  console.log();
+  console.log(chalk.bold('Wheel Health'));
+
+  // Quality rate
+  if (qs && qs.totalTickets > 0) {
+    console.log(qualityColor(`  Quality rate: ${qualityPct}% (${qs.firstPassSuccess}/${qs.totalTickets} first-pass, ${qs.qaPassed}/${qs.qaPassed + qs.qaFailed} QA pass)`));
+  } else {
+    console.log(chalk.gray(`  Quality rate: ${qualityPct}% (no data)`));
+  }
+
+  // Confidence
+  const effectiveConf = ctx.effectiveMinConfidence ?? ctx.originalMinConfidence ?? 20;
+  const originalConf = ctx.originalMinConfidence ?? 20;
+  const delta = effectiveConf - originalConf;
+  const deltaStr = delta !== 0 ? `, calibrated ${delta > 0 ? '+' : ''}${delta}` : '';
+  console.log(chalk.gray(`  Confidence: ${effectiveConf} (started at ${originalConf}${deltaStr})`));
+
+  // Disabled commands
+  if (qaStats.disabledCommands.length > 0) {
+    const names = qaStats.disabledCommands.map(d => d.name).join(', ');
+    console.log(chalk.yellow(`  Disabled commands: ${names}`));
+  } else {
+    console.log(chalk.gray('  Disabled commands: none'));
+  }
+
+  // Meta-learnings (process insights)
+  const processInsights = allLearnings.filter(l => l.source.type === 'process_insight');
+  console.log(chalk.gray(`  Meta-learnings: ${processInsights.length} process insights`));
+
+  // QA command stats
+  const cmdEntries = Object.values(qaStats.commands);
+  if (cmdEntries.length > 0) {
+    const statLines = cmdEntries.map(s => {
+      const rate = s.totalRuns > 0 ? Math.round(s.successes / s.totalRuns * 100) : 100;
+      const avgMs = s.avgDurationMs;
+      const avgStr = avgMs >= 1000 ? `${(avgMs / 1000).toFixed(1)}s` : `${avgMs}ms`;
+      return `    ${s.name}: ${rate}% success, avg ${avgStr} (${s.totalRuns} runs)`;
+    });
+    console.log(chalk.gray('  QA stats:'));
+    for (const line of statLines) {
+      console.log(chalk.gray(line));
+    }
+  }
 }
 
 /**

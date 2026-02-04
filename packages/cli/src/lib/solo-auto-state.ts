@@ -447,6 +447,19 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     console.log(chalk.gray(`  Learnings loaded: ${allLearnings.length}`));
   }
 
+  // Wheel health summary
+  {
+    const { getQualityRate } = await import('./run-state.js');
+    const { loadQaStats } = await import('./qa-stats.js');
+    const qualityRate = getQualityRate(repoRoot);
+    const qaStats = loadQaStats(repoRoot);
+    const disabledCount = qaStats.disabledCommands.length;
+    const qualityPct = Math.round(qualityRate * 100);
+    const confValue = autoConf.minConfidence ?? 20;
+    const qualityColor = qualityRate < 0.5 ? chalk.yellow : chalk.gray;
+    console.log(qualityColor(`  Quality rate: ${qualityPct}% | Confidence: ${confValue} | Disabled: ${disabledCount} cmds`));
+  }
+
   // Backend settings
   const activeBackendName = options.scoutBackend ?? 'claude';
   const backendConf = activeBackendName === 'codex' ? autoConf.codex : autoConf.claude;

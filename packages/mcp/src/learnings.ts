@@ -28,6 +28,7 @@ export interface Learning {
       | 'scope_violation'
       | 'reviewer_feedback'
       | 'cross_sector_pattern'
+      | 'process_insight'
       | 'manual';
     detail?: string;
   };

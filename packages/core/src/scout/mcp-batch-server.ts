@@ -16,7 +16,8 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 export interface McpBatchServerOptions {
   /** Pre-built batch prompts */
@@ -147,9 +148,18 @@ async function main() {
   const server = new McpBatchServer({ batchPrompts: prompts });
   const results = await server.start();
 
-  // Write results to stdout as JSON (Codex process is done at this point)
-  // Results are collected by the parent process via the done promise, not stdout
-  void results;
+  // Write results to disk so the parent process can read them.
+  // Derive the output directory from --results-dir arg or fall back to the
+  // same directory as the --data file.
+  const resultsDirIdx = process.argv.indexOf('--results-dir');
+  const resultsDir = (resultsDirIdx !== -1 && process.argv[resultsDirIdx + 1])
+    ? process.argv[resultsDirIdx + 1]
+    : dirname(dataPath);
+  const resultsObj: Record<string, string> = {};
+  for (const [k, v] of results) {
+    resultsObj[String(k)] = v;
+  }
+  writeFileSync(join(resultsDir, 'results.json'), JSON.stringify(resultsObj));
 }
 
 // Run as CLI if executed directly

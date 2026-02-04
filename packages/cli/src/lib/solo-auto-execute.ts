@@ -7,12 +7,14 @@ import type { TicketProposal } from '@blockspool/core/scout';
 import { tickets, runs } from '@blockspool/core/repos';
 import type { AutoSessionState } from './solo-auto-state.js';
 import { shouldContinue } from './solo-auto-state.js';
-import { soloRunTicket } from './solo-ticket.js';
+import { soloRunTicket, captureQaBaseline } from './solo-ticket.js';
 import { computeTicketTimeout } from './solo-auto-utils.js';
 import { createSpinner } from './spinner.js';
 import { formatGuidelinesForPrompt } from './guidelines.js';
 import { selectRelevant, formatLearningsForPrompt, extractTags, addLearning, confirmLearning, recordAccess } from './learnings.js';
 import { classifyFailure } from './failure-classifier.js';
+import { autoTuneQaConfig } from './qa-stats.js';
+import { normalizeQaConfig } from './solo-utils.js';
 import { recordPrFiles } from './file-cooldown.js';
 import { recordDedupEntry } from './dedup-memory.js';
 import { recordFormulaTicketOutcome, pushRecentDiff, recordQualitySignal } from './run-state.js';
@@ -58,6 +60,52 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
 
   state.currentlyProcessing = true;
 
+  // Auto-tune QA config before baseline capture
+  if (state.config?.qa?.commands?.length) {
+    try {
+      const tuneResult = autoTuneQaConfig(state.repoRoot, normalizeQaConfig(state.config));
+      if (tuneResult.reEnabled.length > 0) {
+        for (const name of tuneResult.reEnabled) {
+          console.log(chalk.green(`  QA auto-tune: re-enabled ${name} (recent baselines passing)`));
+        }
+      }
+      if (tuneResult.disabled.length > 0) {
+        for (const d of tuneResult.disabled) {
+          console.log(chalk.yellow(`  QA auto-tune: disabled ${d.name} — ${d.reason}`));
+        }
+      }
+      if (tuneResult.disabled.length > 0 || tuneResult.reEnabled.length > 0) {
+        // Update config commands in-memory (shallow copy, not persisted to disk)
+        state.config = {
+          ...state.config,
+          qa: {
+            ...state.config.qa,
+            commands: tuneResult.config.commands.map(c => ({
+              name: c.name,
+              cmd: c.cmd,
+              cwd: c.cwd,
+              timeoutMs: c.timeoutMs,
+            })),
+          },
+        };
+      }
+    } catch {
+      // Non-fatal — continue with existing config
+    }
+  }
+
+  // Capture QA baseline once for this cycle — reused across all tickets.
+  // All tickets in a cycle share the same base branch, so baseline is identical.
+  let cycleQaBaseline: Map<string, boolean> | null = null;
+  if (state.config?.qa?.commands?.length && !state.config.qa.disableBaseline) {
+    console.log(chalk.gray('  Capturing QA baseline for this cycle...'));
+    cycleQaBaseline = await captureQaBaseline(state.repoRoot, state.config, (msg) => console.log(chalk.gray(msg)), state.repoRoot);
+    const preExisting = [...cycleQaBaseline.entries()].filter(([, passed]) => !passed);
+    if (preExisting.length > 0) {
+      console.log(chalk.yellow(`  QA baseline: ${preExisting.length} pre-existing failure(s) will be skipped`));
+    }
+  }
+
   // Adaptive parallelism
   let parallelCount: number;
   if (state.parallelExplicit) {
@@ -79,7 +127,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
     }
   }
 
-  const processOneProposal = async (proposal: TicketProposal, slotLabel: string): Promise<{ success: boolean; prUrl?: string; noChanges?: boolean }> => {
+  const processOneProposal = async (proposal: TicketProposal, slotLabel: string): Promise<{ success: boolean; prUrl?: string; noChanges?: boolean; wasRetried?: boolean }> => {
     console.log(chalk.cyan(`[${slotLabel}] ${proposal.title}`));
     const ticketSpinner = createSpinner(`Setting up...`, 'spool');
 
@@ -117,6 +165,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
     let currentTicket = ticket;
     let currentRun = run;
     let retryCount = 0;
+    let wasRetried = false;
     const maxScopeRetries = 2;
 
     while (retryCount <= maxScopeRetries) {
@@ -143,6 +192,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
           qaRetryWithTestFix: ['refactor', 'perf', 'types'].includes(proposal.category),
           confidence: proposal.confidence,
           complexity: proposal.estimated_complexity,
+          qaBaseline: cycleQaBaseline ?? undefined,
           ...(state.milestoneMode && state.milestoneBranch ? {
             baseBranch: state.milestoneBranch,
             skipPush: true,
@@ -199,7 +249,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
                 await state.startNewMilestone();
               }
             }
-            return { success: true };
+            return { success: true, wasRetried };
           }
 
           await runs.markSuccess(state.adapter, currentRun.id, { prUrl: result.prUrl });
@@ -218,7 +268,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
               files: proposal.files ?? proposal.allowed_paths ?? [],
             });
             ticketSpinner.succeed('Committed to direct branch');
-            return { success: true };
+            return { success: true, wasRetried };
           }
 
           // Auto-merge
@@ -232,9 +282,10 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
             console.log(chalk.cyan(`    ${result.prUrl}`));
             recordPrFiles(state.repoRoot, result.prUrl, proposal.files ?? proposal.allowed_paths ?? []);
           }
-          return { success: true, prUrl: result.prUrl };
+          return { success: true, prUrl: result.prUrl, wasRetried };
         } else if (result.scopeExpanded && retryCount < maxScopeRetries) {
           retryCount++;
+          wasRetried = true;
           ticketSpinner.update(`Scope expanded, retrying (${retryCount}/${maxScopeRetries})...`);
 
           const updatedTicket = await tickets.getById(state.adapter, currentTicket.id);
@@ -298,7 +349,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
   };
 
   // Helper to record outcome after processing
-  const recordOutcome = (proposal: TicketProposal, result: { success: boolean; prUrl?: string; noChanges?: boolean }, otherTitles: string[]) => {
+  const recordOutcome = (proposal: TicketProposal, result: { success: boolean; prUrl?: string; noChanges?: boolean; wasRetried?: boolean }, otherTitles: string[]) => {
     if (result.noChanges) {
       recordDedupEntry(state.repoRoot, proposal.title, false, 'no_changes');
       const outcome: TicketOutcome = { id: '', title: proposal.title, category: proposal.category, status: 'no_changes' };
@@ -317,7 +368,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       if (result.prUrl && state.currentSectorId) {
         state.prMetaMap.set(result.prUrl, { sectorId: state.currentSectorId, formula: state.currentFormulaName });
       }
-      recordQualitySignal(state.repoRoot, 'first_pass');
+      recordQualitySignal(state.repoRoot, result.wasRetried ? 'retried' : 'first_pass');
       if (state.autoConf.learningsEnabled) {
         addLearning(state.repoRoot, {
           text: `${proposal.category} succeeded: ${proposal.title}`.slice(0, 200),

@@ -253,7 +253,7 @@ describe('consolidateLearnings', () => {
         id: `id${i.toString().padStart(3, '0')}`,
         text: i < 2 ? 'QA fails on src/api tests require DATABASE_URL env var' : `xyzzy${i}${String.fromCharCode(97 + (i % 26))}${i * 7}plugh${i * 13}`,
         weight: i === 0 ? 30 : i === 1 ? 60 : 40,
-        access_count: i === 0 ? 5 : i === 1 ? 3 : 0,
+        access_count: i === 0 ? 1 : i === 1 ? 2 : 0,
         tags: i < 2 ? ['path:src/api'] : [],
       }));
     }
@@ -268,7 +268,7 @@ describe('consolidateLearnings', () => {
     const merged = result.find(l => l.text.includes('QA fails'));
     expect(merged).toBeDefined();
     expect(merged!.weight).toBe(60);
-    expect(merged!.access_count).toBe(8); // 5 + 3
+    expect(merged!.access_count).toBe(3); // 1 + 2
   });
 
   it('does nothing when count <= 50', () => {

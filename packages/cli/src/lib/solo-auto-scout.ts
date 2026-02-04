@@ -184,10 +184,8 @@ export async function runScoutPhase(state: AutoSessionState): Promise<ScoutResul
     saveSectors(state.repoRoot, state.sectorState);
     const cov = computeCoverage(state.sectorState);
     console.log(chalk.gray(`  Sector: ${state.currentSectorId} (${cov.scannedSectors}/${cov.totalSectors} scanned, ${cov.percent}% coverage)`));
-    if (cov.sectorPercent >= 100 && state.effectiveMinImpact < 7) {
-      state.effectiveMinImpact = Math.min(7, state.effectiveMinImpact + 1);
-      state.effectiveMinConfidence = Math.min(80, state.effectiveMinConfidence + 10);
-      console.log(chalk.gray(`  Full coverage — raising thresholds (impact: ${state.effectiveMinImpact}, confidence: ${state.effectiveMinConfidence})`));
+    if (cov.sectorPercent >= 100) {
+      console.log(chalk.gray(`  Full coverage — sector fully scanned`));
     }
   }
 

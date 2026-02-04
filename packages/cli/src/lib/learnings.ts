@@ -220,6 +220,8 @@ export function consolidateLearnings(projectRoot: string): void {
     for (let j = i + 1; j < learnings.length; j++) {
       if (merged.has(j)) continue;
       if (titleSimilarity(learnings[i].text, learnings[j].text) >= SIMILARITY_MERGE_THRESHOLD) {
+        // Guard: don't merge across different categories
+        if (learnings[i].category !== learnings[j].category) continue;
         // Guard: don't merge across different source types
         if (learnings[i].source.type !== learnings[j].source.type) continue;
         // Guard: don't merge different failure types

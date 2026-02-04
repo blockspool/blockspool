@@ -54,6 +54,8 @@ export interface FilterResult {
   created_ticket_ids: string[];
 }
 
+const MAX_DEFERRED_PROPOSALS = 20;
+
 const REQUIRED_FIELDS: (keyof ValidatedProposal)[] = [
   'category', 'title', 'description', 'allowed_paths',
   'files', 'confidence', 'verification_commands',
@@ -186,8 +188,16 @@ export async function filterAndCreateTickets(
         return true;
       });
 
+  // Cap deferred proposals to prevent unbounded growth
+  if (s.deferred_proposals.length > MAX_DEFERRED_PROPOSALS) {
+    s.deferred_proposals.sort((a, b) => b.confidence - a.confidence);
+    s.deferred_proposals = s.deferred_proposals.slice(0, MAX_DEFERRED_PROPOSALS);
+  }
+
   // Step 4: Dedup against existing tickets (title similarity)
-  const existingTickets = await repos.tickets.listByProject(db, s.project_id);
+  const existingTickets = await repos.tickets.listByProject(db, s.project_id, {
+    status: ['ready', 'in_progress'],
+  });
   const existingTitles = existingTickets.map(t => t.title);
   const afterDedup = afterScope.filter(p => {
     const isDupe = existingTitles.some(t => titleSimilarity(t, p.title) >= 0.6);

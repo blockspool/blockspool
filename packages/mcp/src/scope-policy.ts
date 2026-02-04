@@ -39,7 +39,7 @@ const CREDENTIAL_PATTERNS: RegExp[] = [
   /AKIA[0-9A-Z]{16}/,                        // AWS access key
   /-----BEGIN.*PRIVATE KEY-----/,              // PEM keys
   /ghp_[a-zA-Z0-9]{36}/,                      // GitHub PAT
-  /sk-[a-zA-Z0-9]{48}/,                       // OpenAI key
+  /\bsk-(?:proj-)?[a-zA-Z0-9_-]{32,}/,        // OpenAI key
   /password\s*[:=]\s*['"][^'"]+/i,            // hardcoded passwords
   /xox[bporas]-[a-zA-Z0-9-]+/,               // Slack tokens (xoxb-, xoxp-, xoxo-, xoxa-, xoxr-, xoxs-)
   /postgres(ql)?:\/\/[^\s'"]+/i,             // PostgreSQL connection string

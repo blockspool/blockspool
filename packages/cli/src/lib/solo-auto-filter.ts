@@ -231,13 +231,14 @@ export async function filterProposals(
     state.dedupMemory = loadDedupMemory(state.repoRoot);
   }
 
-  // Impact threshold filter
+  // Impact floor filter (static — no dynamic escalation)
+  const impactFloor = state.autoConf.minImpactScore ?? 3;
   let rejectedByImpact = 0;
   const impactFiltered = approvedProposals.filter(p => {
     const impact = p.impact_score ?? 5;
-    if (impact < state.effectiveMinImpact) {
+    if (impact < impactFloor) {
       rejectedByImpact++;
-      console.log(chalk.gray(`  ✗ Below impact threshold (${impact} < ${state.effectiveMinImpact}): ${p.title}`));
+      console.log(chalk.gray(`  ✗ Below impact floor (${impact} < ${impactFloor}): ${p.title}`));
       return false;
     }
     return true;
@@ -282,9 +283,14 @@ export async function filterProposals(
 
   // Test balance
   const maxTestRatio = state.autoConf.maxTestRatio ?? 0.4;
+  const preBalanceCount = approvedProposals.length;
   const balanced = balanceProposals(approvedProposals, maxTestRatio);
   approvedProposals.length = 0;
   approvedProposals.push(...balanced);
+
+  if (balanced.length === 0 && preBalanceCount > 0) {
+    console.log(chalk.yellow(`  ⚠ Balance returned 0 from ${preBalanceCount} proposals (maxTestRatio: ${maxTestRatio}) — this is unexpected`));
+  }
 
   pipelineCounts.balance = approvedProposals.length;
 
@@ -297,7 +303,9 @@ export async function filterProposals(
     if (rejectedByCategory > 0) parts.push(`${rejectedByCategory} blocked by category`);
     if (rejectedByScope > 0) parts.push(`${rejectedByScope} out of scope`);
     if (duplicateCount > 0) parts.push(`${duplicateCount} duplicates`);
-    if (rejectedByImpact > 0) parts.push(`${rejectedByImpact} below impact threshold`);
+    if (rejectedByImpact > 0) parts.push(`${rejectedByImpact} below impact floor`);
+    const balanceDropped = preBalanceCount - balanced.length;
+    if (balanceDropped > 0) parts.push(`${balanceDropped} dropped by balance`);
     const reason = parts.length > 0
       ? `No proposals approved (${parts.join(', ')})`
       : 'No proposals passed filters';

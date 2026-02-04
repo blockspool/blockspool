@@ -7,7 +7,7 @@ import { runQa, getQaRunDetails } from '@blockspool/core/services';
 import type { tickets } from '@blockspool/core/repos';
 import { buildTicketPrompt } from './solo-prompt-builder.js';
 import type { ExecutionBackend } from './execution-backends/index.js';
-import { gitExec, gitExecFile } from './solo-git.js';
+import { gitExecFile } from './solo-git.js';
 
 /**
  * Check if a QA failure is a test failure (vitest/jest/pytest etc.)
@@ -133,7 +133,7 @@ export async function runQaRetryWithTestFix(ctx: QaRetryContext): Promise<QaRetr
       const filesToStage = [...new Set([...expandedPaths])];
       for (const filePattern of filesToStage) {
         try {
-          await gitExec(`git add "${filePattern}"`, { cwd: worktreePath });
+          await gitExecFile('git', ['add', filePattern], { cwd: worktreePath });
         } catch {
           // File may not exist or may not have changes — that's fine
         }

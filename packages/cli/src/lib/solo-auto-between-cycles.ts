@@ -279,16 +279,12 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     }
   }
 
-  // Scope adjustment
+  // Scope adjustment (confidence only — impact uses static config floor)
   if (state.sectorState && state.cycleCount >= 3) {
     const scopeAdj = suggestScopeAdjustment(state.sectorState);
-    if (scopeAdj === 'narrow') {
-      state.effectiveMinImpact = Math.min(10, state.effectiveMinImpact + 2);
-      if (state.options.verbose) console.log(chalk.gray(`  Scope adjustment: narrowing (raising impact bar to ${state.effectiveMinImpact})`));
-    } else if (scopeAdj === 'widen') {
+    if (scopeAdj === 'widen') {
       state.effectiveMinConfidence = state.autoConf.minConfidence ?? 20;
-      state.effectiveMinImpact = 3;
-      if (state.options.verbose) console.log(chalk.gray(`  Scope adjustment: widening (resetting thresholds)`));
+      if (state.options.verbose) console.log(chalk.gray(`  Scope adjustment: widening (resetting confidence threshold)`));
     }
   }
 

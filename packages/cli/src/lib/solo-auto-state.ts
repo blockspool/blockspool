@@ -154,7 +154,6 @@ export interface AutoSessionState {
   currentSectorCycle: number;
 
   // Quality
-  effectiveMinImpact: number;
   effectiveMinConfidence: number;
   consecutiveLowYieldCycles: number;
 
@@ -655,7 +654,6 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     currentSectorId: null,
     currentSectorCycle: 0,
 
-    effectiveMinImpact: 3,
     effectiveMinConfidence: autoConf.minConfidence ?? 20,
     consecutiveLowYieldCycles: 0,
 

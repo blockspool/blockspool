@@ -55,9 +55,12 @@ export function recordPrFiles(repoRoot: string, prUrl: string, files: string[]):
 }
 
 export function getCooledFiles(repoRoot: string): Map<string, string> {
-  const entries = prune(readEntries(repoRoot));
-  // Write back pruned entries
-  writeEntries(repoRoot, entries);
+  const raw = readEntries(repoRoot);
+  const entries = prune(raw);
+  // Only write back if entries were actually pruned
+  if (entries.length < raw.length) {
+    writeEntries(repoRoot, entries);
+  }
   const map = new Map<string, string>();
   for (const e of entries) {
     map.set(e.filePath, e.prUrl);

@@ -97,6 +97,8 @@ export interface AutoConfig {
   scoutConcurrency?: number;
   /** Max fraction of test proposals per batch (default 0.4) */
   maxTestRatio?: number;
+  /** Minimum impact score for proposals to be accepted (default 3). Static floor — no dynamic escalation. */
+  minImpactScore?: number;
   /** Per-category ticket timeouts in ms (e.g. { test: 300000, refactor: 600000 }) */
   categoryTimeouts?: Record<string, number>;
   /** Delivery mode: how completed work is shipped */

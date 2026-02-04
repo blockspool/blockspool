@@ -117,7 +117,8 @@ export interface RunState {
   min_confidence: number;
   max_proposals_per_scout: number;
   min_impact_score: number;
-  draft_prs: boolean;
+  create_prs: boolean;
+  draft: boolean;
   eco: boolean;
   hints: string[];
   scout_exclude_dirs: string[];
@@ -321,7 +322,10 @@ export interface SessionConfig {
   ticket_step_budget?: number;
   max_prs?: number;
   max_cycles?: number;
+  /** @deprecated Use create_prs instead */
   draft_prs?: boolean;
+  create_prs?: boolean;
+  draft?: boolean;
   eco?: boolean;
   parallel?: number;
   min_impact_score?: number;

@@ -3,6 +3,7 @@
  */
 
 import chalk from 'chalk';
+import { minimatch } from 'minimatch';
 import type { TicketProposal } from '@blockspool/core/scout';
 import type { AutoSessionState } from './solo-auto-state.js';
 import { runClaude, type ExecutionBackend } from './execution-backends/index.js';
@@ -132,6 +133,9 @@ export async function filterProposals(
   }
 
   // Category filter
+  // Test proposals are soft-allowed: not in the focus list but not hard-blocked.
+  // balanceProposals() organically caps test ratio (default 40%).
+  // --tests flag adds test to the focus list for active test seeking.
   let rejectedByCategory = 0;
   let rejectedByScope = 0;
   const categoryFiltered = proposals.filter((p) => {
@@ -142,6 +146,8 @@ export async function filterProposals(
       return false;
     }
     if (!allowCategories.some(allowed => category.includes(allowed))) {
+      // Soft-allow test: not in focus list but not hard-blocked
+      if (category === 'test') return true;
       rejectedByCategory++;
       console.log(chalk.gray(`  ✗ Category not allowed (${category}): ${p.title}`));
       return false;
@@ -149,13 +155,14 @@ export async function filterProposals(
     return true;
   });
 
-  // Scope filter
-  const normalizedScope = scope.replace(/\*\*$/, '').replace(/\*$/, '').replace(/\/$/, '');
-  const scopeFiltered = normalizedScope
-    ? categoryFiltered.filter(p => {
+  // Scope filter — use minimatch for proper glob matching (handles patterns like 'packages/*/src/**')
+  const isCatchAll = !scope || scope === '**' || scope === '*';
+  const scopeFiltered = isCatchAll
+    ? categoryFiltered
+    : categoryFiltered.filter(p => {
         const files = (p.files?.length ? p.files : p.allowed_paths) || [];
         const allInScope = files.length === 0 || files.every((f: string) =>
-          f.startsWith(normalizedScope) || f.startsWith(normalizedScope + '/')
+          minimatch(f, scope, { dot: true })
         );
         if (!allInScope) {
           rejectedByScope++;
@@ -170,20 +177,22 @@ export async function filterProposals(
             original_scope: scope,
             deferredAt: Date.now(),
           });
-          console.log(chalk.gray(`  ✗ Out of scope (${normalizedScope}): ${p.title}`));
+          const outOfScopeFiles = files.filter((f: string) => !minimatch(f, scope, { dot: true }));
+          console.log(chalk.gray(`  ✗ Out of scope (${scope}): ${p.title}${outOfScopeFiles.length > 0 ? ` [${outOfScopeFiles.join(', ')}]` : ''}`));
           return false;
         }
         return true;
-      })
-    : categoryFiltered;
+      });
 
-  // Per-step pipeline logging
-  if (state.options.verbose || categoryFiltered.length === 0) {
-    console.log(chalk.gray(`  Pipeline: ${proposals.length} → ${categoryFiltered.length} after category`));
-  }
-  if (state.options.verbose || scopeFiltered.length === 0) {
-    console.log(chalk.gray(`  Pipeline: → ${scopeFiltered.length} after scope`));
-  }
+  // Track pipeline counts for always-on summary
+  const pipelineCounts = {
+    found: proposals.length,
+    cat: categoryFiltered.length,
+    scope: scopeFiltered.length,
+    dedup: 0,  // filled after dedup
+    impact: 0, // filled after impact
+    balance: 0, // filled after balance
+  };
 
   // Dedup filter
   let dedupContext: { existingTitles: string[]; openPrBranches: string[] };
@@ -214,9 +223,7 @@ export async function filterProposals(
     }
   }
 
-  if (state.options.verbose || approvedProposals.length === 0) {
-    console.log(chalk.gray(`  Pipeline: → ${approvedProposals.length} after dedup`));
-  }
+  pipelineCounts.dedup = approvedProposals.length;
 
   // Bump dedup memory for rejected duplicates
   if (rejectedDupTitles.length > 0) {
@@ -238,9 +245,7 @@ export async function filterProposals(
   approvedProposals.length = 0;
   approvedProposals.push(...impactFiltered);
 
-  if (state.options.verbose || approvedProposals.length === 0) {
-    console.log(chalk.gray(`  Pipeline: → ${approvedProposals.length} after impact`));
-  }
+  pipelineCounts.impact = approvedProposals.length;
 
   // Dependency enablement boost
   const enabledTitles = getEnabledProposals(state.repoRoot);
@@ -281,9 +286,11 @@ export async function filterProposals(
   approvedProposals.length = 0;
   approvedProposals.push(...balanced);
 
-  if (state.options.verbose || approvedProposals.length === 0) {
-    console.log(chalk.gray(`  Pipeline: → ${approvedProposals.length} after balance`));
-  }
+  pipelineCounts.balance = approvedProposals.length;
+
+  // Always-on compact pipeline summary
+  const { found, cat, scope: sc, dedup: dd, impact: imp, balance: bal } = pipelineCounts;
+  console.log(chalk.gray(`  Filter: ${found} → cat:${cat} → scope:${sc} → dedup:${dd} → impact:${imp} → balance:${bal}`));
 
   if (approvedProposals.length === 0) {
     const parts: string[] = [];

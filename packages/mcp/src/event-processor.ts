@@ -641,8 +641,8 @@ export async function processEvent(
         }, null, 2),
       );
 
-      // Skip PR phase when draft_prs is false (e.g., --hours mode)
-      if (!s.draft_prs) {
+      // Skip PR phase when not creating PRs
+      if (!s.create_prs) {
         await recordTicketDedup(db, run.rootPath, s.current_ticket_id, true);
         recordSectorOutcome(run.rootPath, s.current_sector_path, 'success');
         run.completeTicket();

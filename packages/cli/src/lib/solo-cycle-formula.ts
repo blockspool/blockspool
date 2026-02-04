@@ -94,7 +94,7 @@ export function getCycleCategories(ctx: CycleFormulaContext, formula: Formula | 
     : options.safe
       ? ['refactor', 'docs', 'types', 'perf']
       : ['refactor', 'docs', 'types', 'perf', 'security', 'fix', 'cleanup'];
-  // --tests flag opts in to test proposals
+  // --tests flag explicitly includes test proposals in the focus list
   if (options.tests && !allow.includes('test')) {
     allow = [...allow, 'test'];
   }

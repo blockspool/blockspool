@@ -64,7 +64,7 @@ describe('DirectClient — lifecycle', () => {
 describe('DirectClient — golden path', () => {
   it('completes scout → ticket → plan → execute → QA → PR → DONE', async () => {
     const client = await DirectClient.create({ projectPath: tmpDir, db });
-    client.startSession({ step_budget: 100, categories: ['refactor'] });
+    client.startSession({ step_budget: 100, create_prs: true, categories: ['refactor'] });
 
     // Step 1: Advance → SCOUT
     const scout = await client.advance();

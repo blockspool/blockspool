@@ -223,7 +223,7 @@ export async function advanceTicketWorker(
     }
 
     case 'PR': {
-      const prompt = buildTicketPrPrompt(ticket, s.draft_prs, worktreePath);
+      const prompt = buildTicketPrPrompt(ticket, s.draft, worktreePath);
       return {
         action: 'PROMPT',
         phase: 'PR',
@@ -327,7 +327,9 @@ export async function ingestTicketEvent(
         // If not, treat this as ticket complete (e.g., direct commit without PR).
         if (payload['pr_url']) {
           // PR was created — mark complete
-          run.require().prs_created++;
+          if (run.require().create_prs) {
+            run.require().prs_created++;
+          }
           run.completeTicketWorker(ticketId);
           return { processed: true, message: 'Ticket complete with PR' };
         }
@@ -366,8 +368,8 @@ export async function ingestTicketEvent(
       }
       await repos.tickets.updateStatus(db, ticketId, 'done');
 
-      // Skip PR phase when draft_prs is false (e.g., --hours mode)
-      if (!run.require().draft_prs) {
+      // Skip PR phase when not creating PRs
+      if (!run.require().create_prs) {
         run.completeTicketWorker(ticketId);
         return { processed: true, message: 'QA passed, PRs disabled — ticket complete' };
       }
@@ -395,7 +397,9 @@ export async function ingestTicketEvent(
       // Accept PR_CREATED in any phase — inline prompts (Task subagents) don't
       // call back at each step, so worker.phase may still be 'PLAN'.
       // The session-level phase is PARALLEL_EXECUTE which is what matters.
-      run.require().prs_created++;
+      if (run.require().create_prs) {
+        run.require().prs_created++;
+      }
       run.completeTicketWorker(ticketId);
       return { processed: true, message: 'PR created, ticket complete' };
     }
@@ -425,7 +429,7 @@ function writeScopePolicy(
 // ---------------------------------------------------------------------------
 
 function buildTicketPlanPrompt(
-  ticket: { title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[] },
+  ticket: { id: string; title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[] },
   worktreePath: string,
   isRetry: boolean,
 ): string {
@@ -452,7 +456,7 @@ function buildTicketPlanPrompt(
     'Output a `<commit-plan>` XML block with:',
     '```json',
     '{',
-    `  "ticket_id": "${ticket.title}",`,
+    `  "ticket_id": "${ticket.id}",`,
     '  "files_to_touch": [{"path": "...", "action": "create|modify|delete", "reason": "..."}],',
     '  "expected_tests": ["npm test -- --grep ..."],',
     '  "estimated_lines": <number>,',
@@ -470,7 +474,7 @@ function buildTicketPlanPrompt(
 }
 
 function buildTicketExecutePrompt(
-  ticket: { title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[] },
+  ticket: { id: string; title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[] },
   plan: CommitPlan | null,
   worktreePath: string,
 ): string {
@@ -501,7 +505,7 @@ function buildTicketExecutePrompt(
     '',
     '## When done',
     'Output a `<ticket-result>` block with status, changed_files, summary, lines_added, lines_removed.',
-    `Then call \`blockspool_ticket_event\` with ticket_id="${ticket.title}", type \`TICKET_RESULT\`, and the result as payload.`,
+    `Then call \`blockspool_ticket_event\` with ticket_id="${ticket.id}", type \`TICKET_RESULT\`, and the result as payload.`,
   );
 
   return parts.join('\n');

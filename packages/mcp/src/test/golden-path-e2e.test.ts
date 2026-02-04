@@ -80,6 +80,7 @@ describe('Golden Path E2E', () => {
       step_budget: 50,
       ticket_step_budget: 12,
       max_prs: 5,
+      create_prs: true,
       categories: ['refactor', 'test', 'docs'],
     });
 
@@ -237,6 +238,7 @@ describe('Golden Path E2E', () => {
   it('handles QA failure → retry → pass flow', async () => {
     run.create(project.id, {
       step_budget: 50,
+      create_prs: true,
       categories: ['refactor'],
     });
 

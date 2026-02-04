@@ -6,6 +6,7 @@
 
 import type { DatabaseAdapter, TicketCategory } from '@blockspool/core';
 import { repos } from '@blockspool/core';
+import { minimatch } from 'minimatch';
 import { RunManager } from './run-manager.js';
 import { recordDedupEntries } from './dedup-memory.js';
 
@@ -72,12 +73,13 @@ export async function filterAndCreateTickets(
   const rejected: FilterResult['rejected'] = [];
 
   // Step 0: Re-promote deferred proposals that now match the current scope
-  const currentScope = s.scope?.replace(/\*\*$/, '').replace(/\*$/, '').replace(/\/$/, '') || '';
+  const currentScope = s.scope || '';
+  const currentIsCatchAll = !currentScope || currentScope === '**' || currentScope === '*';
   const stillDeferred: typeof s.deferred_proposals = [];
   for (const dp of s.deferred_proposals) {
     const files = dp.files.length > 0 ? dp.files : dp.allowed_paths;
-    const nowInScope = !currentScope || files.length === 0 || files.every(f =>
-      f.startsWith(currentScope) || f.startsWith(currentScope + '/')
+    const nowInScope = currentIsCatchAll || files.length === 0 || files.every(f =>
+      minimatch(f, currentScope, { dot: true })
     );
     if (nowInScope) {
       // Re-inject as a raw proposal with all preserved fields
@@ -148,12 +150,15 @@ export async function filterAndCreateTickets(
   });
 
   // Step 3b: Scope filter — defer proposals whose files fall outside session scope
-  const sessionScope = s.scope?.replace(/\*\*$/, '').replace(/\*$/, '').replace(/\/$/, '') || '';
-  const afterScope = sessionScope
-    ? afterCategory.filter(p => {
+  // Use minimatch for proper glob matching (handles patterns like 'packages/*/src/**')
+  const sessionScope = s.scope || '';
+  const isCatchAll = !sessionScope || sessionScope === '**' || sessionScope === '*';
+  const afterScope = isCatchAll
+    ? afterCategory
+    : afterCategory.filter(p => {
         const files = p.files.length > 0 ? p.files : p.allowed_paths;
         const allInScope = files.length === 0 || files.every(f =>
-          f.startsWith(sessionScope) || f.startsWith(sessionScope + '/')
+          minimatch(f, sessionScope, { dot: true })
         );
         if (!allInScope) {
           // Defer instead of reject — will retry when scope matches
@@ -175,12 +180,11 @@ export async function filterAndCreateTickets(
             rationale: p.rationale,
             estimated_complexity: p.estimated_complexity,
           });
-          rejected.push({ proposal: p, reason: `Deferred (files outside scope '${s.scope}'): ${files.filter(f => !f.startsWith(sessionScope)).join(', ')}` });
+          rejected.push({ proposal: p, reason: `Deferred (files outside scope '${s.scope}'): ${files.filter(f => !minimatch(f, sessionScope, { dot: true })).join(', ')}` });
           return false;
         }
         return true;
-      })
-    : afterCategory;
+      });
 
   // Step 4: Dedup against existing tickets (title similarity)
   const existingTickets = await repos.tickets.listByProject(db, s.project_id);

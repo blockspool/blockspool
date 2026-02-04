@@ -30,9 +30,9 @@ The default mode is the full "just run it" experience:
 5. Stops after reaching PR limit (default: 3)
 
 Trust Ladder:
-  Default:   refactor, docs, types, perf, security, fix, cleanup
-  --tests:   Add test proposals (opt-in)
-  --safe:    refactor, docs, types, perf only
+  Default:   refactor, docs, types, perf, security, fix, cleanup (test soft-allowed, capped at 40%)
+  --tests:   Add test to focus list (actively seek test proposals)
+  --safe:    refactor, docs, types, perf only (test excluded)
 
 Backend Lanes:
   --claude (default):  scout + execute with Claude  (ANTHROPIC_API_KEY)
@@ -56,7 +56,7 @@ Examples:
     .option('--scope <path>', 'Directory to scout (default: src, rotates in continuous mode)')
     .option('--max-prs <n>', 'Maximum PRs to create (default: 3, unlimited in --hours/--cycles mode)')
     .option('--safe', 'Restrict to safe categories only (refactor, docs, types, perf)')
-    .option('--tests', 'Include test proposals (excluded by default)')
+    .option('--tests', 'Actively seek test proposals (soft-allowed by default, capped at 40%)')
     .option('--no-draft', 'Create regular PRs instead of drafts')
     .option('--yes', 'Skip confirmation prompt')
     .option('--minutes <n>', 'Run for N minutes (enables continuous mode)')

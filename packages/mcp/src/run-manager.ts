@@ -99,9 +99,18 @@ export class RunManager {
       ? new Date(now.getTime() + config.hours * 60 * 60 * 1000).toISOString()
       : null;
 
-    // When running for a duration (--hours) or multiple cycles, effectively unlimited PRs
-    // Otherwise use default (5) to avoid overwhelming the user
-    const effectiveMaxPrs = config.max_prs ?? (isContinuous ? 999 : DEFAULT_MAX_PRS);
+    // PR creation: explicit opt-in via create_prs (or legacy draft_prs)
+    const createPrs = config.create_prs ?? config.draft_prs ?? false;
+    const draft = config.draft ?? false;
+
+    // PR limit only matters when creating PRs
+    const effectiveMaxPrs = createPrs
+      ? (config.max_prs ?? (isContinuous ? 999 : DEFAULT_MAX_PRS))
+      : 0;
+
+    // In hours/cycles mode, disable per-ticket step budget — session is time-bounded
+    const effectiveTicketStepBudget = config.ticket_step_budget
+      ?? (isContinuous ? 9999 : DEFAULT_TICKET_STEP_BUDGET);
 
     this.state = {
       run_id: runId,
@@ -114,7 +123,7 @@ export class RunManager {
       step_count: 0,
       step_budget: config.step_budget ?? DEFAULT_STEP_BUDGET,
       ticket_step_count: 0,
-      ticket_step_budget: config.ticket_step_budget ?? DEFAULT_TICKET_STEP_BUDGET,
+      ticket_step_budget: effectiveTicketStepBudget,
       total_lines_changed: 0,
       max_lines_per_ticket: DEFAULT_MAX_LINES_PER_TICKET,
       total_tool_calls: 0,
@@ -144,7 +153,8 @@ export class RunManager {
       min_confidence: config.min_confidence ?? DEFAULT_MIN_CONFIDENCE,
       max_proposals_per_scout: config.max_proposals ?? DEFAULT_MAX_PROPOSALS_PER_SCOUT,
       min_impact_score: config.min_impact_score ?? DEFAULT_MIN_IMPACT_SCORE,
-      draft_prs: config.draft_prs ?? (isContinuous ? false : true),
+      create_prs: createPrs,
+      draft,
       eco: config.eco ?? false,
       hints: [],
       scout_exclude_dirs: config.scout_exclude_dirs ?? DEFAULT_SCOUT_EXCLUDE_DIRS,
@@ -502,7 +512,9 @@ export class RunManager {
     if (s.ticket_step_count >= s.ticket_step_budget) {
       return { exhausted: true, which: 'ticket_step_budget' };
     }
-    if (s.prs_created >= s.max_prs) {
+    // PR limit only applies when creating PRs
+    // PR limit only applies when creating PRs
+    if (s.create_prs && s.prs_created >= s.max_prs) {
       return { exhausted: true, which: 'max_prs' };
     }
     if (s.expires_at && new Date() > new Date(s.expires_at)) {
@@ -518,10 +530,12 @@ export class RunManager {
     if (s.step_count >= s.step_budget * 0.8) {
       warnings.push(`step_budget: ${s.step_count}/${s.step_budget}`);
     }
-    if (s.ticket_step_count >= s.ticket_step_budget * 0.8) {
+    // Only warn about ticket step budget if it's a real limit (not effectively disabled)
+    if (s.ticket_step_budget < 9999 && s.ticket_step_count >= s.ticket_step_budget * 0.8) {
       warnings.push(`ticket_step_budget: ${s.ticket_step_count}/${s.ticket_step_budget}`);
     }
-    if (s.prs_created >= s.max_prs * 0.8) {
+    // Only warn about PR limit when creating PRs
+    if (s.create_prs && s.prs_created >= s.max_prs * 0.8) {
       warnings.push(`max_prs: ${s.prs_created}/${s.max_prs}`);
     }
     return warnings;
@@ -550,7 +564,7 @@ export class RunManager {
       tickets_completed: s.tickets_completed,
       tickets_failed: s.tickets_failed,
       budget_remaining: s.step_budget - s.step_count,
-      ticket_budget_remaining: s.ticket_step_budget - s.ticket_step_count,
+      ticket_budget_remaining: s.ticket_step_budget >= 9999 ? -1 : s.ticket_step_budget - s.ticket_step_count,
       spindle_risk: checkSpindle(s.spindle).risk,
       time_remaining_ms: timeRemainingMs,
       coverage: {

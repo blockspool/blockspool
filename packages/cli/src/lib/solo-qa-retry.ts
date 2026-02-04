@@ -129,7 +129,15 @@ export async function runQaRetryWithTestFix(ctx: QaRetryContext): Promise<QaRetr
 
     if (retryResult.success) {
       // Re-commit
-      await gitExec('git add -A', { cwd: worktreePath });
+      // Stage only files within ticket scope (allowed_paths + expanded test files)
+      const filesToStage = [...new Set([...expandedPaths])];
+      for (const filePattern of filesToStage) {
+        try {
+          await gitExec(`git add "${filePattern}"`, { cwd: worktreePath });
+        } catch {
+          // File may not exist or may not have changes — that's fine
+        }
+      }
       try {
         await gitExecFile('git', ['commit', '-m', `fix: update tests for ${ticket.title}`], { cwd: worktreePath });
       } catch {

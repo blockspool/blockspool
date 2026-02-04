@@ -130,7 +130,7 @@ describe('advance — NEXT_TICKET phase', () => {
   });
 
   it('transitions to DONE when PR limit reached', async () => {
-    startRun({ max_prs: 2 });
+    startRun({ max_prs: 2, create_prs: true });
     const s = run.require();
     s.phase = 'NEXT_TICKET';
     s.prs_created = 2;
@@ -385,7 +385,7 @@ describe('processEvent', () => {
   });
 
   it('QA_PASSED transitions to PR', async () => {
-    startRun();
+    startRun({ create_prs: true });
 
     const ticket = await repos.tickets.create(db, {
       projectId: project.id,
@@ -517,7 +517,7 @@ describe('advance — digest', () => {
 
 describe('advance — parallel execution event forwarding', () => {
   it('PR_CREATED via processEvent is forwarded to ticket worker in PARALLEL_EXECUTE phase', async () => {
-    startRun({ parallel: 2 });
+    startRun({ parallel: 2, create_prs: true });
 
     const ticket = await repos.tickets.create(db, {
       projectId: project.id,
@@ -554,7 +554,7 @@ describe('advance — parallel execution event forwarding', () => {
   });
 
   it('TICKET_RESULT via processEvent is forwarded to ticket worker in PARALLEL_EXECUTE phase', async () => {
-    startRun({ parallel: 2 });
+    startRun({ parallel: 2, create_prs: true });
 
     const ticket = await repos.tickets.create(db, {
       projectId: project.id,

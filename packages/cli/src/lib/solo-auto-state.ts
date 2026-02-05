@@ -39,6 +39,7 @@ import {
   type DedupEntry,
 } from './dedup-memory.js';
 import { pruneStaleWorktrees } from './retention.js';
+import { resetQaStatsForSession } from './qa-stats.js';
 import {
   buildCodebaseIndex,
   type CodebaseIndex,
@@ -298,6 +299,13 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
   const prunedWorktrees = pruneStaleWorktrees(repoRoot);
   if (prunedWorktrees > 0) {
     console.log(chalk.gray(`  Cleaned up ${prunedWorktrees} stale worktree(s)`));
+  }
+
+  // Reset QA stats for fresh auto-tuning each session
+  // This prevents the catch-22 where disabled commands can never re-enable
+  const reEnabledQa = resetQaStatsForSession(repoRoot);
+  if (reEnabledQa > 0) {
+    console.log(chalk.gray(`  Reset QA auto-tune (${reEnabledQa} command(s) re-enabled for fresh baseline)`));
   }
 
   const config = loadConfig(repoRoot);

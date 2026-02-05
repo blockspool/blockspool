@@ -107,6 +107,39 @@ export function loadQaStats(projectRoot: string): QaStatsStore {
   }
 }
 
+/**
+ * Reset QA stats for a fresh session start.
+ * Clears disabled commands and baseline ring buffers so each session
+ * gets a clean slate for auto-tuning. This prevents the catch-22 where
+ * disabled commands can never re-enable because they never run.
+ *
+ * Returns the number of commands that were re-enabled.
+ */
+export function resetQaStatsForSession(projectRoot: string): number {
+  const fp = statsPath(projectRoot);
+  if (!fs.existsSync(fp)) return 0;
+
+  const store = loadQaStats(projectRoot);
+  const reEnabledCount = store.disabledCommands.length;
+
+  if (reEnabledCount === 0 && Object.keys(store.commands).length === 0) {
+    return 0;
+  }
+
+  // Clear disabled commands - give them a fresh chance
+  store.disabledCommands = [];
+
+  // Clear baseline ring buffers - start fresh
+  for (const name of Object.keys(store.commands)) {
+    store.commands[name].recentBaselineResults = [];
+    store.commands[name].consecutiveFailures = 0;
+    store.commands[name].consecutiveTimeouts = 0;
+  }
+
+  saveQaStats(projectRoot, store);
+  return reEnabledCount;
+}
+
 export function saveQaStats(projectRoot: string, store: QaStatsStore): void {
   const fp = statsPath(projectRoot);
   const dir = path.dirname(fp);

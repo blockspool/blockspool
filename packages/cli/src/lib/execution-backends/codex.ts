@@ -18,11 +18,52 @@ function formatElapsed(ms: number): string {
   return `${mins}m${remainingSecs}s`;
 }
 
-/** Parse Codex JSONL output to extract meaningful phase info */
-function parseCodexEvent(line: string): { phase?: string; detail?: string } | null {
+/** Parse Codex JSONL output to extract meaningful progress info */
+function parseCodexEvent(line: string): { phase?: string; detail?: string; message?: string } | null {
   try {
     const event = JSON.parse(line);
-    // Codex JSONL events have a "type" field
+
+    // Codex streaming format: item.started, item.completed events
+    if (event.type === 'item.completed' && event.item) {
+      const item = event.item;
+
+      // Reasoning/thinking events - show the full thought
+      if (item.type === 'reasoning' && item.text) {
+        // Clean up markdown formatting
+        const text = item.text.replace(/^\*\*/, '').replace(/\*\*$/, '').trim();
+        return { phase: 'Thinking', message: text };
+      }
+
+      // Command execution events
+      if (item.type === 'command_execution' && item.command) {
+        // Extract just the actual command, not the shell wrapper
+        let cmd = item.command;
+        // Remove /bin/bash -lc wrapper if present
+        const match = cmd.match(/\/bin\/(?:ba)?sh\s+-[a-z]*c\s+'(.+)'$/);
+        if (match) cmd = match[1];
+        // Truncate very long commands
+        if (cmd.length > 80) cmd = cmd.slice(0, 77) + '...';
+        return { phase: 'Running', message: cmd };
+      }
+
+      // File operations
+      if (item.type === 'file_read' || item.type === 'read_file') {
+        return { phase: 'Reading', message: item.path || item.file };
+      }
+      if (item.type === 'file_write' || item.type === 'write_file' || item.type === 'file_edit') {
+        return { phase: 'Writing', message: item.path || item.file };
+      }
+    }
+
+    // Item started events - show what's beginning
+    if (event.type === 'item.started' && event.item) {
+      const item = event.item;
+      if (item.type === 'command_execution') {
+        return { phase: 'Starting command' };
+      }
+    }
+
+    // Legacy format support
     if (event.type === 'function_call' || event.type === 'tool_use') {
       const name = event.name || event.function?.name || '';
       if (name.includes('read') || name.includes('Read')) return { phase: 'Reading', detail: name };
@@ -31,9 +72,7 @@ function parseCodexEvent(line: string): { phase?: string; detail?: string } | nu
       if (name.includes('grep') || name.includes('Grep') || name.includes('search')) return { phase: 'Searching', detail: name };
       return { phase: 'Tool', detail: name };
     }
-    if (event.type === 'message' && event.role === 'assistant') {
-      return { phase: 'Thinking' };
-    }
+
     if (event.type === 'done' || event.type === 'complete') {
       return { phase: 'Completing' };
     }
@@ -122,7 +161,7 @@ export class CodexExecutionBackend implements ExecutionBackend {
           const text = data.toString();
           stdout += text;
 
-          // Parse JSONL lines for phase info
+          // Parse JSONL lines for progress info
           lineBuffer += text;
           const lines = lineBuffer.split('\n');
           lineBuffer = lines.pop() || ''; // Keep incomplete line in buffer
@@ -130,17 +169,22 @@ export class CodexExecutionBackend implements ExecutionBackend {
           for (const line of lines) {
             if (!line.trim()) continue;
             const parsed = parseCodexEvent(line);
-            if (parsed?.phase) {
-              lastPhase = parsed.phase;
+            if (parsed) {
               const elapsed = formatElapsed(Date.now() - startTime);
-              const detail = parsed.detail ? `: ${parsed.detail}` : '';
-              onProgress(`${lastPhase}${detail} (${elapsed})`);
+
+              if (parsed.message) {
+                // Show full message for reasoning/commands
+                lastPhase = parsed.phase || lastPhase;
+                onProgress(`${parsed.phase}: ${parsed.message} (${elapsed})`);
+              } else if (parsed.phase) {
+                // Just phase update
+                lastPhase = parsed.phase;
+                const detail = parsed.detail ? `: ${parsed.detail}` : '';
+                onProgress(`${lastPhase}${detail} (${elapsed})`);
+              }
             }
           }
-
-          if (verbose) {
-            onProgress(text.trim().slice(0, 100));
-          }
+          // Don't show raw JSONL even in verbose mode - it's not useful
         });
 
         proc.stderr.on('data', (data: Buffer) => {

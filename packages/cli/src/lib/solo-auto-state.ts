@@ -39,7 +39,9 @@ import {
   type DedupEntry,
 } from './dedup-memory.js';
 import { pruneStaleWorktrees } from './retention.js';
-import { resetQaStatsForSession } from './qa-stats.js';
+import { resetQaStatsForSession, autoTuneQaConfig } from './qa-stats.js';
+import { captureQaBaseline } from './solo-ticket.js';
+import { normalizeQaConfig } from './solo-utils.js';
 import {
   buildCodebaseIndex,
   type CodebaseIndex,
@@ -308,7 +310,49 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     console.log(chalk.gray(`  Reset QA auto-tune (${reEnabledQa} command(s) re-enabled for fresh baseline)`));
   }
 
-  const config = loadConfig(repoRoot);
+  let config = loadConfig(repoRoot);
+
+  // ── Pre-session QA Tuning ─────────────────────────────────────────────────
+  // Run all QA commands once upfront to establish baselines before any work.
+  // This "tunes" the auto-tune system so we know what's working immediately.
+  if (config?.qa?.commands?.length && !options.dryRun) {
+    console.log(chalk.cyan('🎛️  Tuning QA baselines...'));
+    const qaConfig = normalizeQaConfig(config);
+
+    // Run each command to establish baseline
+    await captureQaBaseline(repoRoot, config, (msg) => console.log(chalk.gray(msg)), repoRoot);
+
+    // Now auto-tune based on results
+    const tuneResult = autoTuneQaConfig(repoRoot, qaConfig);
+
+    const working = qaConfig.commands.length - tuneResult.disabled.length;
+    if (tuneResult.disabled.length > 0) {
+      console.log(chalk.yellow(`  ⚠ ${tuneResult.disabled.length} command(s) failing — will be skipped:`));
+      for (const d of tuneResult.disabled) {
+        console.log(chalk.gray(`    • ${d.name}`));
+      }
+    }
+    if (working > 0) {
+      console.log(chalk.green(`  ✓ ${working} QA command(s) ready`));
+    } else {
+      console.log(chalk.yellow(`  ⚠ No QA commands passing — tickets won't be verified`));
+    }
+
+    // Update config with tuned commands
+    config = {
+      ...config,
+      qa: {
+        ...config.qa,
+        commands: tuneResult.config.commands.map(c => ({
+          name: c.name,
+          cmd: c.cmd,
+          cwd: c.cwd,
+          timeoutMs: c.timeoutMs,
+        })),
+      },
+    };
+    console.log();
+  }
 
   // Session phase (initialized as deep)
   const sessionPhase: 'warmup' | 'deep' | 'cooldown' = 'deep';

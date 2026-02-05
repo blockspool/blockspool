@@ -8,6 +8,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { metric } from './metrics.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -286,6 +287,16 @@ export function pickNextSector(state: SectorState, currentCycle: number): { sect
   });
 
   const sector = candidates[0];
+
+  // Instrument: track sector selection
+  metric('sectors', 'picked', {
+    path: sector.path,
+    scanCount: sector.scanCount,
+    proposalYield: sector.proposalYield,
+    candidateCount: candidates.length,
+    totalSectors: state.sectors.length,
+  });
+
   return { sector, scope: sectorToScope(sector) };
 }
 

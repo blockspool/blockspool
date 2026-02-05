@@ -2,7 +2,7 @@
  * Solo auto commands: auto (default, ci, work modes)
  */
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { createGitService } from '../lib/git.js';
 import { runAutoMode, runAutoWorkMode } from '../lib/solo-auto.js';
@@ -15,86 +15,67 @@ export function registerAutoCommands(solo: Command): void {
    */
   solo
     .command('auto [mode]')
-    .description('Scout, fix, and create PRs automatically')
+    .description('Scout, fix, and commit improvements automatically')
     .addHelpText('after', `
-Modes:
-  (default)  Scout → auto-approve safe changes → run → create draft PRs
-  ci         Fix CI failures automatically
-  work       Process existing ready tickets
-
-The default mode is the full "just run it" experience:
-1. Scouts your codebase for improvements
-2. Auto-approves low-risk changes (refactor, tests, docs)
-3. Runs tickets one at a time with QA verification
-4. Creates draft PRs for review
-5. Stops after reaching PR limit (default: 3)
-
-Trust Ladder:
-  Default:   refactor, docs, types, perf, security, fix, cleanup (test soft-allowed, capped at 40%)
-  --tests:   Add test to focus list (actively seek test proposals)
-  --safe:    refactor, docs, types, perf only (test excluded)
-
-Backend Lanes:
-  --claude (default):  scout + execute with Claude  (ANTHROPIC_API_KEY)
-  --codex:             scout + execute with Codex   (CODEX_API_KEY or codex login)
-  --kimi:              scout + execute with Kimi    (MOONSHOT_API_KEY or kimi /login)
-  --local:             scout + execute with local   (Ollama/vLLM/SGLang/LM Studio)
-  Hybrid:              --scout-backend codex         (CODEX_API_KEY + ANTHROPIC_API_KEY)
+Auto-detects backend from environment:
+  ANTHROPIC_API_KEY  → Claude
+  CODEX_API_KEY      → Codex
+  codex login        → Codex CLI
 
 Examples:
-  blockspool                              # Scout + fix + PR (Claude, default)
-  blockspool --codex                      # Full Codex mode (no Anthropic key)
-  blockspool --codex --hours 4            # Codex overnight run
-  blockspool --dry-run                    # Show what would be done
-  blockspool --scope src/api              # Scout specific directory
-  blockspool --formula security-audit     # Run a predefined formula
-  blockspool --scout-backend codex        # Hybrid: Codex scouts, Claude executes
-  blockspool ci                           # Fix failing CI
-  blockspool work                         # Process existing tickets
+  blockspool                    # One improvement cycle
+  blockspool --hours 4          # Run for 4 hours
+  blockspool --hours 0.5        # Run for 30 minutes
+  blockspool --pr               # Create PRs instead of direct commits
+  blockspool --formula deep     # Architectural review
+  blockspool ci                 # Fix CI failures
 `)
-    .option('--dry-run', 'Show what would be done without making changes')
-    .option('--scope <path>', 'Directory to scout (default: src, rotates in continuous mode)')
-    .option('--max-prs <n>', 'Maximum PRs to create (default: 3, unlimited in --hours/--cycles mode)')
-    .option('--safe', 'Restrict to safe categories only (refactor, docs, types, perf)')
-    .option('--tests', 'Actively seek test proposals (soft-allowed by default, capped at 40%)')
-    .option('--no-draft', 'Create regular PRs instead of drafts')
-    .option('--yes', 'Skip confirmation prompt')
-    .option('--minutes <n>', 'Run for N minutes (enables continuous mode)')
-    .option('--hours <n>', 'Run for N hours (enables continuous mode)')
-    .option('--cycles <n>', 'Number of scout→execute cycles (default: 3)')
-    .option('--continuous', 'Run continuously until stopped or PR limit reached')
-    .option('-v, --verbose', 'Show detailed output')
-    .option('--branch <name>', 'Target branch (default: current)')
-    .option('--parallel <n>', 'Number of tickets to run concurrently (default: 3)', '3')
-    .option('--formula <name>', 'Use a predefined formula (e.g., security-audit, test-coverage, cleanup, deep)')
-    .option('--deep', 'Deep architectural review (shortcut for --formula deep)')
-    .option('--eco', 'Use sonnet model for scouting (cheaper, faster, less thorough)')
-    .option('--batch-size <n>', 'Tickets per milestone PR (default: 10)')
-    .option('--individual-prs', 'Create separate PR for each ticket instead of batching into milestone')
-    .option('--codex', 'Use Codex for both scouting and execution (no Anthropic key needed)')
-    .option('--claude', 'Use Claude for both scouting and execution (default)')
-    .option('--kimi', 'Use Kimi for both scouting and execution (MOONSHOT_API_KEY)')
-    .option('--scout-backend <name>', 'LLM for scouting: claude | codex | kimi (default: claude)')
-    .option('--execute-backend <name>', 'LLM for execution: claude | codex | kimi (default: claude)')
-    .option('--codex-model <model>', 'Model for Codex backend (default: codex-mini)')
-    .option('--kimi-model <model>', 'Model for Kimi backend (default: kimi-k2.5)')
-    .option('--codex-unsafe-full-access', 'Use --dangerously-bypass-approvals-and-sandbox for Codex execution (requires isolated runner)')
-    .option('--include-claude-md', 'Allow the scout to propose changes to CLAUDE.md and .claude/ (excluded by default)')
-    .option('--batch-token-budget <n>', 'Token budget per scout batch (default: auto based on backend)')
-    .option('--scout-timeout <seconds>', 'Timeout per scout batch in seconds (default: auto — 300s codex, 120s claude)')
-    .option('--max-scout-files <n>', 'Maximum files to scan per scout cycle (default: 60)')
-    .option('--scout-concurrency <n>', 'Max parallel scout batches (default: auto — 4 codex, 3 claude)')
-    .option('--codex-mcp', 'Use persistent MCP session for Codex scouting (experimental, requires --codex)')
-    .option('--local', 'Use a local OpenAI-compatible server (Ollama, vLLM, SGLang, LM Studio)')
-    .option('--local-url <url>', 'Base URL for local server (default: http://localhost:11434/v1)')
-    .option('--local-model <model>', 'Model name for local server (required with --local)')
-    .option('--local-max-iterations <n>', 'Max agentic loop iterations for local backend (default: 20)')
-    .option('--no-docs-audit', 'Disable automatic docs-audit cycles')
-    .option('--docs-audit-interval <n>', 'Run docs-audit every N cycles (default: 3)')
-    .option('--pr', 'Use PR delivery mode (one draft PR per ticket)')
-    .option('--auto-merge', 'Use auto-merge delivery mode')
-    .option('--direct-branch <name>', 'Branch name for direct mode (default: blockspool)')
-    .option('--direct-finalize <mode>', 'End-of-session: pr | merge | none (default: pr)')
+    // Primary options (visible in help)
+    .option('--hours <n>', 'Run for N hours (accepts decimals: 0.5 = 30min)')
+    .option('--pr', 'Create pull requests instead of direct commits')
+    .option('--scope <path>', 'Directory to focus on')
+    .option('--formula <name>', 'Formula: deep, security-audit, test-coverage')
+    .option('--dry-run', 'Preview without making changes')
+    .option('-v, --verbose', 'Detailed output')
+    // Hidden options (still functional for power users)
+    .addOption(new Option('--codex', 'Force Codex').hideHelp())
+    .addOption(new Option('--claude', 'Force Claude').hideHelp())
+    .addOption(new Option('--safe', 'Safe categories only').hideHelp())
+    .addOption(new Option('--tests', 'Seek test proposals').hideHelp())
+    .addOption(new Option('--yes', 'Skip prompts').hideHelp())
+    .addOption(new Option('--parallel <n>', 'Parallel tickets').default('3').hideHelp())
+    .addOption(new Option('--eco', 'Faster model').hideHelp())
+    .addOption(new Option('--kimi', 'Use Kimi').hideHelp())
+    .addOption(new Option('--local', 'Local server').hideHelp())
+    .addOption(new Option('--local-url <url>', 'Local URL').hideHelp())
+    .addOption(new Option('--local-model <model>', 'Local model').hideHelp())
+    // Legacy/deprecated (kept for backwards compat)
+    .addOption(new Option('--minutes <n>').hideHelp())
+    .addOption(new Option('--cycles <n>').hideHelp())
+    .addOption(new Option('--continuous').hideHelp())
+    .addOption(new Option('--max-prs <n>').hideHelp())
+    .addOption(new Option('--no-draft').hideHelp())
+    .addOption(new Option('--branch <name>').hideHelp())
+    .addOption(new Option('--deep').hideHelp())
+    .addOption(new Option('--batch-size <n>').hideHelp())
+    .addOption(new Option('--individual-prs').hideHelp())
+    .addOption(new Option('--scout-backend <name>').hideHelp())
+    .addOption(new Option('--execute-backend <name>').hideHelp())
+    .addOption(new Option('--codex-model <model>').hideHelp())
+    .addOption(new Option('--kimi-model <model>').hideHelp())
+    .addOption(new Option('--codex-unsafe-full-access').hideHelp())
+    .addOption(new Option('--include-claude-md').hideHelp())
+    .addOption(new Option('--batch-token-budget <n>').hideHelp())
+    .addOption(new Option('--scout-timeout <seconds>').hideHelp())
+    .addOption(new Option('--max-scout-files <n>').hideHelp())
+    .addOption(new Option('--scout-concurrency <n>').hideHelp())
+    .addOption(new Option('--codex-mcp').hideHelp())
+    .addOption(new Option('--local-max-iterations <n>').hideHelp())
+    .addOption(new Option('--no-docs-audit').hideHelp())
+    .addOption(new Option('--docs-audit-interval <n>').hideHelp())
+    .addOption(new Option('--auto-merge').hideHelp())
+    .addOption(new Option('--direct-branch <name>').hideHelp())
+    .addOption(new Option('--direct-finalize <mode>').hideHelp())
     .action(async (mode: string | undefined, options: {
       dryRun?: boolean;
       scope?: string;
@@ -173,20 +154,11 @@ Examples:
       if (effectiveMode === 'auto') {
         await runAutoMode({
           ...options,
+          pr: options.pr,
           formula: options.formula,
-          batchSize: options.batchSize,
           scoutBackend: scoutBackendName,
           executeBackend: executeBackendName,
-          codexModel: options.codexModel,
-          kimiModel: options.kimiModel,
-          codexUnsafeFullAccess: options.codexUnsafeFullAccess,
-          scoutConcurrency: options.scoutConcurrency,
-          codexMcp: options.codexMcp,
-          localUrl: options.localUrl,
-          localModel: options.localModel,
-          localMaxIterations: options.localMaxIterations,
           deliveryMode: options.autoMerge ? 'auto-merge' : options.pr ? 'pr' : undefined,
-          directBranch: options.directBranch,
           directFinalize: options.directFinalize as 'pr' | 'merge' | 'none' | undefined,
         });
         return;

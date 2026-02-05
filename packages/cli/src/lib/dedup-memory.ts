@@ -16,6 +16,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { metric } from './metrics.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -116,6 +117,14 @@ export function loadDedupMemory(projectRoot: string): DedupEntry[] {
   }
 
   writeEntries(projectRoot, surviving);
+
+  // Instrument: track dedup memory load
+  metric('dedup', 'loaded', {
+    count: surviving.length,
+    decayed: entries.length - surviving.length,
+    completed: surviving.filter(e => e.completed).length,
+  });
+
   return surviving;
 }
 
@@ -142,6 +151,9 @@ export function recordDedupEntry(
     if (completed) existing.completed = true;
     if (failureReason) existing.failureReason = failureReason;
     if (relatedTitles?.length) existing.relatedTitles = relatedTitles;
+
+    // Instrument: duplicate detected
+    metric('dedup', 'duplicate_found', { hitCount: existing.hit_count, completed });
   } else {
     entries.push({
       title,

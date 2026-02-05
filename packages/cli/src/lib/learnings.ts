@@ -11,6 +11,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import { metric } from './metrics.js';
 
 // ---------------------------------------------------------------------------
 // Inlined bigrams / titleSimilarity (from proposals.ts)
@@ -147,6 +148,10 @@ export function loadLearnings(projectRoot: string, decayRate: number = DEFAULT_D
   }
 
   writeLearnings(projectRoot, surviving);
+
+  // Instrument: track how many learnings loaded
+  metric('learnings', 'loaded', { count: surviving.length, decayed: learnings.length - surviving.length });
+
   return surviving;
 }
 
@@ -352,7 +357,18 @@ export function selectRelevant(
 
   scored.sort((a, b) => b.score - a.score);
   const max = opts?.maxResults ?? 15;
-  return scored.slice(0, max).map(s => s.learning);
+  const selected = scored.slice(0, max).map(s => s.learning);
+
+  // Instrument: track learnings selection
+  const relevantCount = scored.filter(s => s.score > 0).length;
+  metric('learnings', 'selected', {
+    total: learnings.length,
+    relevant: relevantCount,
+    selected: selected.length,
+    topScore: scored[0]?.score ?? 0,
+  });
+
+  return selected;
 }
 
 /**

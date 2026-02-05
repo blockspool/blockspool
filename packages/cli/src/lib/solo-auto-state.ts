@@ -56,27 +56,35 @@ import { loadTasteProfile } from './taste-profile.js';
 import type { TicketOutcome } from './run-history.js';
 import type { CycleSummary } from './cycle-context.js';
 import type { BatchProgressDisplay } from './spinner.js';
+import { initMetrics, closeMetrics, metric } from './metrics.js';
 
 // ── Options type (matches runAutoMode parameter) ────────────────────────────
 
 export interface AutoModeOptions {
-  dryRun?: boolean;
+  // Primary options
+  hours?: string;
+  pr?: boolean;  // --pr flag sets deliveryMode to 'pr'
   scope?: string;
-  maxPrs?: string;
-  minConfidence?: string;
+  formula?: string;
+  dryRun?: boolean;
+  verbose?: boolean;
+
+  // Secondary options (hidden but functional)
+  codex?: boolean;
   safe?: boolean;
   tests?: boolean;
-  draft?: boolean;
   yes?: boolean;
+  parallel?: string;
+  eco?: boolean;
+
+  // Legacy/advanced options (kept for backwards compat)
   minutes?: string;
-  hours?: string;
   cycles?: string;
   continuous?: boolean;
-  verbose?: boolean;
-  parallel?: string;
-  formula?: string;
+  maxPrs?: string;
+  minConfidence?: string;
+  draft?: boolean;
   deep?: boolean;
-  eco?: boolean;
   batchSize?: string;
   scoutBackend?: string;
   executeBackend?: string;
@@ -99,7 +107,6 @@ export interface AutoModeOptions {
   directFinalize?: 'pr' | 'merge' | 'none';
   individualPrs?: boolean;
   skipQaFix?: boolean;
-  codex?: boolean;
 }
 
 // ── Session state ───────────────────────────────────────────────────────────
@@ -262,10 +269,14 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     console.log();
   }
 
-  const maxCycles = options.cycles ? parseInt(options.cycles, 10) : 3;
-  const isContinuous = options.continuous || options.hours !== undefined || options.minutes !== undefined || maxCycles > 3;
-  const totalMinutes = (options.hours ? parseFloat(options.hours) * 60 : 0)
-    + (options.minutes ? parseFloat(options.minutes) : 0) || undefined;
+  // Time handling: --hours accepts decimals (0.5 = 30min), --minutes is legacy
+  const hoursValue = options.hours ? parseFloat(options.hours) : 0;
+  const minutesValue = options.minutes ? parseFloat(options.minutes) : 0;
+  const totalMinutes = (hoursValue * 60 + minutesValue) || undefined;
+
+  // Continuous mode: enabled by --hours, --continuous, or explicit --cycles > 1
+  const maxCycles = options.cycles ? parseInt(options.cycles, 10) : 1;
+  const isContinuous = options.continuous || totalMinutes !== undefined || maxCycles > 1;
   const endTime = totalMinutes ? Date.now() + (totalMinutes * 60 * 1000) : undefined;
 
   // PR limits: effectively unlimited for timed/continuous runs, otherwise use defaults
@@ -298,6 +309,10 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     console.error(chalk.red('✗ Not a git repository'));
     process.exit(1);
   }
+
+  // Initialize metrics for this session
+  initMetrics(repoRoot);
+  metric('session', 'started', { codex: !!options.codex, hours: options.hours });
 
   // Clean up stale worktrees from previous interrupted runs
   const prunedWorktrees = pruneStaleWorktrees(repoRoot);
@@ -369,129 +384,67 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     const stillFailing = [...baseline.entries()].filter(([, r]) => !r.passed).map(([name]) => name);
 
     if (stillFailing.length > 0 && !options.skipQaFix) {
-      console.log();
-      console.log(chalk.yellow(`  ⚠ ${stillFailing.length} QA command(s) still failing:`));
-      for (const name of stillFailing) {
-        console.log(chalk.gray(`    • ${name}`));
-      }
-      console.log();
+      // Try one AI fix cycle silently — no prompts, no wheel
+      console.log(chalk.gray(`  ${stillFailing.length} failing — trying quick fix...`));
 
-      // Prompt user for AI-assisted fix
-      const readline = await import('node:readline');
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const { ClaudeExecutionBackend, CodexExecutionBackend } = await import('./execution-backends/index.js');
+      const backend = options.codex
+        ? new CodexExecutionBackend({ model: options.codexModel })
+        : new ClaudeExecutionBackend();
 
-      const answer = await new Promise<string>((resolve) => {
-        rl.question(chalk.cyan('  Would you like to try AI-assisted fix before proceeding? [y/N] '), resolve);
-      });
-      rl.close();
+      // Build prompt with command info and error output
+      const failingDetails = stillFailing.map(name => {
+        const cmd = qaConfig.commands.find(c => c.name === name);
+        const result = baseline.get(name);
+        let detail = `## ${name}\nCommand: ${cmd?.cmd || name}`;
+        if (result?.output) {
+          detail += `\nError output:\n\`\`\`\n${result.output}\n\`\`\``;
+        }
+        return detail;
+      }).join('\n\n');
 
-      if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
-        // Use the execution backend to fix issues
-        const { ClaudeExecutionBackend, CodexExecutionBackend } = await import('./execution-backends/index.js');
-        const backend = options.codex
-          ? new CodexExecutionBackend({ model: options.codexModel })
-          : new ClaudeExecutionBackend();
-
-        // Continuous fix loop - like Claude's compaction model
-        // Runs until all QA passes or user presses Ctrl+C
-        let cycle = 0;
-        let currentFailing = [...stillFailing];
-        console.log(chalk.cyan('\n  ☀ QA Fix Wheel — runs until all pass (Ctrl+C to stop)\n'));
-        console.log(chalk.gray('  ─'.repeat(35)));
-
-        while (currentFailing.length > 0) {
-          cycle++;
-
-          // Build prompt with command info and error output
-          const failingDetails = currentFailing.map(name => {
-            const cmd = qaConfig.commands.find(c => c.name === name);
-            const result = baseline.get(name);
-            let detail = `## ${name}\nCommand: ${cmd?.cmd || name}`;
-            if (result?.output) {
-              detail += `\nError output:\n\`\`\`\n${result.output}\n\`\`\``;
-            }
-            return detail;
-          }).join('\n\n');
-
-          const fixPrompt = cycle === 1
-            ? `These QA commands are failing. Fix the source code so they pass.
+      const fixPrompt = `These QA commands are failing. Fix the source code so they pass.
 
 ${failingDetails}
 
-Read the error output above, then fix the source code. Minimal, targeted changes.`
-            : `Cycle ${cycle}: Still failing. Continue fixing.
+Read the error output above, then fix the source code. Minimal, targeted changes only.`;
 
-${failingDetails}
+      const { createSpinner } = await import('./spinner.js');
+      const spinner = createSpinner(`Fixing ${stillFailing.length} QA issue(s)...`);
 
-Small, focused code changes.`;
+      try {
+        await backend.run({
+          worktreePath: repoRoot,
+          prompt: fixPrompt,
+          timeoutMs: 0,
+          verbose: true,
+          onProgress: (msg) => spinner.update(msg),
+        });
+        spinner.stop();
 
-          console.log(chalk.cyan(`\n  ☀ Cycle ${cycle}`), chalk.gray(`— ${currentFailing.length} failing: ${currentFailing.join(', ')}`));
-          console.log();
+        // Re-check baselines
+        const checkSpinner = createSpinner('Re-checking baselines...');
+        resetQaStatsForSession(repoRoot);
+        baseline = await captureQaBaseline(repoRoot, config, (msg) => checkSpinner.update(msg), repoRoot);
 
-          // Import spinner
-          const { createSpinner } = await import('./spinner.js');
-          const spinner = createSpinner(`Fixing ${currentFailing.length} QA issue(s)...`);
+        const nowFailing = [...baseline.entries()].filter(([, r]) => !r.passed).map(([name]) => name);
 
-          try {
-            const result = await backend.run({
-              worktreePath: repoRoot,
-              prompt: fixPrompt,
-              timeoutMs: 0, // No timeout - run until done
-              verbose: true,
-              onProgress: (msg) => spinner.update(msg),
-            });
-            spinner.stop();
-
-            // After each cycle, re-check baselines
-            const checkSpinner = createSpinner('Re-checking baselines...');
-            resetQaStatsForSession(repoRoot);
-            baseline = await captureQaBaseline(repoRoot, config, (msg) => checkSpinner.update(msg), repoRoot);
-
-            const nowFailing = [...baseline.entries()].filter(([, r]) => !r.passed).map(([name]) => name);
-
-            if (nowFailing.length === 0) {
-              checkSpinner.succeed('All QA commands now passing!');
-              break;
-            } else if (nowFailing.length < currentFailing.length) {
-              const fixed = currentFailing.length - nowFailing.length;
-              checkSpinner.succeed(`${fixed} fixed! ${nowFailing.length} remaining`);
-              currentFailing = nowFailing;
-              // Auto-continue to next cycle
-            } else {
-              checkSpinner.fail(`No progress (${nowFailing.length} still failing)`);
-              // Still continue - maybe next cycle will make progress
-              currentFailing = nowFailing;
-
-              // After 3 cycles without progress, ask if they want to continue
-              if (cycle >= 3 && cycle % 3 === 0) {
-                const continueAnswer = await new Promise<string>((resolve) => {
-                  const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-                  rl2.question(chalk.cyan(`  ${cycle} cycles without full success. Continue? [Y/n] `), (ans) => { rl2.close(); resolve(ans); });
-                });
-                if (continueAnswer.toLowerCase() === 'n') {
-                  console.log(chalk.gray('  Stopping fix wheel...'));
-                  break;
-                }
-              }
-            }
-
-            if (!result.success) {
-              console.log(chalk.yellow(`  ⚠ Cycle ended: ${result.error?.slice(0, 100) || 'Unknown'}`));
-              // Continue anyway - next cycle might work
-            }
-            console.log(chalk.gray('  ─'.repeat(35)));
-          } catch (err) {
-            spinner.fail(`Cycle error: ${err instanceof Error ? err.message : err}`);
-            console.log(chalk.gray('  ─'.repeat(35)));
-            // Continue anyway
-          }
+        if (nowFailing.length === 0) {
+          checkSpinner.succeed('All QA commands now passing!');
+        } else if (nowFailing.length < stillFailing.length) {
+          const fixed = stillFailing.length - nowFailing.length;
+          checkSpinner.succeed(`${fixed} fixed, ${nowFailing.length} still failing`);
+        } else {
+          checkSpinner.fail(`${nowFailing.length} still failing`);
         }
 
         // Update stillFailing for final reporting
         stillFailing.length = 0;
-        stillFailing.push(...currentFailing);
-        console.log();
+        stillFailing.push(...nowFailing);
+      } catch (err) {
+        spinner.fail(`Fix error: ${err instanceof Error ? err.message : err}`);
       }
+      console.log();
     }
 
     // Now auto-tune based on final results
@@ -1081,7 +1034,7 @@ export function shouldContinue(state: AutoSessionState): boolean {
   // Direct mode: no PR limit, just time/cycles
 
   if (state.endTime && Date.now() >= state.endTime) return false;
-  if (state.cycleCount >= state.maxCycles && !state.options.continuous && !state.options.hours && !state.options.minutes) return false;
+  if (state.cycleCount >= state.maxCycles && !state.isContinuous) return false;
   return true;
 }
 

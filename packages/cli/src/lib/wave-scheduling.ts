@@ -5,6 +5,7 @@
 import { pathsOverlap, directoriesOverlap } from './solo-utils.js';
 import type { CodebaseIndex } from './codebase-index.js';
 import type { SectorState } from './sectors.js';
+import { metric } from './metrics.js';
 
 // ---------------------------------------------------------------------------
 // Conflict-prone file patterns
@@ -303,6 +304,16 @@ export function partitionIntoWaves<T extends { files: string[]; category?: strin
     if (!placed) {
       waves.push([proposal]);
     }
+  }
+
+  // Instrument: track wave partitioning
+  if (proposals.length > 0) {
+    metric('wave', 'partitioned', {
+      proposals: proposals.length,
+      waves: waves.length,
+      parallelizable: waves.length === 1 || (waves.length < proposals.length),
+      maxParallel: Math.max(...waves.map(w => w.length)),
+    });
   }
 
   return waves;

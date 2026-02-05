@@ -22,6 +22,7 @@ export interface AuthOptions {
 
 /**
  * Expand provider shorthands (--codex, --kimi, --local) and validate auth.
+ * Auto-detects backend from environment if no flags given.
  * Returns resolved scout/execute backend names.
  */
 export async function resolveBackends(options: AuthOptions): Promise<{
@@ -36,6 +37,31 @@ export async function resolveBackends(options: AuthOptions): Promise<{
     console.error(chalk.red(`✗ Cannot combine ${shorthands.map(s => `--${s}`).join(' and ')}`));
     process.exit(1);
   }
+
+  // Auto-detect backend from environment if no explicit choice
+  if (!options.codex && !options.claude && !options.kimi && !options.local && !options.scoutBackend && !options.executeBackend) {
+    const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
+    const hasCodex = !!process.env.CODEX_API_KEY;
+
+    if (hasAnthropic) {
+      // Anthropic key present → use Claude
+      options.claude = true;
+    } else if (hasCodex) {
+      // Only Codex key → use Codex
+      options.codex = true;
+      console.log(chalk.gray('Auto-detected: CODEX_API_KEY'));
+    } else {
+      // No API keys — check for codex login
+      const { spawnSync } = await import('node:child_process');
+      const loginCheck = spawnSync('codex', ['login', 'status'], { encoding: 'utf-8', timeout: 10000 });
+      if (loginCheck.status === 0) {
+        options.codex = true;
+        console.log(chalk.gray('Auto-detected: codex login'));
+      }
+      // If nothing found, will fail later with helpful error
+    }
+  }
+
   if (options.codex) {
     options.scoutBackend = options.scoutBackend ?? 'codex';
     options.executeBackend = options.executeBackend ?? 'codex';

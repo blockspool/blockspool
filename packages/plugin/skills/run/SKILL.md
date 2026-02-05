@@ -18,6 +18,7 @@ Parse from `$ARGUMENTS` (all optional, key=value format):
 - **batch_size** — Milestone batching (merge N tickets into one PR)
 - **min_impact_score** — Filter proposals (1-10, default 3)
 - **scope** — Directory to scan (auto-detected)
+- **direct** — Edit in place without worktrees (default: true). Auto-disabled when using PRs or parallel>1.
 
 ## Setup
 

@@ -12,6 +12,7 @@ import { registerExecCommands } from './solo-exec.js';
 import { registerQaCommands } from './solo-qa.js';
 import { registerAutoCommands } from './solo-auto.js';
 import { registerNudgeCommands } from './solo-nudge.js';
+import { registerAnalyticsCommands } from './solo-analytics.js';
 
 // Re-export types from extracted modules
 export type { FailureReason, CompletionOutcome, RunTicketResult } from '../lib/solo-ticket-types.js';
@@ -46,3 +47,4 @@ registerExecCommands(soloCommand);
 registerQaCommands(soloCommand);
 registerAutoCommands(soloCommand);
 registerNudgeCommands(soloCommand);
+registerAnalyticsCommands(soloCommand);

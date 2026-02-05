@@ -495,7 +495,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
     for (const pt of parallelTickets) {
       const ticket = readyTickets.find(t => t.id === pt.ticket_id)!;
       pt.inline_prompt = buildInlineTicketPrompt(
-        ticket, pt.constraints, guidelinesBlock, metadataBlock, s.create_prs, s.draft,
+        ticket, pt.constraints, guidelinesBlock, metadataBlock, s.create_prs, s.draft, s.direct,
       );
     }
 
@@ -1185,6 +1185,7 @@ function buildInlineTicketPrompt(
   metadataBlock: string,
   createPrs: boolean,
   draft: boolean,
+  direct: boolean,
 ): string {
   const slug = ticket.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
   const branch = `blockspool/${ticket.id}/${slug}`;
@@ -1196,6 +1197,60 @@ function buildInlineTicketPrompt(
 
   const planningPreamble = buildPlanningPreamble(ticket);
 
+  // Direct mode: simpler flow, edit in place, no worktrees
+  if (direct) {
+    return [
+      `# BlockSpool Ticket: ${ticket.title}`,
+      '',
+      planningPreamble,
+      guidelinesBlock,
+      metadataBlock,
+      ticket.description ?? '',
+      '',
+      '## Constraints',
+      '',
+      `- **Allowed paths:** ${constraints.allowed_paths.length > 0 ? constraints.allowed_paths.join(', ') : 'any'}`,
+      `- **Denied paths:** ${constraints.denied_paths.length > 0 ? constraints.denied_paths.join(', ') : 'none'}`,
+      `- **Max files:** ${constraints.max_files || 'unlimited'}`,
+      `- **Max lines:** ${constraints.max_lines || 'unlimited'}`,
+      '',
+      '## Step 1 — Implement the change',
+      '',
+      '- Read the relevant files first to understand the current state.',
+      '- Make minimal, focused changes that match the ticket description.',
+      '- Only modify files within the allowed paths.',
+      '- Follow any project guidelines provided above.',
+      '',
+      '## Step 2 — Verify',
+      '',
+      verifyBlock,
+      '',
+      'If tests fail, fix the issues and re-run. Do not skip verification.',
+      '',
+      '## Step 3 — Commit',
+      '',
+      '```bash',
+      'git add -A',
+      `git commit -m "${ticket.title}"`,
+      '```',
+      '',
+      '## Output',
+      '',
+      'When done, output a summary in this exact format:',
+      '',
+      '```',
+      `TICKET_ID: ${ticket.id}`,
+      'STATUS: success | failed',
+      'PR_URL: none',
+      'BRANCH: (current)',
+      'SUMMARY: <one line summary of what was done>',
+      '```',
+      '',
+      'If anything goes wrong and you cannot complete the ticket, output STATUS: failed with a reason.',
+    ].join('\n');
+  }
+
+  // Worktree mode: isolated branches for parallel execution or PR workflow
   return [
     `# BlockSpool Ticket: ${ticket.title}`,
     '',

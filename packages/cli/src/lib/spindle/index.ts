@@ -30,6 +30,7 @@ import { detectCommandFailure } from './command-failure.js';
 import { extractFilesFromDiff, getFileEditWarnings } from './file-edits.js';
 import { DEFAULT_SPINDLE_CONFIG, createSpindleState } from './types.js';
 import { formatSpindleResult } from './format.js';
+import { metric } from '../metrics.js';
 
 /**
  * Check if agent is in a Spindle loop
@@ -99,7 +100,7 @@ export function checkSpindleLoop(
 
   // Check 1: Token budget
   if (state.estimatedTokens >= config.tokenBudgetAbort) {
-    return {
+    return triggerSpindle({
       shouldAbort: true,
       shouldBlock: false,
       reason: 'token_budget',
@@ -107,7 +108,7 @@ export function checkSpindleLoop(
       diagnostics: {
         estimatedTokens: state.estimatedTokens,
       },
-    };
+    });
   }
 
   // Token budget warning (don't abort, just warn)
@@ -120,7 +121,7 @@ export function checkSpindleLoop(
 
   // Check 2: Stalling (no changes for too many iterations)
   if (state.iterationsSinceChange >= config.maxStallIterations) {
-    return {
+    return triggerSpindle({
       shouldAbort: true,
       shouldBlock: false,
       reason: 'stalling',
@@ -128,14 +129,14 @@ export function checkSpindleLoop(
       diagnostics: {
         iterationsWithoutChange: state.iterationsSinceChange,
       },
-    };
+    });
   }
 
   // Check 2b: Time-based stall (wall-clock)
   if (config.maxStallMinutes > 0) {
     const minutesSinceProgress = (Date.now() - state.lastProgressAt) / 60_000;
     if (minutesSinceProgress >= config.maxStallMinutes) {
-      return {
+      return triggerSpindle({
         shouldAbort: true,
         shouldBlock: false,
         reason: 'time_stall',
@@ -144,7 +145,7 @@ export function checkSpindleLoop(
           minutesSinceProgress: Math.round(minutesSinceProgress),
           maxStallMinutes: config.maxStallMinutes,
         },
-      };
+      });
     }
   }
 
@@ -152,7 +153,7 @@ export function checkSpindleLoop(
   if (state.diffs.length >= 2) {
     const oscillation = detectOscillation(state.diffs, config.similarityThreshold);
     if (oscillation.detected) {
-      return {
+      return triggerSpindle({
         shouldAbort: true,
         shouldBlock: false,
         reason: 'oscillation',
@@ -160,7 +161,7 @@ export function checkSpindleLoop(
         diagnostics: {
           oscillationPattern: oscillation.pattern,
         },
-      };
+      });
     }
   }
 
@@ -168,7 +169,7 @@ export function checkSpindleLoop(
   if (state.outputs.length >= 2) {
     const repetition = detectRepetition(state.outputs.slice(0, -1), latestOutput, config);
     if (repetition.detected) {
-      return {
+      return triggerSpindle({
         shouldAbort: true,
         shouldBlock: false,
         reason: 'repetition',
@@ -177,7 +178,7 @@ export function checkSpindleLoop(
           repeatedPatterns: repetition.patterns,
           similarityScore: repetition.confidence,
         },
-      };
+      });
     }
   }
 
@@ -197,26 +198,26 @@ export function checkSpindleLoop(
   if (state.failingCommandSignatures.length >= config.maxQaPingPong * 2) {
     const pp = detectQaPingPong(state.failingCommandSignatures, config.maxQaPingPong);
     if (pp) {
-      return {
+      return triggerSpindle({
         shouldAbort: true,
         shouldBlock: false,
         reason: 'qa_ping_pong',
         confidence: 0.9,
         diagnostics: { pingPongPattern: pp },
-      };
+      });
     }
   }
 
   // Check 7: Command signature — same command fails N times → block (needs human)
   const cmdFail = detectCommandFailure(state.failingCommandSignatures, config.maxCommandFailures);
   if (cmdFail) {
-    return {
+    return triggerSpindle({
       shouldAbort: false,
       shouldBlock: true,
       reason: 'command_failure',
       confidence: 0.8,
       diagnostics: { commandSignature: cmdFail, commandFailureThreshold: config.maxCommandFailures },
-    };
+    });
   }
 
   // Check 8: File edit frequency warnings
@@ -231,6 +232,12 @@ export function checkSpindleLoop(
   }
 
   // No issues detected
+  // Instrument: track spindle check (no trigger)
+  metric('spindle', 'check_passed', {
+    tokens: state.estimatedTokens,
+    iterations: state.iterationsSinceChange,
+  });
+
   return {
     shouldAbort: false,
     shouldBlock: false,
@@ -241,6 +248,19 @@ export function checkSpindleLoop(
       ...(fileWarnings.length > 0 ? { fileEditWarnings: fileWarnings } : {}),
     },
   };
+}
+
+/**
+ * Helper to record spindle trigger and return result
+ */
+function triggerSpindle(result: SpindleResult): SpindleResult {
+  metric('spindle', 'triggered', {
+    reason: result.reason,
+    shouldAbort: result.shouldAbort,
+    shouldBlock: result.shouldBlock,
+    confidence: result.confidence,
+  });
+  return result;
 }
 
 // ---------------------------------------------------------------------------

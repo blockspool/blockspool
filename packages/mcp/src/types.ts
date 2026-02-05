@@ -127,6 +127,9 @@ export interface RunState {
   parallel: number;
   ticket_workers: Record<string, TicketWorkerState>;
 
+  // Direct mode: edit in place without worktrees/branches
+  direct: boolean;
+
   // Coverage
   sectors_scanned: number;
   sectors_total: number;
@@ -333,4 +336,6 @@ export interface SessionConfig {
   learnings?: boolean;
   learnings_budget?: number;
   learnings_decay_rate?: number;
+  /** Direct mode: edit in place without worktrees/branches. Default: true (simpler for solo use). */
+  direct?: boolean;
 }

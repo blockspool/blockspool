@@ -182,6 +182,10 @@ export class RunManager {
       learnings_enabled: config.learnings !== false,
       injected_learning_ids: [],
       cached_learnings: [],
+
+      // Direct mode: edit in place without worktrees. Default true for simpler solo use.
+      // Auto-disabled when creating PRs or using parallel > 1 (needs isolation).
+      direct: config.direct ?? (!createPrs && (config.parallel ?? 2) <= 1),
     };
 
     // Detect project metadata (test runner, framework, etc.)

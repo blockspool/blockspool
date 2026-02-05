@@ -331,7 +331,7 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     }
     shutdownRef.shutdownRequested = true;
     if (shutdownRef.currentlyProcessing) {
-      console.log(chalk.yellow('\nShutdown requested. Finishing current ticket, then finalizing milestone...'));
+      console.log(chalk.yellow('\nShutdown requested. Finishing current ticket...'));
     } else {
       console.log(chalk.yellow('\nShutdown requested. Exiting...'));
       process.exit(0);

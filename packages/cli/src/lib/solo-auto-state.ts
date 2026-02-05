@@ -396,7 +396,8 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
         // Runs until all QA passes or user presses Ctrl+C
         let cycle = 0;
         let currentFailing = [...stillFailing];
-        console.log(chalk.cyan('\n  🔄 Starting QA fix wheel (Ctrl+C to stop and continue)...'));
+        console.log(chalk.cyan('\n  ☀ QA Fix Wheel — runs until all pass (Ctrl+C to stop)\n'));
+        console.log(chalk.gray('  ─'.repeat(35)));
 
         while (currentFailing.length > 0) {
           cycle++;
@@ -426,7 +427,12 @@ ${failingCmds}
 Previous cycles made some progress. Please continue fixing the remaining issues.
 Focus on the root cause - don't suppress errors or modify the QA commands.`;
 
-          console.log(chalk.cyan(`\n  🤖 QA fix cycle ${cycle} (${currentFailing.length} failing)...`));
+          console.log(chalk.cyan(`\n  ☀ Cycle ${cycle}`), chalk.gray(`— ${currentFailing.length} failing: ${currentFailing.join(', ')}`));
+          console.log();
+
+          // Import spinner
+          const { createSpinner } = await import('./spinner.js');
+          const spinner = createSpinner(`Fixing ${currentFailing.length} QA issue(s)...`);
 
           try {
             const result = await backend.run({
@@ -434,27 +440,27 @@ Focus on the root cause - don't suppress errors or modify the QA commands.`;
               prompt: fixPrompt,
               timeoutMs: 0, // No timeout - run until done
               verbose: true,
-              onProgress: (msg) => console.log(chalk.gray(`    ${msg}`)),
+              onProgress: (msg) => spinner.update(msg),
             });
+            spinner.stop();
 
             // After each cycle, re-check baselines
-            console.log(chalk.gray('  Re-checking baselines...'));
+            const checkSpinner = createSpinner('Re-checking baselines...');
             resetQaStatsForSession(repoRoot);
-            baseline = await captureQaBaseline(repoRoot, config, (msg) => console.log(chalk.gray(msg)), repoRoot);
+            baseline = await captureQaBaseline(repoRoot, config, (msg) => checkSpinner.update(msg), repoRoot);
 
             const nowFailing = [...baseline.entries()].filter(([, passed]) => !passed).map(([name]) => name);
 
             if (nowFailing.length === 0) {
-              console.log(chalk.green('\n  ✓ All QA commands now passing!'));
+              checkSpinner.succeed('All QA commands now passing!');
               break;
             } else if (nowFailing.length < currentFailing.length) {
               const fixed = currentFailing.length - nowFailing.length;
-              console.log(chalk.green(`  ✓ Progress: ${fixed} fixed this cycle`));
-              console.log(chalk.yellow(`  ⚠ ${nowFailing.length} still failing: ${nowFailing.join(', ')}`));
+              checkSpinner.succeed(`${fixed} fixed! ${nowFailing.length} remaining`);
               currentFailing = nowFailing;
               // Auto-continue to next cycle
             } else {
-              console.log(chalk.yellow(`  ⚠ No progress this cycle (${nowFailing.length} still failing)`));
+              checkSpinner.fail(`No progress (${nowFailing.length} still failing)`);
               // Still continue - maybe next cycle will make progress
               currentFailing = nowFailing;
 
@@ -475,8 +481,10 @@ Focus on the root cause - don't suppress errors or modify the QA commands.`;
               console.log(chalk.yellow(`  ⚠ Cycle ended: ${result.error?.slice(0, 100) || 'Unknown'}`));
               // Continue anyway - next cycle might work
             }
+            console.log(chalk.gray('  ─'.repeat(35)));
           } catch (err) {
-            console.log(chalk.yellow(`  ⚠ Cycle error: ${err instanceof Error ? err.message : err}`));
+            spinner.fail(`Cycle error: ${err instanceof Error ? err.message : err}`);
+            console.log(chalk.gray('  ─'.repeat(35)));
             // Continue anyway
           }
         }

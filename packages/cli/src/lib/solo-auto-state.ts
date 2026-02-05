@@ -407,25 +407,27 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
           }).join('\n');
 
           const fixPrompt = cycle === 1
-            ? `The following QA commands are failing in this project. Please investigate and fix the issues so they pass.
+            ? `The following QA commands are failing in this project. Please investigate and fix the CODE issues so they pass.
 
 Failing commands:
 ${failingCmds}
 
 Instructions:
 1. Run each failing command to see the actual errors
-2. Fix the underlying issues (type errors, lint errors, test failures, build errors)
-3. Do NOT modify the QA commands themselves or disable checks
-4. Make minimal changes to fix the issues
-5. Verify each fix by re-running the command
+2. Fix the SOURCE CODE — compile errors, type errors, lint errors, test failures, syntax errors
+3. Do NOT run package managers (npm, pnpm, yarn, pip, cargo, go mod, bundle, etc.)
+4. Do NOT modify dependency files (package.json, requirements.txt, Cargo.toml, go.mod, Gemfile, etc.)
+5. Do NOT modify the QA commands themselves or disable checks
+6. Make minimal code changes to fix the issues
+7. Verify each fix by re-running the command
 
-Focus on fixing the root cause, not suppressing errors.`
+IMPORTANT: Only fix source code files. Do not touch dependencies, lock files, or node_modules.`
             : `Continuing QA fix cycle ${cycle}. The following commands are still failing:
 
 ${failingCmds}
 
-Previous cycles made some progress. Please continue fixing the remaining issues.
-Focus on the root cause - don't suppress errors or modify the QA commands.`;
+Continue fixing SOURCE CODE issues. Do NOT run package managers or modify dependencies.
+Fix code only — compile errors, type errors, lint errors, test failures.`;
 
           console.log(chalk.cyan(`\n  ☀ Cycle ${cycle}`), chalk.gray(`— ${currentFailing.length} failing: ${currentFailing.join(', ')}`));
           console.log();

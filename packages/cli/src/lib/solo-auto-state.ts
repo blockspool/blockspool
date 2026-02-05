@@ -30,7 +30,7 @@ import {
   pushAndPrMilestone,
   ensureDirectBranch,
 } from './solo-git.js';
-import { startStdinListener } from './solo-stdin.js';
+import { startInteractiveConsole, type InteractiveConsole } from './solo-stdin.js';
 import { loadGuidelines, formatGuidelinesForPrompt } from './guidelines.js';
 import type { ProjectGuidelines, GuidelinesBackend } from './guidelines.js';
 import { loadLearnings, type Learning } from './learnings.js';
@@ -230,8 +230,8 @@ export interface AutoSessionState {
   // Scope
   userScope: string | undefined;
 
-  // Stdin listener
-  stopStdinListener: (() => void) | undefined;
+  // Interactive console
+  interactiveConsole: InteractiveConsole | undefined;
 
   // Helpers (closures that need state)
   getCycleFormula: (cycle: number) => import('./formulas.js').Formula | null;
@@ -386,15 +386,27 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
       rl.close();
 
       if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
-        console.log(chalk.cyan('\n  🤖 Running AI-assisted QA fix...'));
+        // Use the execution backend to fix issues
+        const { ClaudeExecutionBackend, CodexExecutionBackend } = await import('./execution-backends/index.js');
+        const backend = options.codex
+          ? new CodexExecutionBackend({ model: options.codexModel })
+          : new ClaudeExecutionBackend();
 
-        // Build a prompt for the AI to fix the failing commands
-        const failingCmds = stillFailing.map(name => {
-          const cmd = qaConfig.commands.find(c => c.name === name);
-          return cmd ? `${name}: ${cmd.cmd}` : name;
-        }).join('\n');
+        // Continuous fix loop - like Claude's compaction model
+        // Runs until all QA passes or user presses Ctrl+C
+        let cycle = 0;
+        let currentFailing = [...stillFailing];
+        console.log(chalk.cyan('\n  🔄 Starting QA fix wheel (Ctrl+C to stop and continue)...'));
 
-        const fixPrompt = `The following QA commands are failing in this project. Please investigate and fix the issues so they pass.
+        while (currentFailing.length > 0) {
+          cycle++;
+          const failingCmds = currentFailing.map(name => {
+            const cmd = qaConfig.commands.find(c => c.name === name);
+            return cmd ? `${name}: ${cmd.cmd}` : name;
+          }).join('\n');
+
+          const fixPrompt = cycle === 1
+            ? `The following QA commands are failing in this project. Please investigate and fix the issues so they pass.
 
 Failing commands:
 ${failingCmds}
@@ -406,33 +418,72 @@ Instructions:
 4. Make minimal changes to fix the issues
 5. Verify each fix by re-running the command
 
-Focus on fixing the root cause, not suppressing errors.`;
+Focus on fixing the root cause, not suppressing errors.`
+            : `Continuing QA fix cycle ${cycle}. The following commands are still failing:
 
-        // Use the execution backend to fix issues
-        const { ClaudeExecutionBackend, CodexExecutionBackend } = await import('./execution-backends/index.js');
-        const backend = options.codex
-          ? new CodexExecutionBackend({ model: options.codexModel })
-          : new ClaudeExecutionBackend();
+${failingCmds}
 
-        try {
-          const result = await backend.run({
-            worktreePath: repoRoot,
-            prompt: fixPrompt,
-            timeoutMs: 10 * 60 * 1000, // 10 minutes for QA fix
-            verbose: true,
-            onProgress: (msg) => console.log(chalk.gray(`    ${msg}`)),
-          });
+Previous cycles made some progress. Please continue fixing the remaining issues.
+Focus on the root cause - don't suppress errors or modify the QA commands.`;
 
-          if (result.success) {
-            console.log(chalk.green('  ✓ AI fix complete, re-checking baselines...'));
+          console.log(chalk.cyan(`\n  🤖 QA fix cycle ${cycle} (${currentFailing.length} failing)...`));
+
+          try {
+            const result = await backend.run({
+              worktreePath: repoRoot,
+              prompt: fixPrompt,
+              timeoutMs: 0, // No timeout - run until done
+              verbose: true,
+              onProgress: (msg) => console.log(chalk.gray(`    ${msg}`)),
+            });
+
+            // After each cycle, re-check baselines
+            console.log(chalk.gray('  Re-checking baselines...'));
             resetQaStatsForSession(repoRoot);
             baseline = await captureQaBaseline(repoRoot, config, (msg) => console.log(chalk.gray(msg)), repoRoot);
-          } else {
-            console.log(chalk.yellow(`  ⚠ AI fix failed: ${result.error?.slice(0, 100)}`));
+
+            const nowFailing = [...baseline.entries()].filter(([, passed]) => !passed).map(([name]) => name);
+
+            if (nowFailing.length === 0) {
+              console.log(chalk.green('\n  ✓ All QA commands now passing!'));
+              break;
+            } else if (nowFailing.length < currentFailing.length) {
+              const fixed = currentFailing.length - nowFailing.length;
+              console.log(chalk.green(`  ✓ Progress: ${fixed} fixed this cycle`));
+              console.log(chalk.yellow(`  ⚠ ${nowFailing.length} still failing: ${nowFailing.join(', ')}`));
+              currentFailing = nowFailing;
+              // Auto-continue to next cycle
+            } else {
+              console.log(chalk.yellow(`  ⚠ No progress this cycle (${nowFailing.length} still failing)`));
+              // Still continue - maybe next cycle will make progress
+              currentFailing = nowFailing;
+
+              // After 3 cycles without progress, ask if they want to continue
+              if (cycle >= 3 && cycle % 3 === 0) {
+                const continueAnswer = await new Promise<string>((resolve) => {
+                  const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+                  rl2.question(chalk.cyan(`  ${cycle} cycles without full success. Continue? [Y/n] `), (ans) => { rl2.close(); resolve(ans); });
+                });
+                if (continueAnswer.toLowerCase() === 'n') {
+                  console.log(chalk.gray('  Stopping fix wheel...'));
+                  break;
+                }
+              }
+            }
+
+            if (!result.success) {
+              console.log(chalk.yellow(`  ⚠ Cycle ended: ${result.error?.slice(0, 100) || 'Unknown'}`));
+              // Continue anyway - next cycle might work
+            }
+          } catch (err) {
+            console.log(chalk.yellow(`  ⚠ Cycle error: ${err instanceof Error ? err.message : err}`));
+            // Continue anyway
           }
-        } catch (err) {
-          console.log(chalk.yellow(`  ⚠ AI fix error: ${err instanceof Error ? err.message : err}`));
         }
+
+        // Update stillFailing for final reporting
+        stillFailing.length = 0;
+        stillFailing.push(...currentFailing);
         console.log();
       }
     }
@@ -568,11 +619,10 @@ Focus on fixing the root cause, not suppressing errors.`;
   }
   console.log();
 
-  // Start stdin listener
-  let stopStdinListener: (() => void) | undefined;
-  if (isContinuous) {
-    stopStdinListener = startStdinListener(repoRoot);
-  }
+  // Start interactive console
+  let interactiveConsole: InteractiveConsole | undefined;
+  // Will be wired up to shutdownRequested after state is created
+  let requestShutdown: (() => void) | undefined;
 
   // Check working tree
   const statusResult = spawnSync('git', ['status', '--porcelain'], { cwd: repoRoot });
@@ -910,7 +960,7 @@ Focus on fixing the root cause, not suppressing errors.`;
 
     parallelExplicit,
     userScope,
-    stopStdinListener,
+    interactiveConsole,
 
     // These closures capture `state` via the getFormulaCtx closure which reads sessionPhase.
     // We need to patch them to read from state.
@@ -975,6 +1025,38 @@ Focus on fixing the root cause, not suppressing errors.`;
     state.milestoneNumber++;
     console.log(chalk.cyan(`New milestone branch: ${state.milestoneBranch}`));
   };
+
+  // Start interactive console now that state exists
+  if (isContinuous) {
+    state.interactiveConsole = startInteractiveConsole({
+      repoRoot,
+      onQuit: () => {
+        state.shutdownRequested = true;
+      },
+      onStatus: () => {
+        const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        console.log(chalk.cyan('\n  📊 Session Status:'));
+        console.log(chalk.gray(`    Cycle: ${state.cycleCount}`));
+        console.log(chalk.gray(`    Elapsed: ${mins}m ${secs}s`));
+        if (state.milestoneMode) {
+          console.log(chalk.gray(`    Tickets this milestone: ${state.milestoneTicketCount}`));
+          console.log(chalk.gray(`    Milestone PRs: ${state.totalMilestonePrs}/${state.maxPrs}`));
+        } else if (state.deliveryMode === 'direct') {
+          console.log(chalk.gray(`    Completed tickets: ${state.completedDirectTickets.length}`));
+        } else {
+          console.log(chalk.gray(`    PRs created: ${state.totalPrsCreated}/${state.maxPrs}`));
+        }
+        console.log(chalk.gray(`    Failed: ${state.totalFailed}`));
+        if (state.endTime) {
+          const remaining = Math.max(0, Math.floor((state.endTime - Date.now()) / 60000));
+          console.log(chalk.gray(`    Time remaining: ${remaining}m`));
+        }
+        console.log();
+      },
+    });
+  }
 
   return state;
 }

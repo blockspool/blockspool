@@ -148,11 +148,12 @@ export class CodexExecutionBackend implements ExecutionBackend {
           onProgress(`${lastPhase}... (${elapsed})`);
         }, 3000);
 
-        const timer = setTimeout(() => {
+        // Only set timeout if timeoutMs > 0 (0 = no timeout)
+        const timer = timeoutMs > 0 ? setTimeout(() => {
           timedOut = true;
           proc.kill('SIGTERM');
           setTimeout(() => proc.kill('SIGKILL'), 5000);
-        }, timeoutMs);
+        }, timeoutMs) : null;
 
         proc.stdin.write(prompt);
         proc.stdin.end();
@@ -192,7 +193,7 @@ export class CodexExecutionBackend implements ExecutionBackend {
         });
 
         proc.on('close', (code: number | null) => {
-          clearTimeout(timer);
+          if (timer) clearTimeout(timer);
           clearInterval(progressInterval);
           const durationMs = Date.now() - startTime;
 
@@ -218,7 +219,7 @@ export class CodexExecutionBackend implements ExecutionBackend {
         });
 
         proc.on('error', (err: Error) => {
-          clearTimeout(timer);
+          if (timer) clearTimeout(timer);
           clearInterval(progressInterval);
           resolve({ success: false, error: err.message, stdout, stderr, exitCode: null, timedOut: false, durationMs: Date.now() - startTime });
         });

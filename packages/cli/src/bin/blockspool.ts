@@ -22,7 +22,7 @@ import {
   runSelfUpdate,
 } from '../lib/update-check.js';
 
-const CURRENT_VERSION = '0.5.55';
+const CURRENT_VERSION = '0.5.56';
 
 const program = new Command();
 

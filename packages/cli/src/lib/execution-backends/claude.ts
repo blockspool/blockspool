@@ -83,10 +83,11 @@ export async function runClaude(opts: {
       onProgress(`${lastPhase}... (${elapsed})`);
     }, 3000);
 
-    const timer = setTimeout(() => {
+    // Only set timeout if timeoutMs > 0 (0 = no timeout)
+    const timer = timeoutMs > 0 ? setTimeout(() => {
       timedOut = true;
       claude.kill('SIGTERM');
-    }, timeoutMs);
+    }, timeoutMs) : null;
 
     claude.stdin.write(prompt);
     claude.stdin.end();
@@ -113,7 +114,7 @@ export async function runClaude(opts: {
     });
 
     claude.on('close', (code: number | null) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       clearInterval(progressInterval);
       const durationMs = Date.now() - startTime;
 
@@ -131,7 +132,7 @@ export async function runClaude(opts: {
     });
 
     claude.on('error', (err: Error) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       clearInterval(progressInterval);
       resolve({ success: false, error: err.message, stdout, stderr, exitCode: null, timedOut: false, durationMs: Date.now() - startTime });
     });

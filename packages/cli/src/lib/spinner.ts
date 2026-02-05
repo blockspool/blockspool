@@ -1,31 +1,30 @@
 /**
  * Block Spinner — zero-dependency animated spinner for the terminal
  *
- * Uses Unicode block characters that rotate to create a "spinning block" effect.
+ * Uses a sun symbol (☀) that alternates between blue and green.
  * Shows elapsed time automatically so you always know it's alive.
  */
 
 import chalk from 'chalk';
 
-// Block characters that create a rotating cube illusion
-const BLOCK_FRAMES = [
-  '▖', '▘', '▝', '▗',  // quarter blocks rotating clockwise
+// Sun symbol - the BlockSpool signature
+const SUN = '☀';
+
+// Color cycle: blue → green → blue → green
+const SUN_COLORS = [
+  (s: string) => chalk.blue(s),
+  (s: string) => chalk.cyan(s),
+  (s: string) => chalk.green(s),
+  (s: string) => chalk.cyan(s),
 ];
 
-const SPOOL_FRAMES = [
-  '◐', '◓', '◑', '◒',  // half-circle rotating
-];
+// Legacy frame sets (kept for compatibility)
+const BLOCK_FRAMES = ['▖', '▘', '▝', '▗'];
+const SPOOL_FRAMES = ['◐', '◓', '◑', '◒'];
+const CUBE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const STACK_FRAMES = ['░', '▒', '▓', '█', '▓', '▒'];
 
-const CUBE_FRAMES = [
-  '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
-];
-
-// BlockSpool signature: stacked blocks assembling
-const STACK_FRAMES = [
-  '░', '▒', '▓', '█', '▓', '▒',
-];
-
-export type SpinnerStyle = 'block' | 'spool' | 'cube' | 'stack';
+export type SpinnerStyle = 'block' | 'spool' | 'cube' | 'stack' | 'sun';
 
 export interface BlockSpinner {
   /** Update the message text */
@@ -43,6 +42,7 @@ const FRAME_SETS: Record<SpinnerStyle, string[]> = {
   spool: SPOOL_FRAMES,
   cube: CUBE_FRAMES,
   stack: STACK_FRAMES,
+  sun: [SUN, SUN, SUN, SUN], // Same symbol, color changes
 };
 
 function formatElapsedCompact(ms: number): string {
@@ -71,7 +71,6 @@ export interface BatchProgressDisplay {
 
 export function createBatchProgress(totalBatches: number): BatchProgressDisplay {
   const isInteractive = process.stderr.isTTY;
-  const frames = FRAME_SETS.stack;
   let frameIndex = 0;
   let interval: ReturnType<typeof setInterval> | null = null;
   let linesRendered = 0;
@@ -88,14 +87,16 @@ export function createBatchProgress(totalBatches: number): BatchProgressDisplay 
       process.stderr.write(`\x1b[${linesRendered}A`);
     }
 
-    const frame = frames[frameIndex % frames.length];
+    // Sun with color cycling
+    const colorFn = SUN_COLORS[frameIndex % SUN_COLORS.length];
+    const frame = colorFn(SUN);
     frameIndex++;
 
     const lines: string[] = [];
 
     // Header line
     const elapsed = formatElapsedCompact(Date.now() - startedAt);
-    lines.push(`  ${chalk.cyan(frame)} Scouting ${totalBatches} batches ${chalk.gray(`(${currentTotalProposals} proposals, ${elapsed})`)}`);
+    lines.push(`  ${frame} Scouting ${totalBatches} batches ${chalk.gray(`(${currentTotalProposals} proposals, ${elapsed})`)}`);
 
     // Per-batch lines
     for (let i = 0; i < totalBatches; i++) {
@@ -106,12 +107,12 @@ export function createBatchProgress(totalBatches: number): BatchProgressDisplay 
       if (!s || s.status === 'waiting') {
         lines.push(chalk.gray(`    ○ Batch ${i + 1}  waiting`));
       } else if (s.status === 'running') {
-        lines.push(`    ${chalk.cyan(frame)} Batch ${i + 1}  ${chalk.cyan('analyzing...')}${durStr}`);
+        lines.push(`    ${frame} Batch ${i + 1}  ${chalk.cyan('analyzing...')}${durStr}`);
       } else if (s.status === 'done') {
         const pStr = s.proposals ? `${s.proposals} proposal${s.proposals !== 1 ? 's' : ''}` : 'no proposals';
-        lines.push(`    ${chalk.green('█')} Batch ${i + 1}  ${chalk.green(pStr)}${durStr}`);
+        lines.push(`    ${chalk.green(SUN)} Batch ${i + 1}  ${chalk.green(pStr)}${durStr}`);
       } else if (s.status === 'failed') {
-        lines.push(`    ${chalk.red('█')} Batch ${i + 1}  ${chalk.red('failed')}${durStr}`);
+        lines.push(`    ${chalk.red(SUN)} Batch ${i + 1}  ${chalk.red('failed')}${durStr}`);
       }
     }
 
@@ -169,10 +170,9 @@ export function createBatchProgress(totalBatches: number): BatchProgressDisplay 
 }
 
 /**
- * Create and start a block spinner
+ * Create and start a spinner with sun symbol cycling blue/green
  */
-export function createSpinner(message: string, style: SpinnerStyle = 'stack'): BlockSpinner {
-  const frames = FRAME_SETS[style];
+export function createSpinner(message: string, style: SpinnerStyle = 'sun'): BlockSpinner {
   let frameIndex = 0;
   let currentMessage = message;
   let interval: ReturnType<typeof setInterval> | null = null;
@@ -181,7 +181,9 @@ export function createSpinner(message: string, style: SpinnerStyle = 'stack'): B
 
   const render = () => {
     if (!isInteractive) return;
-    const frame = chalk.cyan(frames[frameIndex % frames.length]);
+    // Sun with color cycling
+    const colorFn = SUN_COLORS[frameIndex % SUN_COLORS.length];
+    const frame = colorFn(SUN);
     const elapsed = chalk.gray(`(${formatElapsedCompact(Date.now() - startedAt)})`);
     const line = `  ${frame} ${currentMessage} ${elapsed}`;
     // Use wider padding for longer messages
@@ -225,12 +227,12 @@ export function createSpinner(message: string, style: SpinnerStyle = 'stack'): B
     succeed(msg: string) {
       const elapsed = chalk.gray(`(${formatElapsedCompact(Date.now() - startedAt)})`);
       clear();
-      process.stderr.write(`  ${chalk.green('█')} ${msg} ${elapsed}\n`);
+      process.stderr.write(`  ${chalk.green(SUN)} ${msg} ${elapsed}\n`);
     },
     fail(msg: string) {
       const elapsed = chalk.gray(`(${formatElapsedCompact(Date.now() - startedAt)})`);
       clear();
-      process.stderr.write(`  ${chalk.red('█')} ${msg} ${elapsed}\n`);
+      process.stderr.write(`  ${chalk.red(SUN)} ${msg} ${elapsed}\n`);
     },
   };
 }

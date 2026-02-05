@@ -186,7 +186,8 @@ export class OpenAILocalExecutionBackend implements ExecutionBackend {
     const startTime = Date.now();
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // Only set timeout if timeoutMs > 0 (0 = no timeout)
+    const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
     try {
       onProgress('Sending to local model...');
@@ -330,7 +331,7 @@ export class OpenAILocalExecutionBackend implements ExecutionBackend {
         durationMs,
       };
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     }
   }
 }

@@ -289,7 +289,7 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
 
     parallelExplicit: false,
     userScope: undefined,
-    stopStdinListener: undefined,
+    interactiveConsole: undefined,
 
     getCycleFormula: vi.fn().mockReturnValue(null),
     getCycleCategories: vi.fn().mockReturnValue({ allow: [], block: [] }),

@@ -22,7 +22,7 @@ export async function finalizeSession(state: AutoSessionState): Promise<void> {
     await finalizeSafe(state);
   } finally {
     // Always release resources, even if finalization logic throws
-    state.stopStdinListener?.();
+    state.interactiveConsole?.stop();
     try { await state.adapter.close(); } catch { /* best-effort */ }
   }
 }

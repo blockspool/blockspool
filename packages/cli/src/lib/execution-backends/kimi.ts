@@ -46,11 +46,12 @@ export class KimiExecutionBackend implements ExecutionBackend {
       let stderr = '';
       let timedOut = false;
 
-      const timer = setTimeout(() => {
+      // Only set timeout if timeoutMs > 0 (0 = no timeout)
+      const timer = timeoutMs > 0 ? setTimeout(() => {
         timedOut = true;
         proc.kill('SIGTERM');
         setTimeout(() => proc.kill('SIGKILL'), 5000);
-      }, timeoutMs);
+      }, timeoutMs) : null;
 
       proc.stdin.write(prompt);
       proc.stdin.end();
@@ -68,7 +69,7 @@ export class KimiExecutionBackend implements ExecutionBackend {
       });
 
       proc.on('close', (code: number | null) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         const durationMs = Date.now() - startTime;
 
         if (timedOut) {
@@ -85,7 +86,7 @@ export class KimiExecutionBackend implements ExecutionBackend {
       });
 
       proc.on('error', (err: Error) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         resolve({ success: false, error: err.message, stdout, stderr, exitCode: null, timedOut: false, durationMs: Date.now() - startTime });
       });
     });

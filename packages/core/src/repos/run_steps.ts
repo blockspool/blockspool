@@ -180,20 +180,32 @@ export async function createMany(
   }>,
   attempt: number = 1
 ): Promise<RunStep[]> {
-  return db.withTransaction(async () => {
+  return db.withTransaction(async (tx) => {
     const created: RunStep[] = [];
 
     for (let i = 0; i < steps.length; i++) {
-      const step = await create(db, {
-        runId,
-        attempt,
-        ordinal: i,
-        name: steps[i].name,
-        cmd: steps[i].cmd,
-        cwd: steps[i].cwd,
-        timeoutMs: steps[i].timeoutMs,
-      });
-      created.push(step);
+      const id = `stp_${nanoid(12)}`;
+      const now = Date.now();
+
+      await tx.query(
+        `INSERT INTO run_steps (
+          id, run_id, attempt, ordinal, name, kind,
+          cmd, cwd, timeout_ms, meta_json,
+          created_at_ms, updated_at_ms
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          id, runId, attempt, i, steps[i].name, 'command',
+          steps[i].cmd, steps[i].cwd ?? null, steps[i].timeoutMs ?? null,
+          JSON.stringify({}), now, now,
+        ]
+      );
+
+      const result = await tx.query<RunStepRow>(
+        'SELECT * FROM run_steps WHERE id = $1',
+        [id]
+      );
+      if (!result.rows[0]) throw new Error('Failed to create run step');
+      created.push(rowToStep(result.rows[0]));
     }
 
     return created;

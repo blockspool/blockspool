@@ -42,10 +42,29 @@ import {
   extractTags,
 } from './learnings.js';
 import { loadDedupMemory, formatDedupForPrompt } from './dedup-memory.js';
+import {
+  pickNextSector as pickNextSectorCore,
+  computeCoverage as computeCoverageCore,
+  buildSectorSummary as buildSectorSummaryCore,
+} from '@blockspool/core/sectors/shared';
+import type { SectorState } from '@blockspool/core/sectors/shared';
 
 const MAX_PLAN_REJECTIONS = 3;
 const MAX_QA_RETRIES = 3;
 const DEFAULT_LEARNINGS_BUDGET = 2000;
+
+/** Load sectors.json from project root — returns null if missing/invalid. */
+function loadSectorsState(rootPath: string): SectorState | null {
+  try {
+    const filePath = path.join(rootPath, '.blockspool', 'sectors.json');
+    if (!fs.existsSync(filePath)) return null;
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (data?.version !== 2 || !Array.isArray(data.sectors)) return null;
+    return data as SectorState;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Build a learnings block for prompt injection. Tracks injected IDs in state.
@@ -293,44 +312,14 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     }
   }
 
-  // Sector rotation: pick the stalest unscanned production sector
+  // Sector rotation: use core pickNextSector for full 9-tiebreaker sort
   try {
-    const sectorsPath = path.join(ctx.project.rootPath, '.blockspool', 'sectors.json');
-    if (fs.existsSync(sectorsPath)) {
-      const sectorsData = JSON.parse(fs.readFileSync(sectorsPath, 'utf8'));
-      if (sectorsData?.version === 2 && Array.isArray(sectorsData.sectors)) {
-        const prodSectors = (sectorsData.sectors as Array<{ path: string; production: boolean; fileCount: number; scanCount: number; lastScannedCycle: number }>)
-          .filter(sec => sec.production && sec.fileCount > 0);
-        // Multi-tier sort matching CLI's pickNextSector
-        const now = Date.now();
-        const sorted = [...prodSectors].sort((a: any, b: any) => {
-          // 1. Never-scanned first
-          if ((a.scanCount === 0) !== (b.scanCount === 0)) return a.scanCount === 0 ? -1 : 1;
-          // 2. Cycle staleness
-          if (a.lastScannedCycle !== b.lastScannedCycle) return a.lastScannedCycle - b.lastScannedCycle;
-          // 3. Temporal decay: if |daysDiff| > 7, older sector first
-          const aDays = (now - (a.lastScannedAt ?? 0)) / 86400000;
-          const bDays = (now - (b.lastScannedAt ?? 0)) / 86400000;
-          if (aDays > 7 && bDays > 7 && Math.abs(aDays - bDays) > 1) return bDays - aDays > 0 ? -1 : 1;
-          // 4. Barren deprioritization
-          const aBarren = a.scanCount > 2 && (a.proposalYield ?? 0) < 0.5 ? 1 : 0;
-          const bBarren = b.scanCount > 2 && (b.proposalYield ?? 0) < 0.5 ? 1 : 0;
-          if (aBarren !== bBarren) return aBarren - bBarren;
-          // 5. High failure rate deprioritization
-          const aFail = (a.failureCount ?? 0) >= 3 && (a.failureCount ?? 0) / ((a.failureCount ?? 0) + (a.successCount ?? 0)) > 0.6 ? 1 : 0;
-          const bFail = (b.failureCount ?? 0) >= 3 && (b.failureCount ?? 0) / ((b.failureCount ?? 0) + (b.successCount ?? 0)) > 0.6 ? 1 : 0;
-          if (aFail !== bFail) return aFail - bFail;
-          // 6. Higher proposalYield first
-          if ((a.proposalYield ?? 0) !== (b.proposalYield ?? 0)) return (b.proposalYield ?? 0) - (a.proposalYield ?? 0);
-          // 7. Alphabetical
-          return a.path.localeCompare(b.path);
-        });
-        if (sorted.length > 0) {
-          const picked = sorted[0];
-          const sectorScope = picked.path === '.' ? './{*,.*}' : `${picked.path}/**`;
-          s.scope = sectorScope;
-          s.selected_sector_path = picked.path;
-        }
+    const sectorsState = loadSectorsState(ctx.project.rootPath);
+    if (sectorsState) {
+      const picked = pickNextSectorCore(sectorsState, s.scout_cycles);
+      if (picked) {
+        s.scope = picked.scope;
+        s.selected_sector_path = picked.sector.path;
       }
     }
   } catch {
@@ -352,38 +341,11 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
   let sectorSummary: string | undefined;
   let sectorPercent: number | undefined;
   try {
-    const sectorsPath = path.join(ctx.project.rootPath, '.blockspool', 'sectors.json');
-    if (fs.existsSync(sectorsPath)) {
-      const sectorsData = JSON.parse(fs.readFileSync(sectorsPath, 'utf8'));
-      if (sectorsData?.version === 2 && Array.isArray(sectorsData.sectors)) {
-        const sectors = sectorsData.sectors as Array<{ path: string; scanCount: number; proposalYield: number; fileCount: number; production: boolean; lastScannedAt: number }>;
-        const prodSectors = sectors.filter(sec => sec.production);
-        const scannedCount = prodSectors.filter(sec => sec.scanCount > 0).length;
-        sectorPercent = prodSectors.length > 0 ? Math.round((scannedCount / prodSectors.length) * 100) : 0;
-        // Build compact summary
-        const recentScanned = sectors
-          .filter(sec => sec.scanCount > 0)
-          .sort((a, b) => b.lastScannedAt - a.lastScannedAt)
-          .slice(0, 5);
-        const topUnscanned = sectors
-          .filter(sec => sec.scanCount === 0 && sec.fileCount > 0)
-          .sort((a, b) => b.fileCount - a.fileCount)
-          .slice(0, 5);
-        const lines: string[] = ['### Nearby Sectors'];
-        if (recentScanned.length > 0) {
-          lines.push('Recently scanned:');
-          for (const sec of recentScanned) {
-            lines.push(`- \`${sec.path}\` — yield: ${(sec.proposalYield ?? 0).toFixed(1)}, scans: ${sec.scanCount}`);
-          }
-        }
-        if (topUnscanned.length > 0) {
-          lines.push('Top unscanned:');
-          for (const sec of topUnscanned) {
-            lines.push(`- \`${sec.path}\` (${sec.fileCount} files)`);
-          }
-        }
-        sectorSummary = lines.join('\n');
-      }
+    const sectorsState = loadSectorsState(ctx.project.rootPath);
+    if (sectorsState) {
+      const metrics = computeCoverageCore(sectorsState);
+      sectorPercent = metrics.sectorPercent;
+      sectorSummary = buildSectorSummaryCore(sectorsState, s.selected_sector_path ?? '');
     }
   } catch {
     // Non-fatal
@@ -1178,6 +1140,11 @@ function buildPlanningPreamble(ticket: { metadata?: Record<string, unknown> | nu
   return '';
 }
 
+/** Escape a string for use inside double-quoted shell arguments */
+function shellEscape(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`');
+}
+
 function buildInlineTicketPrompt(
   ticket: { id: string; title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[]; metadata?: Record<string, unknown> | null },
   constraints: AdvanceConstraints,
@@ -1231,7 +1198,7 @@ function buildInlineTicketPrompt(
       '',
       '```bash',
       'git add -A',
-      `git commit -m "${ticket.title}"`,
+      `git commit -m "${shellEscape(ticket.title)}"`,
       '```',
       '',
       '## Output',
@@ -1298,7 +1265,7 @@ function buildInlineTicketPrompt(
     '```bash',
     `cd ${worktree}`,
     'git add -A',
-    `git commit -m "${ticket.title}"`,
+    `git commit -m "${shellEscape(ticket.title)}"`,
     ...(createPrs ? [`git push -u origin ${branch}`] : []),
     '```',
     '',
@@ -1309,11 +1276,11 @@ function buildInlineTicketPrompt(
       '',
       '```bash',
       `cd ${worktree}`,
-      `gh pr create --title "${ticket.title}"${draft ? ' --draft' : ''} --body "$(cat <<'EOF'`,
+      `gh pr create --title "${shellEscape(ticket.title)}"${draft ? ' --draft' : ''} --body "$(cat <<'BLOCKSPOOL_BODY_EOF'`,
       ticket.description?.slice(0, 500) ?? ticket.title,
       '',
       'Generated by BlockSpool',
-      `EOF`,
+      `BLOCKSPOOL_BODY_EOF`,
       `)"`,
       '```',
       '',

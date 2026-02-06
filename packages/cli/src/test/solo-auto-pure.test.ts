@@ -103,9 +103,9 @@ describe('getAdaptiveParallelCount', () => {
 describe('partitionIntoWaves', () => {
   it('non-overlapping proposals go in one wave', () => {
     const proposals = [
-      { files: ['src/a.ts'] },
-      { files: ['src/b.ts'] },
-      { files: ['pkg/c.ts'] },
+      { files: ['alpha/a.ts'] },
+      { files: ['beta/b.ts'] },
+      { files: ['gamma/c.ts'] },
     ];
     const waves = partitionIntoWaves(proposals);
     expect(waves).toHaveLength(1);

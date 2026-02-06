@@ -195,9 +195,9 @@ describe('proposalsConflict', () => {
 describe('partitionIntoWaves', () => {
   it('puts non-overlapping proposals in the same wave', () => {
     const proposals: Proposal[] = [
-      { title: 'A', files: ['src/a.ts'] },
-      { title: 'B', files: ['src/b.ts'] },
-      { title: 'C', files: ['src/c.ts'] },
+      { title: 'A', files: ['alpha/a.ts'] },
+      { title: 'B', files: ['beta/b.ts'] },
+      { title: 'C', files: ['gamma/c.ts'] },
     ];
 
     const waves = partitionIntoWaves(proposals);
@@ -270,16 +270,16 @@ describe('partitionIntoWaves', () => {
   });
 
   it('creates multiple waves for chain of conflicts', () => {
-    // A overlaps B, B overlaps C, but A doesn't overlap C
+    // A overlaps B via shared file, C is in a different directory (independent)
     const proposals: Proposal[] = [
       { title: 'A', files: ['src/a.ts', 'src/shared.ts'] },
       { title: 'B', files: ['src/shared.ts', 'src/other.ts'] },
-      { title: 'C', files: ['src/c.ts'] },
+      { title: 'C', files: ['pkg/c.ts'] },
     ];
 
     const waves = partitionIntoWaves(proposals);
 
-    // A and B conflict, C is independent
+    // A and B conflict (shared file), C is independent (different directory)
     // A goes to wave 0, B to wave 1, C to wave 0
     expect(waves).toHaveLength(2);
 

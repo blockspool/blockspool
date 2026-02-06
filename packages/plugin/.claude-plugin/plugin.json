@@ -7,6 +7,8 @@
     "./skills/status",
     "./skills/nudge",
     "./skills/cancel",
-    "./skills/analytics"
+    "./skills/analytics",
+    "./skills/audit",
+    "./skills/heal"
   ]
 }

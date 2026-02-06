@@ -2,38 +2,27 @@
  * Cross-run dedup memory with temporal decay.
  *
  * Persists completed/rejected proposal titles to `.blockspool/dedup-memory.json`
- * so the scout prompt knows what NOT to propose. Uses the same hybrid
- * weight-decay + re-confirmation model as learnings.ts:
+ * so the scout prompt knows what NOT to propose.
  *
- *  - Weight decays by `DECAY_RATE` each session load (predictable baseline).
- *  - Entries that keep getting re-proposed (bumped) decay slower — the
- *    "re-confirmation" halves the decay, keeping persistent duplicates
- *    prominent while stale old titles fade naturally.
- *  - Entries that were successfully executed get a one-time boost so they
- *    stick around longer than mere rejections.
- *  - Budget-capped prompt formatting (highest-weight first).
+ * Pure algorithms (decay, entry management) live in @blockspool/core/dedup/shared.
+ * This file wraps them with filesystem I/O and adds CLI-specific extensions
+ * (failureReason, relatedTitles, metrics).
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { metric } from './metrics.js';
+import {
+  type DedupEntry as CoreDedupEntry,
+  applyDecay,
+  DEDUP_DEFAULTS,
+} from '@blockspool/core/dedup/shared';
 
 // ---------------------------------------------------------------------------
-// Types
+// Types (extends core with CLI-specific fields)
 // ---------------------------------------------------------------------------
 
-export interface DedupEntry {
-  title: string;
-  /** 0-100, decays per session load */
-  weight: number;
-  /** ISO timestamp of first encounter */
-  created_at: string;
-  /** ISO timestamp of most recent bump (re-proposal or completion) */
-  last_seen_at: string;
-  /** How many times this title was encountered (proposed or completed) */
-  hit_count: number;
-  /** Whether this was actually executed successfully (stronger signal) */
-  completed: boolean;
+export interface DedupEntry extends CoreDedupEntry {
   /** Why this entry failed (if not completed) */
   failureReason?: 'qa_failed' | 'scope_violation' | 'spindle_abort' | 'agent_error' | 'no_changes';
   /** Titles of proposals that were in the same batch (dependency tracking) */
@@ -45,13 +34,11 @@ export interface DedupEntry {
 // ---------------------------------------------------------------------------
 
 const DEDUP_FILE = 'dedup-memory.json';
-const DECAY_RATE = 5;          // faster than learnings (3) since titles are more ephemeral
-const DEFAULT_WEIGHT = 60;
-const COMPLETED_WEIGHT = 80;   // completed work starts heavier
-const MAX_WEIGHT = 100;
-const BUMP_AMOUNT = 15;        // weight boost when re-encountered
-const RECENT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
-const DEFAULT_BUDGET = 1500;
+const MAX_WEIGHT = DEDUP_DEFAULTS.MAX_WEIGHT;
+const BUMP_AMOUNT = DEDUP_DEFAULTS.BUMP_AMOUNT;
+const COMPLETED_WEIGHT = DEDUP_DEFAULTS.COMPLETED_WEIGHT;
+const DEFAULT_WEIGHT = DEDUP_DEFAULTS.DEFAULT_WEIGHT;
+const DEFAULT_BUDGET = DEDUP_DEFAULTS.DEFAULT_BUDGET;
 
 // ---------------------------------------------------------------------------
 // File I/O
@@ -92,30 +79,7 @@ function writeEntries(projectRoot: string, entries: DedupEntry[]): void {
  */
 export function loadDedupMemory(projectRoot: string): DedupEntry[] {
   const entries = readEntries(projectRoot);
-  const now = Date.now();
-
-  const surviving: DedupEntry[] = [];
-  for (const e of entries) {
-    let decay = DECAY_RATE;
-
-    // Re-confirmation bonus: halve decay if seen recently (keeps persistent dupes prominent)
-    const lastSeen = new Date(e.last_seen_at).getTime();
-    if (now - lastSeen < RECENT_WINDOW_MS) {
-      decay /= 2;
-    }
-
-    // Completed work decays slower (stronger signal that it's done)
-    if (e.completed) {
-      decay /= 2;
-    }
-
-    e.weight = Math.min(MAX_WEIGHT, e.weight - decay);
-
-    if (e.weight > 0) {
-      surviving.push(e);
-    }
-  }
-
+  const surviving = applyDecay(entries, DEDUP_DEFAULTS.DECAY_RATE) as DedupEntry[];
   writeEntries(projectRoot, surviving);
 
   // Instrument: track dedup memory load

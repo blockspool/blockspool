@@ -42,9 +42,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
   if (state.cycleCount === 1 && !state.options.yes && !state.isContinuous) {
     const readline = await import('readline');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const confirmMsg = state.isContinuous
-      ? `Start continuous auto? [Y/n] `
-      : `Proceed with ${toProcess.length} improvement(s)? [Y/n] `;
+    const confirmMsg = `Proceed with ${toProcess.length} improvement(s)? [Y/n] `;
     const answer = await new Promise<string>((resolve) => {
       rl.question(chalk.bold(confirmMsg), resolve);
     });
@@ -137,7 +135,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       title: proposal.title,
       description: proposal.description || proposal.title,
       priority: 2,
-      allowedPaths: proposal.files,
+      allowedPaths: proposal.files?.length ? proposal.files : (proposal.allowed_paths ?? []),
       forbiddenPaths: ['node_modules', '.git', '.blockspool', 'dist', 'build'],
     });
 

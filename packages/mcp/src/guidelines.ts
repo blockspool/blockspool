@@ -1,27 +1,23 @@
 /**
  * Project guidelines loader for MCP advance prompts.
- * Mirrors packages/cli/src/lib/guidelines.ts (separate package boundary).
  *
- * For Claude-based runs: searches for CLAUDE.md
- * For Codex-based runs: searches for AGENTS.md
- * Falls back to whichever exists if the preferred one is missing.
+ * Pure resolution logic and formatting live in @blockspool/core/guidelines/shared.
+ * This file wraps them with filesystem I/O.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+  type ProjectGuidelines,
+  type GuidelinesBackend,
+  resolveGuidelinesPaths,
+  formatGuidelinesForPrompt,
+} from '@blockspool/core/guidelines/shared';
 
-export interface ProjectGuidelines {
-  content: string;
-  source: string;
-  loadedAt: number;
-}
-
-export type GuidelinesBackend = 'claude' | 'codex';
-
-const CLAUDE_PATHS = ['CLAUDE.md'];
-
-const CODEX_PATHS = ['AGENTS.md'];
-
+// Re-export types and pure functions
+export type { ProjectGuidelines } from '@blockspool/core/guidelines/shared';
+export type { GuidelinesBackend } from '@blockspool/core/guidelines/shared';
+export { formatGuidelinesForPrompt } from '@blockspool/core/guidelines/shared';
 
 export interface GuidelinesOptions {
   backend?: GuidelinesBackend;
@@ -40,9 +36,7 @@ export function loadGuidelines(
     return readGuidelinesFile(repoRoot, customPath);
   }
 
-  const primaryPaths = backend === 'codex' ? CODEX_PATHS : CLAUDE_PATHS;
-  const fallbackPaths = backend === 'codex' ? CLAUDE_PATHS : CODEX_PATHS;
-
+  const [primaryPaths, fallbackPaths] = resolveGuidelinesPaths(backend);
   return searchPaths(repoRoot, primaryPaths) ?? searchPaths(repoRoot, fallbackPaths);
 }
 
@@ -63,13 +57,4 @@ function searchPaths(repoRoot: string, paths: string[]): ProjectGuidelines | nul
     if (result) return result;
   }
   return null;
-}
-
-export function formatGuidelinesForPrompt(guidelines: ProjectGuidelines): string {
-  return [
-    '<project-guidelines>',
-    `<!-- Source: ${guidelines.source} -->`,
-    guidelines.content,
-    '</project-guidelines>',
-  ].join('\n');
 }

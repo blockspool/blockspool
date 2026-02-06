@@ -144,11 +144,37 @@ export async function createMany(
   db: DatabaseAdapter,
   tickets: Array<Parameters<typeof create>[1]>
 ): Promise<Ticket[]> {
-  return db.withTransaction(async () => {
+  return db.withTransaction(async (tx) => {
     const created: Ticket[] = [];
     for (const opts of tickets) {
-      const ticket = await create(db, opts);
-      created.push(ticket);
+      const id = `tkt_${nanoid(12)}`;
+      await tx.query(
+        `INSERT INTO tickets (
+          id, project_id, title, description, status, priority,
+          shard, category, allowed_paths, forbidden_paths,
+          verification_commands, max_retries
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          id,
+          opts.projectId,
+          opts.title,
+          opts.description ?? null,
+          opts.status ?? 'ready',
+          opts.priority ?? 0,
+          opts.shard ?? null,
+          opts.category ?? null,
+          JSON.stringify(opts.allowedPaths ?? []),
+          JSON.stringify(opts.forbiddenPaths ?? []),
+          JSON.stringify(opts.verificationCommands ?? []),
+          opts.maxRetries ?? 3,
+        ]
+      );
+      const result = await tx.query<TicketRow>(
+        'SELECT * FROM tickets WHERE id = $1',
+        [id]
+      );
+      if (!result.rows[0]) throw new Error('Failed to create ticket');
+      created.push(rowToTicket(result.rows[0]));
     }
     return created;
   });

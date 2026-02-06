@@ -115,13 +115,14 @@ export async function markSuccess(
   id: string,
   metadata?: Record<string, unknown>
 ): Promise<Run | null> {
-  return db.withTransaction(async () => {
-    const existing = await getById(db, id);
-    if (!existing) return null;
+  return db.withTransaction(async (tx) => {
+    const result = await tx.query<RunRow>('SELECT * FROM runs WHERE id = $1', [id]);
+    if (!result.rows[0]) return null;
+    const existing = rowToRun(result.rows[0]);
 
     const merged = { ...existing.metadata, ...metadata };
 
-    await db.query(
+    await tx.query(
       `UPDATE runs SET
         status = 'success',
         completed_at = datetime('now'),
@@ -130,7 +131,8 @@ export async function markSuccess(
       [JSON.stringify(merged), id]
     );
 
-    return getById(db, id);
+    const updated = await tx.query<RunRow>('SELECT * FROM runs WHERE id = $1', [id]);
+    return updated.rows[0] ? rowToRun(updated.rows[0]) : null;
   });
 }
 
@@ -143,14 +145,15 @@ export async function markFailure(
   error: Error | string,
   metadata?: Record<string, unknown>
 ): Promise<Run | null> {
-  return db.withTransaction(async () => {
-    const existing = await getById(db, id);
-    if (!existing) return null;
+  return db.withTransaction(async (tx) => {
+    const result = await tx.query<RunRow>('SELECT * FROM runs WHERE id = $1', [id]);
+    if (!result.rows[0]) return null;
+    const existing = rowToRun(result.rows[0]);
 
     const merged = { ...existing.metadata, ...metadata };
     const errorMsg = error instanceof Error ? error.message : error;
 
-    await db.query(
+    await tx.query(
       `UPDATE runs SET
         status = 'failure',
         completed_at = datetime('now'),
@@ -160,7 +163,8 @@ export async function markFailure(
       [errorMsg, JSON.stringify(merged), id]
     );
 
-    return getById(db, id);
+    const updated = await tx.query<RunRow>('SELECT * FROM runs WHERE id = $1', [id]);
+    return updated.rows[0] ? rowToRun(updated.rows[0]) : null;
   });
 }
 

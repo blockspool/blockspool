@@ -203,8 +203,9 @@ export class SQLiteAdapter implements DatabaseAdapter {
       let rows: T[] = [];
       let rowCount: number | null = null;
 
-      // Use run() for INSERT/UPDATE/DELETE, all() for SELECT and PRAGMA queries that return data
-      if (queryType === 'SELECT' || text.trim().toUpperCase().includes('RETURNING') || text.trim().toUpperCase().startsWith('PRAGMA')) {
+      // Use run() for INSERT/UPDATE/DELETE, all() for SELECT, PRAGMA, and RETURNING queries
+      const hasReturning = /\bRETURNING\s+/i.test(text);
+      if (queryType === 'SELECT' || hasReturning || text.trim().toUpperCase().startsWith('PRAGMA')) {
         const stmt = db.prepare(sql);
         rows = stmt.all(...values) as T[];
         rowCount = rows.length;
@@ -212,19 +213,6 @@ export class SQLiteAdapter implements DatabaseAdapter {
         const stmt = db.prepare(sql);
         const result = stmt.run(...values);
         rowCount = result.changes;
-
-        // Handle RETURNING clause simulation for INSERT
-        if (queryType === 'INSERT' && result.lastInsertRowid) {
-          // Try to fetch the inserted row if there's a RETURNING clause
-          const returningMatch = text.match(/RETURNING\s+(.+?)(?:;|\s*$)/i);
-          if (returningMatch) {
-            const tableName = this.extractTableName(text);
-            if (tableName) {
-              const fetchStmt = db.prepare(`SELECT * FROM ${tableName} WHERE rowid = ?`);
-              rows = [fetchStmt.get(result.lastInsertRowid) as T].filter(Boolean);
-            }
-          }
-        }
       }
 
       const durationMs = Date.now() - start;
@@ -237,22 +225,6 @@ export class SQLiteAdapter implements DatabaseAdapter {
       this.recordStats(queryType, durationMs, true);
       throw error;
     }
-  }
-
-  /**
-   * Extract table name from INSERT/UPDATE/DELETE statement
-   */
-  private extractTableName(sql: string): string | null {
-    const insertMatch = sql.match(/INSERT\s+INTO\s+["']?(\w+)["']?/i);
-    if (insertMatch) return insertMatch[1];
-
-    const updateMatch = sql.match(/UPDATE\s+["']?(\w+)["']?/i);
-    if (updateMatch) return updateMatch[1];
-
-    const deleteMatch = sql.match(/DELETE\s+FROM\s+["']?(\w+)["']?/i);
-    if (deleteMatch) return deleteMatch[1];
-
-    return null;
   }
 
   async withTransaction<T>(fn: (client: TransactionClient) => Promise<T>): Promise<T> {
@@ -324,11 +296,18 @@ export class SQLiteAdapter implements DatabaseAdapter {
         console.log(`[sqlite] Applying: ${migration.id}`);
       }
 
-      db.exec(migration.up);
-      db.prepare('INSERT INTO _migrations (id, checksum) VALUES (?, ?)').run(
-        migration.id,
-        migration.checksum
-      );
+      try {
+        db.exec('BEGIN');
+        db.exec(migration.up);
+        db.prepare('INSERT INTO _migrations (id, checksum) VALUES (?, ?)').run(
+          migration.id,
+          migration.checksum
+        );
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
       applied.push(migration.id);
 
       if (options?.target && migration.id === options.target) {

@@ -10,8 +10,9 @@ import { createSQLiteAdapter } from '@blockspool/sqlite';
 import { repos } from '@blockspool/core';
 import type { DatabaseAdapter, Project } from '@blockspool/core';
 import { RunManager } from '../run-manager.js';
-import { filterAndCreateTickets, titleSimilarity } from '../proposals.js';
+import { filterAndCreateTickets } from '../proposals.js';
 import type { RawProposal } from '../proposals.js';
+import { bigramSimilarity as titleSimilarity } from '@blockspool/core/dedup/shared';
 import { processEvent } from '../event-processor.js';
 
 let db: DatabaseAdapter;

@@ -2,51 +2,28 @@
  * Cross-run dedup memory with temporal decay.
  *
  * Persists completed/rejected proposal titles to `.blockspool/dedup-memory.json`
- * so the scout prompt knows what NOT to propose. Uses the same hybrid
- * weight-decay + re-confirmation model as learnings.ts:
+ * so the scout prompt knows what NOT to propose.
  *
- *  - Weight decays by `DECAY_RATE` each session load (predictable baseline).
- *  - Entries that keep getting re-proposed (bumped) decay slower — the
- *    "re-confirmation" halves the decay, keeping persistent duplicates
- *    prominent while stale old titles fade naturally.
- *  - Entries that were successfully executed get a one-time boost so they
- *    stick around longer than mere rejections.
- *  - Budget-capped prompt formatting (highest-weight first).
+ * Pure algorithms (decay, entry management, formatting) live in
+ * @blockspool/core/dedup/shared. This file wraps them with file I/O.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+  type DedupEntry,
+  applyDecay,
+  recordEntry as coreRecordEntry,
+  recordEntries as coreRecordEntries,
+  formatDedupForPrompt,
+  DEDUP_DEFAULTS,
+} from '@blockspool/core/dedup/shared';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface DedupEntry {
-  title: string;
-  /** 0-100, decays per session load */
-  weight: number;
-  /** ISO timestamp of first encounter */
-  created_at: string;
-  /** ISO timestamp of most recent bump (re-proposal or completion) */
-  last_seen_at: string;
-  /** How many times this title was encountered (proposed or completed) */
-  hit_count: number;
-  /** Whether this was actually executed successfully (stronger signal) */
-  completed: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+// Re-export types and pure functions for existing consumers
+export type { DedupEntry } from '@blockspool/core/dedup/shared';
+export { formatDedupForPrompt } from '@blockspool/core/dedup/shared';
 
 const DEDUP_FILE = 'dedup-memory.json';
-const DECAY_RATE = 5;          // faster than learnings (3) since titles are more ephemeral
-const DEFAULT_WEIGHT = 60;
-const COMPLETED_WEIGHT = 80;   // completed work starts heavier
-const MAX_WEIGHT = 100;
-const BUMP_AMOUNT = 15;        // weight boost when re-encountered
-const RECENT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
-const DEFAULT_BUDGET = 1500;
 
 // ---------------------------------------------------------------------------
 // File I/O
@@ -87,30 +64,7 @@ function writeEntries(projectRoot: string, entries: DedupEntry[]): void {
  */
 export function loadDedupMemory(projectRoot: string): DedupEntry[] {
   const entries = readEntries(projectRoot);
-  const now = Date.now();
-
-  const surviving: DedupEntry[] = [];
-  for (const e of entries) {
-    let decay = DECAY_RATE;
-
-    // Re-confirmation bonus: halve decay if seen recently (keeps persistent dupes prominent)
-    const lastSeen = new Date(e.last_seen_at).getTime();
-    if (now - lastSeen < RECENT_WINDOW_MS) {
-      decay /= 2;
-    }
-
-    // Completed work decays slower (stronger signal that it's done)
-    if (e.completed) {
-      decay /= 2;
-    }
-
-    e.weight = Math.min(MAX_WEIGHT, e.weight - decay);
-
-    if (e.weight > 0) {
-      surviving.push(e);
-    }
-  }
-
+  const surviving = applyDecay(entries, DEDUP_DEFAULTS.DECAY_RATE);
   writeEntries(projectRoot, surviving);
   return surviving;
 }
@@ -126,26 +80,7 @@ export function recordDedupEntry(
   _failureReason?: string,
 ): void {
   const entries = readEntries(projectRoot);
-  const now = new Date().toISOString();
-  const normalized = title.toLowerCase().trim();
-
-  const existing = entries.find(e => e.title.toLowerCase().trim() === normalized);
-  if (existing) {
-    existing.weight = Math.min(MAX_WEIGHT, existing.weight + BUMP_AMOUNT);
-    existing.last_seen_at = now;
-    existing.hit_count++;
-    if (completed) existing.completed = true;
-  } else {
-    entries.push({
-      title,
-      weight: completed ? COMPLETED_WEIGHT : DEFAULT_WEIGHT,
-      created_at: now,
-      last_seen_at: now,
-      hit_count: 1,
-      completed,
-    });
-  }
-
+  coreRecordEntry(entries, title, completed);
   writeEntries(projectRoot, entries);
 }
 
@@ -158,54 +93,8 @@ export function recordDedupEntries(
 ): void {
   if (titles.length === 0) return;
   const entries = readEntries(projectRoot);
-  const now = new Date().toISOString();
-
-  for (const { title, completed } of titles) {
-    const normalized = title.toLowerCase().trim();
-    const existing = entries.find(e => e.title.toLowerCase().trim() === normalized);
-    if (existing) {
-      existing.weight = Math.min(MAX_WEIGHT, existing.weight + BUMP_AMOUNT);
-      existing.last_seen_at = now;
-      existing.hit_count++;
-      if (completed) existing.completed = true;
-    } else {
-      entries.push({
-        title,
-        weight: completed ? COMPLETED_WEIGHT : DEFAULT_WEIGHT,
-        created_at: now,
-        last_seen_at: now,
-        hit_count: 1,
-        completed,
-      });
-    }
-  }
-
+  coreRecordEntries(entries, titles);
   writeEntries(projectRoot, entries);
 }
 
-/**
- * Format dedup memory for prompt injection.
- * Highest-weight entries first, respects char budget.
- */
-export function formatDedupForPrompt(entries: DedupEntry[], budget: number = DEFAULT_BUDGET): string {
-  if (entries.length === 0) return '';
-
-  const sorted = [...entries].sort((a, b) => b.weight - a.weight);
-  const lines: string[] = [];
-  let charCount = 0;
-
-  const header = '<already-completed>\n## Already Completed — Do NOT Propose These\n\nThe following improvements have already been done or attempted. Do NOT propose similar changes:\n';
-  const footer = '\n</already-completed>';
-  charCount += header.length + footer.length;
-
-  for (const e of sorted) {
-    const status = e.completed ? '✓ done' : 'attempted';
-    const line = `- ${e.title} (${status}, seen ${e.hit_count}x)`;
-    if (charCount + line.length + 1 > budget) break;
-    lines.push(line);
-    charCount += line.length + 1;
-  }
-
-  if (lines.length === 0) return '';
-  return header + lines.join('\n') + footer;
-}
+// formatDedupForPrompt is re-exported from core above

@@ -21,6 +21,11 @@ import { recordDedupEntry } from './dedup-memory.js';
 import { recordQualitySignal } from './run-state-bridge.js';
 import { recordQaCommandResult } from './qa-stats.js';
 import { ingestTicketEvent } from './ticket-worker.js';
+import {
+  recordTicketOutcome as recordTicketOutcomeCore,
+  recordScanResult as recordScanResultCore,
+} from '@blockspool/core/sectors/shared';
+import type { SectorState } from '@blockspool/core/sectors/shared';
 
 // ---------------------------------------------------------------------------
 // Helpers — shared sector & dedup recording
@@ -33,6 +38,19 @@ function atomicWriteJsonSync(filePath: string, data: unknown): void {
   fs.renameSync(tmpPath, filePath);
 }
 
+/** Load sectors.json, return null if missing/invalid. */
+function loadSectorsState(rootPath: string): { state: SectorState; filePath: string } | null {
+  try {
+    const filePath = path.join(rootPath, '.blockspool', 'sectors.json');
+    if (!fs.existsSync(filePath)) return null;
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (data?.version !== 2 || !Array.isArray(data.sectors)) return null;
+    return { state: data as SectorState, filePath };
+  } catch {
+    return null;
+  }
+}
+
 function recordSectorOutcome(
   rootPath: string,
   sectorPath: string | undefined,
@@ -40,18 +58,10 @@ function recordSectorOutcome(
 ): void {
   if (!sectorPath) return;
   try {
-    const sectorsPath = path.join(rootPath, '.blockspool', 'sectors.json');
-    if (!fs.existsSync(sectorsPath)) return;
-    const sectorsData = JSON.parse(fs.readFileSync(sectorsPath, 'utf8'));
-    if (sectorsData?.version !== 2 || !Array.isArray(sectorsData.sectors)) return;
-    const sector = sectorsData.sectors.find((sec: { path: string }) => sec.path === sectorPath);
-    if (!sector) return;
-    if (outcome === 'failure') {
-      sector.failureCount = (sector.failureCount ?? 0) + 1;
-    } else {
-      sector.successCount = (sector.successCount ?? 0) + 1;
-    }
-    atomicWriteJsonSync(sectorsPath, sectorsData);
+    const loaded = loadSectorsState(rootPath);
+    if (!loaded) return;
+    recordTicketOutcomeCore(loaded.state, sectorPath, outcome === 'success');
+    atomicWriteJsonSync(loaded.filePath, loaded.state);
   } catch {
     // Non-fatal
   }
@@ -162,23 +172,21 @@ export async function processEvent(
         s.files_total = totalFiles;
       }
 
-      // Handle sector reclassification if present
+      // Handle sector reclassification if present — use recordScanResult with 0 proposals
       const sectorReclass = payload['sector_reclassification'] as { production?: boolean; confidence?: string } | undefined;
-      if (sectorReclass && (sectorReclass.confidence === 'medium' || sectorReclass.confidence === 'high')) {
+      if (sectorReclass && (sectorReclass.confidence === 'medium' || sectorReclass.confidence === 'high') && exploredDirs.length > 0) {
         try {
-          const sectorsPath = path.join(run.rootPath, '.blockspool', 'sectors.json');
-          if (fs.existsSync(sectorsPath)) {
-            const sectorsData = JSON.parse(fs.readFileSync(sectorsPath, 'utf8'));
-            if (sectorsData?.version === 2 && Array.isArray(sectorsData.sectors) && exploredDirs.length > 0) {
-              const targetPath = exploredDirs[0].replace(/\/$/, '');
-              const sector = sectorsData.sectors.find((sec: { path: string }) => sec.path === targetPath);
-              if (sector) {
-                if (sectorReclass.production !== undefined) {
-                  sector.production = sectorReclass.production;
-                }
-                sector.classificationConfidence = sectorReclass.confidence;
-                atomicWriteJsonSync(sectorsPath, sectorsData);
+          const loaded = loadSectorsState(run.rootPath);
+          if (loaded) {
+            const targetPath = exploredDirs[0].replace(/\/$/, '');
+            const target = loaded.state.sectors.find(sec => sec.path === targetPath);
+            if (target) {
+              // Apply reclassification directly (recordScanResult would also bump scan counters)
+              if (sectorReclass.production !== undefined) {
+                target.production = sectorReclass.production;
               }
+              target.classificationConfidence = sectorReclass.confidence;
+              atomicWriteJsonSync(loaded.filePath, loaded.state);
             }
           }
         } catch {
@@ -219,19 +227,10 @@ export async function processEvent(
       // Update sector scan stats if a sector was selected for this cycle
       if (s.selected_sector_path) {
         try {
-          const sectorsPath = path.join(run.rootPath, '.blockspool', 'sectors.json');
-          if (fs.existsSync(sectorsPath)) {
-            const sectorsData = JSON.parse(fs.readFileSync(sectorsPath, 'utf8'));
-            if (sectorsData?.version === 2 && Array.isArray(sectorsData.sectors)) {
-              const sector = sectorsData.sectors.find((sec: { path: string }) => sec.path === s.selected_sector_path);
-              if (sector) {
-                sector.lastScannedAt = Date.now();
-                sector.lastScannedCycle = s.scout_cycles;
-                sector.scanCount = (sector.scanCount ?? 0) + 1;
-                sector.proposalYield = 0.7 * (sector.proposalYield ?? 0) + 0.3 * rawProposals.length;
-                atomicWriteJsonSync(sectorsPath, sectorsData);
-              }
-            }
+          const loaded = loadSectorsState(run.rootPath);
+          if (loaded) {
+            recordScanResultCore(loaded.state, s.selected_sector_path, s.scout_cycles, rawProposals.length);
+            atomicWriteJsonSync(loaded.filePath, loaded.state);
           }
         } catch {
           // Non-fatal

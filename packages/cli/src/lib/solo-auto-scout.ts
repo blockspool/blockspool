@@ -138,7 +138,7 @@ export async function runScoutPhase(state: AutoSessionState): Promise<ScoutResul
       excludeTypes: allowCategories.length > 4 ? blockCategories as ProposalCategory[] : undefined,
       maxProposals: 20,
       minConfidence: state.effectiveMinConfidence,
-      model: state.options.scoutBackend === 'codex' ? undefined : (state.options.eco ? 'sonnet' : (cycleFormula?.model ?? 'opus')),
+      model: state.options.scoutBackend === 'codex' ? undefined : (state.options.eco ? 'sonnet' : ((cycleFormula?.model as 'opus' | 'haiku' | 'sonnet') ?? 'opus')),
       customPrompt: effectivePrompt,
       autoApprove: false,
       backend: state.scoutBackend,

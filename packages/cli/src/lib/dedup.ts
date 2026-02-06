@@ -1,5 +1,9 @@
 /**
  * Deduplication utilities for proposal filtering.
+ *
+ * Pure algorithms (normalizeTitle, titleSimilarity, isDuplicate) live in
+ * @blockspool/core/dedup/shared. This file re-exports them and adds
+ * I/O-dependent helpers (database lookups, git branch listing).
  */
 
 import type { DatabaseAdapter } from '@blockspool/core/db';
@@ -7,40 +11,15 @@ import { tickets } from '@blockspool/core/repos';
 import type { TicketProposal } from '@blockspool/core/scout';
 import { gitExecFile } from './solo-git.js';
 
+// Re-export pure algorithms from core
+export { normalizeTitle, titleSimilarity } from '@blockspool/core/dedup/shared';
+import { normalizeTitle, titleSimilarity } from '@blockspool/core/dedup/shared';
+
 /**
  * Sleep helper
  */
 export function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
- * Normalize a title for comparison (lowercase, remove punctuation, collapse whitespace)
- */
-export function normalizeTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^\w\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/**
- * Calculate simple word overlap similarity between two titles (0-1)
- */
-export function titleSimilarity(a: string, b: string): number {
-  const wordsA = new Set(normalizeTitle(a).split(' ').filter(w => w.length > 2));
-  const wordsB = new Set(normalizeTitle(b).split(' ').filter(w => w.length > 2));
-
-  if (wordsA.size === 0 || wordsB.size === 0) return 0;
-
-  let overlap = 0;
-  for (const word of wordsA) {
-    if (wordsB.has(word)) overlap++;
-  }
-
-  const union = new Set([...wordsA, ...wordsB]).size;
-  return overlap / union;
 }
 
 /**

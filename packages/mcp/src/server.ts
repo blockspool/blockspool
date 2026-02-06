@@ -9,6 +9,7 @@ import { SessionManager } from './state.js';
 import { registerSessionTools } from './tools/session.js';
 import { registerExecuteTools } from './tools/execute.js';
 import { registerGitTools } from './tools/git.js';
+import { registerIntelligenceTools } from './tools/intelligence.js';
 
 export interface ServerOptions {
   db: DatabaseAdapter;
@@ -40,6 +41,7 @@ export async function createServer(options: ServerOptions): Promise<{
   registerSessionTools(server, getState);
   registerExecuteTools(server, getState);
   registerGitTools(server, getState);
+  registerIntelligenceTools(server, getState);
 
   return { server, state };
 }

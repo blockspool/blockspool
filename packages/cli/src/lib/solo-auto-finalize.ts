@@ -17,17 +17,19 @@ import {
 import { recordMergeOutcome, saveSectors } from './sectors.js';
 import { displayConvergenceSummary, displayWheelHealth, recordSessionHistory, displayFinalSummary, type SessionSummaryContext } from './solo-session-summary.js';
 
-export async function finalizeSession(state: AutoSessionState): Promise<void> {
+export async function finalizeSession(state: AutoSessionState): Promise<number> {
+  let exitCode = 0;
   try {
-    await finalizeSafe(state);
+    exitCode = await finalizeSafe(state);
   } finally {
     // Always release resources, even if finalization logic throws
     state.interactiveConsole?.stop();
     try { await state.adapter.close(); } catch { /* best-effort */ }
   }
+  return exitCode;
 }
 
-async function finalizeSafe(state: AutoSessionState): Promise<void> {
+async function finalizeSafe(state: AutoSessionState): Promise<number> {
   // Finalize any partial milestone
   if (state.milestoneMode && state.milestoneTicketCount > 0) {
     try {
@@ -169,6 +171,5 @@ async function finalizeSafe(state: AutoSessionState): Promise<void> {
   await recordSessionHistory(summaryCtx);
   displayFinalSummary(summaryCtx);
 
-  // Exit code — caller's finally block handles resource cleanup
-  process.exit(state.totalFailed > 0 && state.allPrUrls.length === 0 ? 1 : 0);
+  return state.totalFailed > 0 && state.allPrUrls.length === 0 ? 1 : 0;
 }

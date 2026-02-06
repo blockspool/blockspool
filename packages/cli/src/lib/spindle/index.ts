@@ -16,18 +16,14 @@ export { DEFAULT_SPINDLE_CONFIG, createSpindleState, estimateTokens } from './ty
 export { computeSimilarity } from './similarity.js';
 export { detectOscillation } from './oscillation.js';
 export { detectRepetition } from './repetition.js';
-export { detectQaPingPong } from './qa-ping-pong.js';
-export { detectCommandFailure, recordCommandFailure, shortHash } from './command-failure.js';
-export { extractFilesFromDiff, getFileEditWarnings } from './file-edits.js';
+export { detectQaPingPong, detectCommandFailure, recordCommandFailure, shortHash, extractFilesFromDiff, getFileEditWarnings } from './failure-patterns.js';
 export { formatSpindleResult } from './format.js';
 
 import type { SpindleConfig, SpindleState, SpindleResult } from './types.js';
 import { estimateTokens } from './types.js';
 import { detectOscillation } from './oscillation.js';
 import { detectRepetition } from './repetition.js';
-import { detectQaPingPong } from './qa-ping-pong.js';
-import { detectCommandFailure } from './command-failure.js';
-import { extractFilesFromDiff, getFileEditWarnings } from './file-edits.js';
+import { detectQaPingPong, detectCommandFailure, extractFilesFromDiff, getFileEditWarnings } from './failure-patterns.js';
 import { DEFAULT_SPINDLE_CONFIG, createSpindleState } from './types.js';
 import { formatSpindleResult } from './format.js';
 import { metric } from '../metrics.js';
@@ -263,21 +259,3 @@ function triggerSpindle(result: SpindleResult): SpindleResult {
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Backwards-compatible aliases (deprecated — remove after next release)
-// ---------------------------------------------------------------------------
-
-/** @deprecated Use SpindleConfig */
-export type RalphConfig = SpindleConfig;
-/** @deprecated Use SpindleState */
-export type RalphState = SpindleState;
-/** @deprecated Use SpindleResult */
-export type RalphResult = SpindleResult;
-/** @deprecated Use DEFAULT_SPINDLE_CONFIG */
-export const DEFAULT_RALPH_CONFIG = DEFAULT_SPINDLE_CONFIG;
-/** @deprecated Use createSpindleState */
-export const createRalphState = createSpindleState;
-/** @deprecated Use checkSpindleLoop */
-export const checkRalphLoop = checkSpindleLoop;
-/** @deprecated Use formatSpindleResult */
-export const formatRalphResult = formatSpindleResult;

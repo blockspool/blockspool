@@ -243,52 +243,10 @@ export async function runPreflightChecks(repoRoot: string, opts: {
   };
 }
 
-/**
- * Check if two path patterns could overlap
- */
-export function pathsOverlap(pathA: string, pathB: string): boolean {
-  // Normalize paths (remove trailing slashes, handle ./prefix)
-  const normA = pathA.replace(/^\.\//, '').replace(/\/$/, '');
-  const normB = pathB.replace(/^\.\//, '').replace(/\/$/, '');
-
-  // Exact match
-  if (normA === normB) {
-    return true;
-  }
-
-  // One is prefix of other (directory containment)
-  if (normA.startsWith(normB + '/') || normB.startsWith(normA + '/')) {
-    return true;
-  }
-
-  // Check for glob pattern overlaps
-  const hasGlobA = normA.includes('*');
-  const hasGlobB = normB.includes('*');
-
-  if (hasGlobA || hasGlobB) {
-    const baseA = normA.split('*')[0].replace(/\/$/, '');
-    const baseB = normB.split('*')[0].replace(/\/$/, '');
-
-    if (baseA === baseB || baseA.startsWith(baseB + '/') || baseB.startsWith(baseA + '/')) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Check if two sets of file paths share directories above a threshold.
- * Used for semantic conflict detection in wave scheduling.
- */
-export function directoriesOverlap(pathsA: string[], pathsB: string[], threshold = 0.3): boolean {
-  const dirsA = new Set(pathsA.map(p => p.replace(/\/[^/]+$/, '') || '.'));
-  const dirsB = new Set(pathsB.map(p => p.replace(/\/[^/]+$/, '') || '.'));
-  if (dirsA.size === 0 || dirsB.size === 0) return false;
-  let n = 0;
-  for (const d of dirsA) { if (dirsB.has(d)) n++; }
-  return (n / Math.min(dirsA.size, dirsB.size)) >= threshold;
-}
+// Path overlap and directory overlap algorithms now live in core.
+// Re-exported here for backwards compatibility.
+export { pathsOverlap, directoriesOverlap } from '@blockspool/core/waves/shared';
+import { pathsOverlap } from '@blockspool/core/waves/shared';
 
 /**
  * Find in-progress tickets that have overlapping allowed_paths with the given ticket

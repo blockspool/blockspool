@@ -387,7 +387,7 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
       }
 
       for (const raw of parsed.proposals) {
-        const proposal = normalizeProposal(raw, types?.[0]);
+        const proposal = normalizeProposal(raw);
         if (!proposal) continue;
 
         if (types?.length && !types.includes(proposal.category)) continue;

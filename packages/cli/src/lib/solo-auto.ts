@@ -366,7 +366,8 @@ export async function runAutoMode(options: AutoModeOptions): Promise<void> {
       await runPostCycleMaintenance(state, filterResult.scope, scoutResult.isDocsAuditCycle);
     } while (shouldContinue(state));
 
-    await finalizeSession(state);
+    const exitCode = await finalizeSession(state);
+    process.exit(exitCode);
   } catch (err) {
     // Best-effort finalization even on error — push milestone PRs, save state
     // finalizeSession handles its own resource cleanup in a finally block

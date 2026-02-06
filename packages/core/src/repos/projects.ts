@@ -115,10 +115,11 @@ export async function list(db: DatabaseAdapter): Promise<Project[]> {
 export async function remove(db: DatabaseAdapter, id: string): Promise<void> {
   await db.withTransaction(async (tx) => {
     // Delete in order respecting foreign keys
-    await tx.query('DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE ticket_id IN (SELECT id FROM tickets WHERE project_id = $1))', [id]);
-    await tx.query('DELETE FROM artifacts WHERE run_id IN (SELECT id FROM runs WHERE ticket_id IN (SELECT id FROM tickets WHERE project_id = $1))', [id]);
+    // Use project_id directly on runs to catch scout runs with NULL ticket_id
+    await tx.query('DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE project_id = $1)', [id]);
+    await tx.query('DELETE FROM artifacts WHERE run_id IN (SELECT id FROM runs WHERE project_id = $1)', [id]);
     await tx.query('DELETE FROM leases WHERE ticket_id IN (SELECT id FROM tickets WHERE project_id = $1)', [id]);
-    await tx.query('DELETE FROM runs WHERE ticket_id IN (SELECT id FROM tickets WHERE project_id = $1)', [id]);
+    await tx.query('DELETE FROM runs WHERE project_id = $1', [id]);
     await tx.query('DELETE FROM learnings WHERE project_id = $1', [id]);
     await tx.query('DELETE FROM tickets WHERE project_id = $1', [id]);
     await tx.query('DELETE FROM projects WHERE id = $1', [id]);

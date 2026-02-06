@@ -1,33 +1,25 @@
 /**
  * Project guidelines loader — loads CLAUDE.md or AGENTS.md for prompt injection.
  *
- * For Claude-based runs: searches for CLAUDE.md
- * For Codex-based runs: searches for AGENTS.md
- * Falls back to whichever exists if the preferred one is missing.
+ * Pure resolution logic and formatting live in @blockspool/core/guidelines/shared.
+ * This file wraps them with filesystem I/O.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+  type ProjectGuidelines,
+  type GuidelinesBackend,
+  type BaselineInput,
+  resolveGuidelinesPaths,
+  getBaselineFilename,
+  formatGuidelinesForPrompt,
+  generateBaselineGuidelines,
+} from '@blockspool/core/guidelines/shared';
 
-/**
- * Loaded project guidelines with metadata.
- */
-export interface ProjectGuidelines {
-  content: string;
-  source: string;
-  loadedAt: number;
-}
-
-export type GuidelinesBackend = string;
-
-/**
- * Search paths by backend, in priority order.
- * Primary search uses the backend-appropriate file, fallback uses the other.
- */
-const CLAUDE_PATHS = ['CLAUDE.md'];
-
-const CODEX_PATHS = ['AGENTS.md'];
-
+// Re-export types and pure functions
+export type { ProjectGuidelines, GuidelinesBackend } from '@blockspool/core/guidelines/shared';
+export { formatGuidelinesForPrompt } from '@blockspool/core/guidelines/shared';
 
 export interface GuidelinesOptions {
   /** Which backend is running. Determines default file search order. */
@@ -66,16 +58,7 @@ export function loadGuidelines(
   }
 
   // Default search: primary paths by backend, then fallback
-  const BACKEND_PATHS: Record<string, string[]> = {
-    claude: CLAUDE_PATHS,
-    codex: CODEX_PATHS,
-    kimi: ['KIMI.md'],
-    'openai-local': ['CLAUDE.md'],
-  };
-  const primaryPaths = BACKEND_PATHS[backend] ?? CLAUDE_PATHS;
-  // Fallback: try all other known paths
-  const allPaths = [...new Set([...CLAUDE_PATHS, ...CODEX_PATHS, ...Object.values(BACKEND_PATHS).flat()])];
-  const fallbackPaths = allPaths.filter(p => !primaryPaths.includes(p));
+  const [primaryPaths, fallbackPaths] = resolveGuidelinesPaths(backend);
 
   const result = searchPaths(repoRoot, primaryPaths) ?? searchPaths(repoRoot, fallbackPaths);
   if (result) return result;
@@ -108,133 +91,54 @@ function searchPaths(repoRoot: string, paths: string[]): ProjectGuidelines | nul
 }
 
 /**
- * Wrap guidelines in XML tags for prompt injection.
- */
-export function formatGuidelinesForPrompt(guidelines: ProjectGuidelines): string {
-  return [
-    '<project-guidelines>',
-    `<!-- Source: ${guidelines.source} -->`,
-    guidelines.content,
-    '</project-guidelines>',
-  ].join('\n');
-}
-
-/**
  * Generate a baseline guidelines file from project metadata.
- * Writes AGENTS.md for codex, CLAUDE.md for claude.
- * Returns the loaded guidelines, or null if creation fails.
  */
 function createBaselineGuidelines(
   repoRoot: string,
   backend: GuidelinesBackend,
 ): ProjectGuidelines | null {
-  const BACKEND_FILENAMES: Record<string, string> = {
-    codex: 'AGENTS.md',
-    kimi: 'KIMI.md',
-  };
-  const filename = BACKEND_FILENAMES[backend] ?? 'CLAUDE.md';
+  const filename = getBaselineFilename(backend);
   const fullPath = path.join(repoRoot, filename);
 
   // Don't overwrite existing files
   if (fs.existsSync(fullPath)) return null;
 
-  const content = generateBaseline(repoRoot, backend);
+  // Build input from package.json
+  const input = buildBaselineInput(repoRoot);
+  const content = generateBaselineGuidelines(input, backend);
 
   try {
     fs.writeFileSync(fullPath, content, 'utf-8');
     return { content, source: filename, loadedAt: Date.now() };
   } catch {
-    // Can't write — not fatal
     return null;
   }
 }
 
 /**
- * Build baseline guidelines content from project metadata.
+ * Build baseline input from project metadata (package.json, monorepo detection).
  */
-function generateBaseline(repoRoot: string, backend: GuidelinesBackend): string {
+function buildBaselineInput(repoRoot: string): BaselineInput {
   const projectName = path.basename(repoRoot);
-  const parts: string[] = [];
-
-  parts.push(`# ${projectName}`);
-  parts.push('');
-
-  // Detect project type from package.json
-  let description = '';
-  let hasTypeScript = false;
-  let testCmd = '';
-  let lintCmd = '';
-  let buildCmd = '';
-  const scripts: Record<string, string> = {};
+  const input: BaselineInput = { projectName };
 
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf-8'));
-    description = pkg.description || '';
-    Object.assign(scripts, pkg.scripts || {});
-    hasTypeScript = !!(
+    input.description = pkg.description || undefined;
+    input.scripts = pkg.scripts || {};
+    input.hasTypeScript = !!(
       pkg.devDependencies?.typescript ||
       pkg.dependencies?.typescript
     );
-    if (scripts.test) testCmd = `npm test`;
-    if (scripts.lint) lintCmd = `npm run lint`;
-    if (scripts.typecheck || scripts['type-check']) {
-      lintCmd = lintCmd ? `${lintCmd} && npm run typecheck` : 'npm run typecheck';
-    }
-    if (scripts.build) buildCmd = `npm run build`;
   } catch {
-    // No package.json — keep defaults
-  }
-
-  if (description) {
-    parts.push(description);
-    parts.push('');
-  }
-
-  // Conventions section
-  parts.push('## Conventions');
-  parts.push('');
-  if (hasTypeScript) {
-    parts.push('- This project uses TypeScript. Prefer strict types over `any`.');
-  }
-  parts.push('- Keep changes minimal and focused on the task at hand.');
-  parts.push('- Follow existing code style and patterns in the codebase.');
-  parts.push('- Do not introduce new dependencies without justification.');
-  parts.push('');
-
-  // Verification section
-  const verifyCommands: string[] = [];
-  if (lintCmd) verifyCommands.push(lintCmd);
-  if (testCmd) verifyCommands.push(testCmd);
-  if (buildCmd) verifyCommands.push(buildCmd);
-
-  if (verifyCommands.length > 0) {
-    parts.push('## Verification');
-    parts.push('');
-    parts.push('After making changes, verify with:');
-    parts.push('');
-    for (const cmd of verifyCommands) {
-      parts.push(`\`\`\`bash`);
-      parts.push(cmd);
-      parts.push(`\`\`\``);
-    }
-    parts.push('');
+    // No package.json
   }
 
   // Detect monorepo
-  const hasWorkspaces = !!scripts['workspaces'] ||
+  const hasWorkspaces =
     fs.existsSync(path.join(repoRoot, 'pnpm-workspace.yaml')) ||
     fs.existsSync(path.join(repoRoot, 'lerna.json'));
+  input.isMonorepo = hasWorkspaces || fs.existsSync(path.join(repoRoot, 'packages'));
 
-  if (hasWorkspaces || fs.existsSync(path.join(repoRoot, 'packages'))) {
-    parts.push('## Structure');
-    parts.push('');
-    parts.push('This is a monorepo. When modifying code in one package, check for cross-package impacts.');
-    parts.push('');
-  }
-
-  const header = backend === 'codex'
-    ? '<!-- Generated by BlockSpool. Edit freely to customize agent behavior. -->'
-    : '<!-- Generated by BlockSpool. Edit freely to customize agent behavior. -->';
-
-  return header + '\n\n' + parts.join('\n');
+  return input;
 }

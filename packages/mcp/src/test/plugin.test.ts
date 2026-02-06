@@ -242,11 +242,11 @@ describe('Plugin structure', () => {
       fs.readFileSync(path.join(pluginDir, '.claude-plugin', 'plugin.json'), 'utf8'),
     );
     expect(manifest.name).toBe('blockspool');
-    expect(manifest.skills).toHaveLength(4);
+    expect(manifest.skills).toHaveLength(7);
   });
 
-  it('has all 4 skill directories', () => {
-    for (const skill of ['run', 'status', 'nudge', 'cancel']) {
+  it('has all skill directories', () => {
+    for (const skill of ['run', 'status', 'nudge', 'cancel', 'analytics', 'audit', 'heal']) {
       expect(fs.existsSync(path.join(pluginDir, 'skills', skill))).toBe(true);
     }
   });

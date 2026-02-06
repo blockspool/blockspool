@@ -127,7 +127,7 @@ export async function mergeTicketToMilestone(
 ): Promise<{ success: boolean; conflicted: boolean }> {
   return withGitMutex(async () => {
     try {
-      await gitExec(`git merge --no-ff "${ticketBranch}" -m "Merge ${ticketBranch}"`, {
+      await gitExecFile('git', ['merge', '--no-ff', ticketBranch, '-m', `Merge ${ticketBranch}`], {
         cwd: milestoneWorktreePath,
       });
       return { success: true, conflicted: false };
@@ -145,11 +145,11 @@ export async function mergeTicketToMilestone(
           cwd: milestoneWorktreePath,
         })).trim();
         // Rebase the ticket branch onto the current milestone tip
-        await gitExec(`git rebase "${milestoneBranchName}" "${ticketBranch}"`, {
+        await gitExecFile('git', ['rebase', milestoneBranchName, ticketBranch], {
           cwd: repoRoot,
         });
         // Try merge again
-        await gitExec(`git merge --no-ff "${ticketBranch}" -m "Merge ${ticketBranch}"`, {
+        await gitExecFile('git', ['merge', '--no-ff', ticketBranch, '-m', `Merge ${ticketBranch}`], {
           cwd: milestoneWorktreePath,
         });
         return { success: true, conflicted: false };
@@ -229,8 +229,8 @@ export async function fetchPrReviewComments(
   prUrl: string,
 ): Promise<Array<{ body: string; author: string }>> {
   try {
-    const raw = await gitExec(
-      `gh pr view "${prUrl}" --json comments,reviews`,
+    const raw = await gitExecFile(
+      'gh', ['pr', 'view', prUrl, '--json', 'comments,reviews'],
       { cwd: repoRoot },
     );
     const parsed = JSON.parse(raw.trim());
@@ -265,19 +265,25 @@ export async function ensureDirectBranch(repoRoot: string, branchName: string, b
   await withGitMutex(async () => {
     // Check if branch exists
     try {
-      await gitExec(`git rev-parse --verify "${branchName}"`, { cwd: repoRoot });
+      await gitExecFile('git', ['rev-parse', '--verify', branchName], { cwd: repoRoot });
       // Branch exists — check it out
-      await gitExec(`git checkout "${branchName}"`, { cwd: repoRoot });
+      await gitExecFile('git', ['checkout', branchName], { cwd: repoRoot });
     } catch {
       // Branch doesn't exist — create from base
       try {
-        await gitExec(`git fetch origin ${baseBranch}`, { cwd: repoRoot });
+        await gitExecFile('git', ['fetch', 'origin', baseBranch], { cwd: repoRoot });
       } catch {
         // Continue with what we have
       }
-      const base = await gitExec(`git rev-parse --verify "origin/${baseBranch}" 2>/dev/null || git rev-parse --verify "${baseBranch}"`, { cwd: repoRoot });
+      // Try origin/baseBranch first, fall back to local baseBranch
+      let base: string;
       try {
-        await gitExec(`git checkout -b "${branchName}" ${base.trim()}`, { cwd: repoRoot });
+        base = (await gitExecFile('git', ['rev-parse', '--verify', `origin/${baseBranch}`], { cwd: repoRoot })).trim();
+      } catch {
+        base = (await gitExecFile('git', ['rev-parse', '--verify', baseBranch], { cwd: repoRoot })).trim();
+      }
+      try {
+        await gitExecFile('git', ['checkout', '-b', branchName, base], { cwd: repoRoot });
       } catch (err: any) {
         if (err?.message?.includes('cannot lock ref') || err?.stderr?.includes('cannot lock ref')) {
           throw new Error(
@@ -298,7 +304,7 @@ export async function pushDirectBranch(repoRoot: string, branchName: string): Pr
   const { loadConfig } = await import('./solo-config.js');
   const config = loadConfig(repoRoot);
   await assertPushSafe(repoRoot, config?.allowedRemote);
-  await gitExec(`git push -u origin "${branchName}"`, { cwd: repoRoot });
+  await gitExecFile('git', ['push', '-u', 'origin', branchName], { cwd: repoRoot });
 }
 
 /** Create a summary PR from the direct branch → base */
@@ -306,11 +312,9 @@ export async function createDirectSummaryPr(
   repoRoot: string, branchName: string, baseBranch: string,
   title: string, body: string, draft: boolean
 ): Promise<string> {
-  const draftFlag = draft ? ' --draft' : '';
-  const prOutput = (await gitExec(
-    `gh pr create --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" --head "${branchName}" --base "${baseBranch}"${draftFlag}`,
-    { cwd: repoRoot }
-  )).trim();
+  const args = ['pr', 'create', '--title', title, '--body', body, '--head', branchName, '--base', baseBranch];
+  if (draft) args.push('--draft');
+  const prOutput = (await gitExecFile('gh', args, { cwd: repoRoot })).trim();
 
   const urlMatch = prOutput.match(/https:\/\/github\.com\/[^\s]+/);
   return urlMatch ? urlMatch[0] : prOutput;
@@ -319,7 +323,7 @@ export async function createDirectSummaryPr(
 /** Auto-merge a PR after CI passes (gh pr merge --auto --squash) */
 export async function autoMergePr(repoRoot: string, prUrl: string): Promise<boolean> {
   try {
-    await gitExec(`gh pr merge "${prUrl}" --auto --squash`, { cwd: repoRoot });
+    await gitExecFile('gh', ['pr', 'merge', prUrl, '--auto', '--squash'], { cwd: repoRoot });
     return true;
   } catch {
     return false;
@@ -333,8 +337,8 @@ export async function checkPrStatuses(
   const results: Array<{ url: string; state: 'open' | 'merged' | 'closed'; mergedAt?: string }> = [];
   for (const url of prUrls) {
     try {
-      const raw = await gitExec(
-        `gh pr view "${url}" --json state,mergedAt`,
+      const raw = await gitExecFile(
+        'gh', ['pr', 'view', url, '--json', 'state,mergedAt'],
         { cwd: repoRoot },
       );
       const parsed = JSON.parse(raw.trim());

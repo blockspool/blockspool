@@ -5,11 +5,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // The key insight: vi.mock intercepts ALL imports of 'child_process', including
 // dynamic imports inside functions.
 
-// Create a mock exec function that we can control in tests
+// Create mock exec/execFile functions that we can control in tests
 const mockExec = vi.fn();
+const mockExecFile = vi.fn();
 
 vi.mock('child_process', () => ({
   exec: mockExec,
+  execFile: mockExecFile,
 }));
 
 // Mock node:fs
@@ -190,7 +192,8 @@ describe('mergeTicketToMilestone', () => {
   });
 
   it('returns success on clean merge', async () => {
-    mockExec.mockImplementation((cmd: string, opts: unknown, callback: Function) => {
+    // The first merge uses gitExecFile
+    mockExecFile.mockImplementation((cmd: string, args: string[], opts: unknown, callback: Function) => {
       callback(null, { stdout: '', stderr: '' });
     });
 
@@ -204,28 +207,31 @@ describe('mergeTicketToMilestone', () => {
   });
 
   it('returns conflicted when merge fails and rebase fails', async () => {
-    // Set up a sequence of responses for each gitExec call:
-    // 1. merge --no-ff → FAIL
-    // 2. merge --abort → success
-    // 3. rev-parse --abbrev-ref HEAD → return branch name
-    // 4. rebase → FAIL
-    // 5. rebase --abort → success
-    // 6. merge --abort → success
-    let callCount = 0;
-    mockExec.mockImplementation((cmd: string, opts: unknown, callback: Function) => {
-      callCount++;
-      if (callCount === 1) {
+    // gitExecFile calls: merge (fail), rebase (fail)
+    // gitExec calls: merge --abort, rev-parse, rebase --abort, merge --abort
+    let execFileCallCount = 0;
+    mockExecFile.mockImplementation((cmd: string, args: string[], opts: unknown, callback: Function) => {
+      execFileCallCount++;
+      if (execFileCallCount === 1) {
         // First merge fails
         callback(new Error('merge conflict'));
-      } else if (callCount === 2) {
-        // merge --abort succeeds
-        callback(null, { stdout: '', stderr: '' });
-      } else if (callCount === 3) {
-        // rev-parse returns branch name
-        callback(null, { stdout: 'blockspool/milestone-abc\n', stderr: '' });
-      } else if (callCount === 4) {
+      } else if (execFileCallCount === 2) {
         // rebase fails
         callback(new Error('rebase conflict'));
+      } else {
+        callback(null, { stdout: '', stderr: '' });
+      }
+    });
+
+    let execCallCount = 0;
+    mockExec.mockImplementation((cmd: string, opts: unknown, callback: Function) => {
+      execCallCount++;
+      if (execCallCount === 1) {
+        // merge --abort succeeds
+        callback(null, { stdout: '', stderr: '' });
+      } else if (execCallCount === 2) {
+        // rev-parse returns branch name
+        callback(null, { stdout: 'blockspool/milestone-abc\n', stderr: '' });
       } else {
         // abort commands succeed
         callback(null, { stdout: '', stderr: '' });
@@ -242,26 +248,30 @@ describe('mergeTicketToMilestone', () => {
   });
 
   it('retries with rebase on first failure then succeeds', async () => {
-    // Set up sequence:
-    // 1. merge --no-ff → FAIL
-    // 2. merge --abort → success
-    // 3. rev-parse → return branch name
-    // 4. rebase → success
-    // 5. second merge --no-ff → success
-    let callCount = 0;
-    mockExec.mockImplementation((cmd: string, opts: unknown, callback: Function) => {
-      callCount++;
-      if (callCount === 1) {
+    // gitExecFile calls: merge (fail), rebase (success), second merge (success)
+    // gitExec calls: merge --abort, rev-parse
+    let execFileCallCount = 0;
+    mockExecFile.mockImplementation((cmd: string, args: string[], opts: unknown, callback: Function) => {
+      execFileCallCount++;
+      if (execFileCallCount === 1) {
         // First merge fails
         callback(new Error('merge conflict'));
-      } else if (callCount === 2) {
+      } else {
+        // rebase and second merge succeed
+        callback(null, { stdout: '', stderr: '' });
+      }
+    });
+
+    let execCallCount = 0;
+    mockExec.mockImplementation((cmd: string, opts: unknown, callback: Function) => {
+      execCallCount++;
+      if (execCallCount === 1) {
         // merge --abort succeeds
         callback(null, { stdout: '', stderr: '' });
-      } else if (callCount === 3) {
+      } else if (execCallCount === 2) {
         // rev-parse returns branch name
         callback(null, { stdout: 'blockspool/milestone-abc\n', stderr: '' });
       } else {
-        // rebase and second merge succeed
         callback(null, { stdout: '', stderr: '' });
       }
     });

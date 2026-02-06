@@ -8,6 +8,7 @@ import { repos } from '@blockspool/core';
 import type { Ticket } from '@blockspool/core';
 import { execSync } from 'node:child_process';
 import type { SessionManager } from '../state.js';
+import { deriveScopePolicy, isFileAllowed } from '../scope-policy.js';
 
 /**
  * Allowlist of safe command prefixes for verification commands.
@@ -195,10 +196,15 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
       changed_files: z.array(z.string()).optional().describe('Alias for changedFiles.'),
     },
     async (raw) => {
-      const params = {
-        ticketId: (raw.ticketId ?? raw.ticket_id)!,
-        changedFiles: (raw.changedFiles ?? raw.changed_files)!,
-      };
+      const ticketId = raw.ticketId ?? raw.ticket_id;
+      const changedFiles = raw.changedFiles ?? raw.changed_files;
+      if (!ticketId || !changedFiles) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Missing required parameters: ticketId (or ticket_id) and changedFiles (or changed_files).' }) }],
+          isError: true,
+        };
+      }
+      const params = { ticketId, changedFiles };
       const state = getState();
       state.requireActive();
 
@@ -221,15 +227,16 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
         };
       }
 
+      // Use proper scope policy with minimatch-based validation
+      const policy = deriveScopePolicy({
+        allowedPaths: ticket.allowedPaths,
+        category: ticket.category ?? 'fix',
+        maxLinesPerTicket: 500,
+      });
+
       const violations: string[] = [];
       for (const file of params.changedFiles) {
-        const allowed = ticket.allowedPaths.some(pattern => {
-          if (file === pattern) return true;
-          if (file.startsWith(pattern.replace(/\*\*$/, '').replace(/\*$/, ''))) return true;
-          if (pattern.endsWith('/**') && file.startsWith(pattern.slice(0, -3))) return true;
-          return false;
-        });
-        if (!allowed) {
+        if (!isFileAllowed(file, policy)) {
           violations.push(file);
         }
       }
@@ -274,11 +281,15 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
       summary: z.string().optional().describe('Brief summary of changes made.'),
     },
     async (raw) => {
-      const params = {
-        ticketId: (raw.ticketId ?? raw.ticket_id)!,
-        runId: (raw.runId ?? raw.run_id)!,
-        summary: raw.summary,
-      };
+      const ticketId = raw.ticketId ?? raw.ticket_id;
+      const runId = raw.runId ?? raw.run_id;
+      if (!ticketId || !runId) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Missing required parameters: ticketId (or ticket_id) and runId (or run_id).' }) }],
+          isError: true,
+        };
+      }
+      const params = { ticketId, runId, summary: raw.summary };
       const state = getState();
       state.requireActive();
 
@@ -398,11 +409,15 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
       reason: z.string().optional().describe('Why the ticket failed.'),
     },
     async (raw) => {
-      const params = {
-        ticketId: (raw.ticketId ?? raw.ticket_id)!,
-        runId: (raw.runId ?? raw.run_id)!,
-        reason: raw.reason ?? 'Unknown failure',
-      };
+      const ticketId = raw.ticketId ?? raw.ticket_id;
+      const runId = raw.runId ?? raw.run_id;
+      if (!ticketId || !runId) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Missing required parameters: ticketId (or ticket_id) and runId (or run_id).' }) }],
+          isError: true,
+        };
+      }
+      const params = { ticketId, runId, reason: raw.reason ?? 'Unknown failure' };
       const state = getState();
       state.requireActive();
 

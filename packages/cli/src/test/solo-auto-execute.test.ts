@@ -24,6 +24,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 vi.mock('../lib/solo-ticket.js', () => ({
   soloRunTicket: vi.fn(),
   captureQaBaseline: vi.fn().mockResolvedValue(new Map()),
+  baselineToPassFail: vi.fn().mockReturnValue(new Map()),
 }));
 
 vi.mock('../lib/run-state.js', () => ({

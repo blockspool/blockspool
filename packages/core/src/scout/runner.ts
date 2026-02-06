@@ -565,13 +565,30 @@ export function parseClaudeOutput<T>(output: string): T | null {
     }
   }
 
-  // Try finding JSON object/array in output
-  const objectMatch = output.match(/\{[\s\S]*\}/);
-  if (objectMatch) {
-    try {
-      return JSON.parse(objectMatch[0]);
-    } catch {
-      // Ignore
+  // Try finding JSON object by balanced-brace matching
+  // Walk from each '{' and count braces to find the complete object,
+  // skipping braces inside string literals.
+  for (let start = output.indexOf('{'); start !== -1; start = output.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = start; i < output.length; i++) {
+      const ch = output[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\' && inString) { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(output.slice(start, i + 1));
+          } catch {
+            break; // This '{' didn't yield valid JSON, try the next one
+          }
+        }
+      }
     }
   }
 

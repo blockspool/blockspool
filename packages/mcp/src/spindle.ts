@@ -12,8 +12,14 @@
  * event-driven MCP architecture.
  */
 
-import { createHash } from 'node:crypto';
 import type { SpindleState } from './types.js';
+import {
+  shortHash,
+  detectQaPingPong,
+  detectCommandFailure,
+  extractFilesFromDiff,
+  getFileEditWarnings as _getFileEditWarnings,
+} from '@blockspool/core/spindle/shared';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -244,49 +250,6 @@ function detectRepetition(hashes: string[], threshold: number): string | null {
   return null;
 }
 
-/** Detect QA ping-pong: alternating failure signatures */
-function detectQaPingPong(sigs: string[], cycles: number): string | null {
-  if (sigs.length < cycles * 2) return null;
-
-  const recent = sigs.slice(-(cycles * 2));
-
-  // Check for A→B→A→B pattern
-  const a = recent[0];
-  const b = recent[1];
-  if (a === b) return null; // Not alternating
-
-  let alternating = true;
-  for (let i = 0; i < recent.length; i++) {
-    const expected = i % 2 === 0 ? a : b;
-    if (recent[i] !== expected) {
-      alternating = false;
-      break;
-    }
-  }
-
-  if (alternating) {
-    return `Alternating failures: ${a} ↔ ${b} (${cycles} cycles)`;
-  }
-
-  return null;
-}
-
-/** Detect same command failing N times */
-function detectCommandFailure(sigs: string[], threshold: number): string | null {
-  if (sigs.length < threshold) return null;
-
-  // Count occurrences of each signature
-  const counts = new Map<string, number>();
-  for (const sig of sigs) {
-    counts.set(sig, (counts.get(sig) ?? 0) + 1);
-  }
-
-  for (const [sig, count] of counts) {
-    if (count >= threshold) return sig;
-  }
-
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Risk computation
@@ -328,29 +291,8 @@ function computeRisk(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function shortHash(s: string): string {
-  return createHash('sha256').update(s).digest('hex').slice(0, 12);
-}
-
-/** Extract file paths from a unified diff */
-function extractFilesFromDiff(diff: string): string[] {
-  const files: string[] = [];
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+++ b/')) {
-      files.push(line.slice(6));
-    }
-  }
-  return files;
-}
-
-/** Get file edit frequency warnings */
+/** Get file edit frequency warnings — wraps shared function, handles optional field */
 export function getFileEditWarnings(spindle: SpindleState, threshold: number = 3): string[] {
   if (!spindle.file_edit_counts) return [];
-  const warnings: string[] = [];
-  for (const [file, count] of Object.entries(spindle.file_edit_counts)) {
-    if (count >= threshold) {
-      warnings.push(`${file} edited ${count} times`);
-    }
-  }
-  return warnings;
+  return _getFileEditWarnings(spindle.file_edit_counts, threshold);
 }

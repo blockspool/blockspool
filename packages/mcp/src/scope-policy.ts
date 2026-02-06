@@ -3,9 +3,22 @@
  *
  * Used by the plan validator and PreToolUse hook to ensure
  * agents only touch files they're allowed to.
+ *
+ * Shared constants (ALWAYS_DENIED, CREDENTIAL_PATTERNS, FILE_DENY_PATTERNS)
+ * and pure algorithms live in @blockspool/core/scope/shared.
+ * This file adds MCP-specific policy derivation and minimatch-based validation.
  */
 
 import { minimatch } from 'minimatch';
+import {
+  ALWAYS_DENIED,
+  CREDENTIAL_PATTERNS,
+  FILE_DENY_PATTERNS,
+  detectCredentialInContent,
+} from '@blockspool/core/scope/shared';
+
+// Re-export for existing consumers
+export { detectCredentialInContent as containsCredentials } from '@blockspool/core/scope/shared';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,45 +34,6 @@ export interface ScopePolicy {
 }
 
 // ---------------------------------------------------------------------------
-// Always-denied paths (build artifacts, lockfiles, VCS internals)
-// ---------------------------------------------------------------------------
-
-const ALWAYS_DENIED_PATHS = [
-  '.env', '.env.*',
-  'node_modules/**', '.git/**', '.blockspool/**',
-  'dist/**', 'build/**', 'coverage/**',
-  '*.lock', 'package-lock.json',
-];
-
-// ---------------------------------------------------------------------------
-// Credential / secret deny patterns
-// ---------------------------------------------------------------------------
-
-const CREDENTIAL_PATTERNS: RegExp[] = [
-  /AKIA[0-9A-Z]{16}/,                        // AWS access key
-  /-----BEGIN.*PRIVATE KEY-----/,              // PEM keys
-  /ghp_[a-zA-Z0-9]{36}/,                      // GitHub PAT
-  /\bsk-(?:proj-)?[a-zA-Z0-9_-]{32,}/,        // OpenAI key
-  /password\s*[:=]\s*['"][^'"]+/i,            // hardcoded passwords
-  /xox[bporas]-[a-zA-Z0-9-]+/,               // Slack tokens (xoxb-, xoxp-, xoxo-, xoxa-, xoxr-, xoxs-)
-  /postgres(ql)?:\/\/[^\s'"]+/i,             // PostgreSQL connection string
-  /mongodb(\+srv)?:\/\/[^\s'"]+/i,           // MongoDB connection string
-  /mysql:\/\/[^\s'"]+/i,                      // MySQL connection string
-  /eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\./, // JWT tokens (base64 header.payload.signature)
-  /(?:SECRET|TOKEN|API_?KEY|PRIVATE_?KEY)\s*[:=]\s*['"][^'"]{8,}/i, // Generic .env secret patterns
-];
-
-// ---------------------------------------------------------------------------
-// Path deny patterns (file names that shouldn't be touched)
-// ---------------------------------------------------------------------------
-
-const FILE_DENY_PATTERNS: RegExp[] = [
-  /\.(env|pem|key)$/,
-  /credentials/i,
-  /secret/i,
-];
-
-// ---------------------------------------------------------------------------
 // Derive scope policy from ticket + config
 // ---------------------------------------------------------------------------
 
@@ -72,7 +46,7 @@ export interface DeriveScopeInput {
 export function deriveScopePolicy(input: DeriveScopeInput): ScopePolicy {
   return {
     allowed_paths: input.allowedPaths,
-    denied_paths: ALWAYS_DENIED_PATHS,
+    denied_paths: ALWAYS_DENIED,
     denied_patterns: FILE_DENY_PATTERNS,
     max_files: 10,
     max_lines: input.category === 'test' ? 1000 : input.maxLinesPerTicket,
@@ -192,19 +166,7 @@ export function isFileAllowed(filePath: string, policy: ScopePolicy): boolean {
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Check file content for credential patterns
-// ---------------------------------------------------------------------------
-
-export function containsCredentials(content: string): string | null {
-  for (const pattern of CREDENTIAL_PATTERNS) {
-    const match = content.match(pattern);
-    if (match) {
-      return `Content contains potential credential: ${pattern.source}`;
-    }
-  }
-  return null;
-}
+// containsCredentials is re-exported from core above
 
 // ---------------------------------------------------------------------------
 // Serialize policy for MCP tool response (RegExp → string)

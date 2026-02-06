@@ -32,6 +32,7 @@
     "build": "npx tsc",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build",
     "dev": "tsx src/bin/blockspool.ts"
   },
   "keywords": [

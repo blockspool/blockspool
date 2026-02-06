@@ -186,6 +186,15 @@ export interface SoloConfig {
   pluginParallel?: number;
   /** Saved Codex model choice (persisted across runs) */
   codexModel?: string;
+  /**
+   * Shell command to run after worktree creation (language-agnostic project setup).
+   * Runs in the worktree directory before any ticket execution begins.
+   * Examples:
+   *   "pnpm install --frozen-lockfile && pnpm prisma generate"
+   *   "pip install -e ."
+   *   "cargo build"
+   */
+  setup?: string;
 }
 
 /**
@@ -320,6 +329,49 @@ export function detectQaCommands(repoRoot: string): DetectedQaCommand[] {
 }
 
 /**
+ * Auto-detect a setup command for worktree initialization.
+ * Returns a shell command string or null if nothing detected.
+ */
+export function detectSetupCommand(repoRoot: string): string | null {
+  const parts: string[] = [];
+
+  // Detect package manager install command
+  if (fs.existsSync(path.join(repoRoot, 'pnpm-lock.yaml'))) {
+    parts.push('pnpm install --frozen-lockfile');
+  } else if (fs.existsSync(path.join(repoRoot, 'yarn.lock'))) {
+    parts.push('yarn install --frozen-lockfile');
+  } else if (fs.existsSync(path.join(repoRoot, 'bun.lockb')) || fs.existsSync(path.join(repoRoot, 'bun.lock'))) {
+    parts.push('bun install --frozen-lockfile');
+  } else if (fs.existsSync(path.join(repoRoot, 'package-lock.json')) || fs.existsSync(path.join(repoRoot, 'package.json'))) {
+    parts.push('npm ci');
+  } else if (fs.existsSync(path.join(repoRoot, 'Pipfile.lock'))) {
+    parts.push('pipenv install --deploy');
+  } else if (fs.existsSync(path.join(repoRoot, 'poetry.lock'))) {
+    parts.push('poetry install --no-interaction');
+  } else if (fs.existsSync(path.join(repoRoot, 'requirements.txt'))) {
+    parts.push('pip install -r requirements.txt');
+  } else if (fs.existsSync(path.join(repoRoot, 'Gemfile.lock'))) {
+    parts.push('bundle install');
+  } else if (fs.existsSync(path.join(repoRoot, 'go.sum'))) {
+    parts.push('go mod download');
+  } else if (fs.existsSync(path.join(repoRoot, 'mix.lock'))) {
+    parts.push('mix deps.get');
+  }
+  // Rust/Cargo: no install step needed (cargo build happens via QA commands)
+
+  // Detect code generation steps
+  if (fs.existsSync(path.join(repoRoot, 'prisma')) || fs.existsSync(path.join(repoRoot, 'schema.prisma'))) {
+    // Use the same package manager runner for prisma generate
+    const runner = fs.existsSync(path.join(repoRoot, 'pnpm-lock.yaml')) ? 'pnpm'
+      : fs.existsSync(path.join(repoRoot, 'yarn.lock')) ? 'yarn'
+      : 'npx';
+    parts.push(`${runner} prisma generate`);
+  }
+
+  return parts.length > 0 ? parts.join(' && ') : null;
+}
+
+/**
  * Initialize solo mode for a repository
  */
 export async function initSolo(repoRoot: string): Promise<{ config: SoloConfig; detectedQa: DetectedQaCommand[] }> {
@@ -357,6 +409,12 @@ export async function initSolo(repoRoot: string): Promise<{ config: SoloConfig; 
         cmd: c.cmd,
       })),
     };
+  }
+
+  // Auto-detect setup command from project metadata
+  const setupCmd = detectSetupCommand(repoRoot);
+  if (setupCmd) {
+    config.setup = setupCmd;
   }
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));

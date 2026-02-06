@@ -4,7 +4,7 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { execFile } from 'node:child_process';
+import { exec, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { DatabaseAdapter } from '@blockspool/core/db';
 import {
@@ -53,6 +53,7 @@ import type {
 import { EXECUTE_STEPS } from './solo-ticket-types.js';
 
 
+const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 /**
@@ -365,8 +366,22 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
       onProgress(`Exclusion index: ${excludedPatterns.length} artifact patterns discovered`);
     }
 
-    // Install dependencies in worktree (needed for monorepos where node_modules isn't shared)
-    await installWorktreeDeps(worktreePath, verbose, onProgress);
+    // Run project setup in worktree (language-agnostic)
+    if (config?.setup) {
+      onProgress(`Running setup: ${config.setup}`);
+      try {
+        await execAsync(config.setup, {
+          cwd: worktreePath,
+          timeout: 300_000, // 5 min cap
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        onProgress(`Warning: setup command failed: ${msg}`);
+      }
+    } else {
+      // Legacy fallback: auto-detect Node.js deps when no setup configured
+      await installWorktreeDeps(worktreePath, verbose, onProgress);
+    }
 
     // Baseline snapshot: capture what git status reports AFTER dep install
     // but BEFORE the agent runs.  Anything in this baseline is a setup

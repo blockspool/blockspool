@@ -454,10 +454,20 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
     const projectMeta = detectProjectMetadata(ctx.project.rootPath);
     const metadataBlock = formatMetadataForPrompt(projectMeta) + '\n\n';
 
+    // Read project setup command from .blockspool/config.json (language-agnostic)
+    let setupCommand: string | undefined;
+    try {
+      const configPath = path.join(ctx.project.rootPath, '.blockspool', 'config.json');
+      if (fs.existsSync(configPath)) {
+        const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        setupCommand = configData.setup;
+      }
+    } catch { /* non-fatal */ }
+
     for (const pt of parallelTickets) {
       const ticket = readyTickets.find(t => t.id === pt.ticket_id)!;
       pt.inline_prompt = buildInlineTicketPrompt(
-        ticket, pt.constraints, guidelinesBlock, metadataBlock, s.create_prs, s.draft, s.direct,
+        ticket, pt.constraints, guidelinesBlock, metadataBlock, s.create_prs, s.draft, s.direct, setupCommand,
       );
     }
 
@@ -1153,6 +1163,7 @@ function buildInlineTicketPrompt(
   createPrs: boolean,
   draft: boolean,
   direct: boolean,
+  setupCommand?: string,
 ): string {
   const slug = ticket.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
   const branch = `blockspool/${ticket.id}/${slug}`;
@@ -1241,6 +1252,15 @@ function buildInlineTicketPrompt(
     '',
     `All work MUST happen inside \`${worktree}/\`. Do NOT modify files in the main working tree.`,
     '',
+    ...(setupCommand ? [
+      '```bash',
+      `cd ${worktree}`,
+      setupCommand,
+      '```',
+      '',
+      'Wait for setup to complete before proceeding. If setup fails, try to continue anyway.',
+      '',
+    ] : []),
     '## Step 2 — Implement the change',
     '',
     '- Read the relevant files first to understand the current state.',

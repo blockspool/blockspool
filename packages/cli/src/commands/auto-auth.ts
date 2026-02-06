@@ -193,18 +193,19 @@ export async function resolveBackends(options: AuthOptions): Promise<{
 async function resolveCodexModel(options: AuthOptions): Promise<void> {
   const hasApiKey = !!process.env.CODEX_API_KEY;
   const CODEX_MODELS = [
-    { key: '1', name: 'gpt-5.2-codex', desc: 'Latest (default reasoning)' },
-    { key: '2', name: 'gpt-5.1-codex-max', desc: 'Extended agentic tasks' },
+    { key: '1', name: 'gpt-5.3-codex', desc: 'Latest — strongest coding + reasoning (default)' },
+    { key: '2', name: 'gpt-5.2-codex', desc: 'Previous generation' },
+    { key: '3', name: 'gpt-5.1-codex-max', desc: 'Extended agentic tasks' },
     ...(hasApiKey ? [
-      { key: '3', name: 'gpt-5.2-codex-high', desc: 'High reasoning (API key only)' },
-      { key: '4', name: 'gpt-5.2-codex-xhigh', desc: 'Max reasoning (API key only)' },
-      { key: '5', name: 'gpt-5.1-codex-mini', desc: 'Fast, cost-effective (API key only)' },
-      { key: '6', name: 'gpt-5.2', desc: 'General-purpose (API key only)' },
-      { key: '7', name: 'gpt-5.2-high', desc: 'General-purpose, high reasoning (API key only)' },
-      { key: '8', name: 'gpt-5.2-xhigh', desc: 'General-purpose, max reasoning (API key only)' },
+      { key: '4', name: 'gpt-5.2-codex-high', desc: 'High reasoning (API key only)' },
+      { key: '5', name: 'gpt-5.2-codex-xhigh', desc: 'Max reasoning (API key only)' },
+      { key: '6', name: 'gpt-5.1-codex-mini', desc: 'Fast, cost-effective (API key only)' },
+      { key: '7', name: 'gpt-5.2', desc: 'General-purpose (API key only)' },
+      { key: '8', name: 'gpt-5.2-high', desc: 'General-purpose, high reasoning (API key only)' },
+      { key: '9', name: 'gpt-5.2-xhigh', desc: 'General-purpose, max reasoning (API key only)' },
     ] : []),
   ];
-  const LOGIN_SAFE_MODELS = ['gpt-5.2-codex', 'gpt-5.1-codex-max'];
+  const LOGIN_SAFE_MODELS = ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-max'];
   const ALL_MODEL_NAMES = CODEX_MODELS.map(m => m.name);
 
   if (options.codexModel) {

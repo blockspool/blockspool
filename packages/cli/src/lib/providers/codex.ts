@@ -6,7 +6,7 @@ import type { ProviderConfig } from './types.js';
 
 export const codex: ProviderConfig = {
   displayName: 'Codex',
-  defaultModel: 'gpt-5.2-codex',
+  defaultModel: 'gpt-5.3-codex',
   apiKeyEnvVar: 'CODEX_API_KEY',
   altAuth: 'codex login',
   guidelinesFile: 'AGENTS.md',

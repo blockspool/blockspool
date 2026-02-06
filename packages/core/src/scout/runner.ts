@@ -180,7 +180,7 @@ export class CodexScoutBackend implements ScoutBackend {
 
   constructor(opts?: { apiKey?: string; model?: string }) {
     this.apiKey = opts?.apiKey;
-    this.defaultModel = opts?.model ?? 'gpt-5.2-codex';
+    this.defaultModel = opts?.model ?? 'gpt-5.3-codex';
   }
 
   async run(options: RunnerOptions): Promise<RunnerResult> {
@@ -327,7 +327,7 @@ export class CodexMcpScoutBackend implements ScoutBackend {
 
   constructor(opts?: { apiKey?: string; model?: string }) {
     this.apiKey = opts?.apiKey;
-    this.defaultModel = opts?.model ?? 'gpt-5.2-codex';
+    this.defaultModel = opts?.model ?? 'gpt-5.3-codex';
   }
 
   /** Single-batch fallback (not normally used — runAll is preferred) */

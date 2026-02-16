@@ -172,6 +172,7 @@ describe('ARTIFACT_TYPES', () => {
     expect(ARTIFACT_TYPES).toContain('runs');
     expect(ARTIFACT_TYPES).toContain('violations');
     expect(ARTIFACT_TYPES).toContain('spindle');
-    expect(ARTIFACT_TYPES).toHaveLength(6);
+    expect(ARTIFACT_TYPES).toContain('traces');
+    expect(ARTIFACT_TYPES).toHaveLength(7);
   });
 });

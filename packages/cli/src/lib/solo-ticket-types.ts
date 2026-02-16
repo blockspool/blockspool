@@ -2,9 +2,9 @@
  * Types and constants for solo ticket execution
  */
 
-import type { tickets, runs } from '@blockspool/core/repos';
+import type { tickets } from '@blockspool/core/repos';
 import type { StepKind } from '@blockspool/core/repos';
-import type { SpindleConfig } from '../lib/spindle/index.js';
+import type { TraceAnalysis } from '@blockspool/core/trace/shared';
 import type { SoloConfig } from './solo-config.js';
 import type { getAdapter } from './solo-config.js';
 import type { ExecutionBackend } from './execution-backends/index.js';
@@ -76,6 +76,8 @@ export interface RunTicketResult {
     addedPaths: string[];
     newRetryCount: number;
   };
+  /** Trace analysis from stream-json output (when available) */
+  traceAnalysis?: TraceAnalysis;
 }
 
 /**
@@ -125,6 +127,8 @@ export interface RunTicketOptions {
   complexity?: string;
   /** Pre-captured QA baseline from cycle-level cache. If provided, skips per-ticket capture. */
   qaBaseline?: Map<string, boolean>;
+  /** Stream raw agent output chunks for live TUI display */
+  onRawOutput?: (chunk: string) => void;
 }
 
 /**

@@ -83,6 +83,22 @@
     "./waves/shared": {
       "types": "./dist/waves/shared.d.ts",
       "import": "./dist/waves/shared.js"
+    },
+    "./critic/shared": {
+      "types": "./dist/critic/shared.d.ts",
+      "import": "./dist/critic/shared.js"
+    },
+    "./tools/shared": {
+      "types": "./dist/tools/shared.d.ts",
+      "import": "./dist/tools/shared.js"
+    },
+    "./trace/shared": {
+      "types": "./dist/trace/shared.d.ts",
+      "import": "./dist/trace/shared.js"
+    },
+    "./trajectory/shared": {
+      "types": "./dist/trajectory/shared.d.ts",
+      "import": "./dist/trajectory/shared.js"
     }
   },
   "files": [

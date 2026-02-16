@@ -2,9 +2,12 @@
  * Proposal filtering pipeline for auto mode.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import chalk from 'chalk';
 import { minimatch } from 'minimatch';
 import type { TicketProposal } from '@blockspool/core/scout';
+import { SCOUT_DEFAULTS } from '@blockspool/core';
 import type { AutoSessionState } from './solo-auto-state.js';
 import { runClaude, type ExecutionBackend } from './execution-backends/index.js';
 import {
@@ -19,7 +22,7 @@ import {
   recordDedupEntries, getEnabledProposals,
   loadDedupMemory,
 } from './dedup-memory.js';
-import { balanceProposals } from './solo-proposal-pipeline.js';
+// balanceProposals removed — let quality determine proposal mix organically
 import {
   getSectorCategoryAffinity, updateProposalYield,
 } from './sectors.js';
@@ -40,7 +43,7 @@ export async function filterProposals(
   scope: string,
   cycleFormula: import('./formulas.js').Formula | null,
 ): Promise<FilterResult> {
-  const { allow: allowCategories, block: blockCategories } = state.getCycleCategories(cycleFormula);
+  const { block: blockCategories } = state.getCycleCategories(cycleFormula);
 
   // Adversarial proposal review
   if (state.autoConf.adversarialReview && !state.options.eco && proposals.length > 0) {
@@ -72,7 +75,7 @@ export async function filterProposals(
           }).length;
           const rejectedCount = reviewed.filter(r => r.confidence === 0).length;
           if (adjustedCount > 0 || rejectedCount > 0) {
-            console.log(chalk.gray(`  Review: ${adjustedCount} adjusted, ${rejectedCount} rejected`));
+            state.displayAdapter.log(chalk.gray(`  Review: ${adjustedCount} adjusted, ${rejectedCount} rejected`));
           }
 
           if (state.autoConf.learningsEnabled && reviewed) {
@@ -95,7 +98,32 @@ export async function filterProposals(
       }
     } catch {
       if (state.options.verbose) {
-        console.log(chalk.yellow(`  ⚠ Adversarial review failed, using original scores`));
+        state.displayAdapter.log(chalk.yellow(`  ⚠ Adversarial review failed, using original scores`));
+      }
+    }
+  }
+
+  // Baseline-healing confidence boost: nudge proposals that target failing QA commands
+  const baselineFailingKeywords: Set<string> = new Set();
+  try {
+    const blPath = path.join(state.repoRoot, '.blockspool', 'qa-baseline.json');
+    if (fs.existsSync(blPath)) {
+      const blData = JSON.parse(fs.readFileSync(blPath, 'utf8'));
+      for (const name of (blData.failures ?? [])) {
+        // Tokenize: "typecheck (type-check)" → ["typecheck", "type", "check"]
+        for (const token of name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/)) {
+          if (token.length > 2) baselineFailingKeywords.add(token);
+        }
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  if (baselineFailingKeywords.size > 0) {
+    for (const p of proposals) {
+      const text = `${p.title} ${p.category} ${p.description ?? ''} ${(p.verification_commands ?? []).join(' ')}`.toLowerCase();
+      const matches = [...baselineFailingKeywords].some(kw => text.includes(kw));
+      if (matches) {
+        p.confidence = Math.min(100, (p.confidence || 50) + 10);
       }
     }
   }
@@ -103,7 +131,7 @@ export async function filterProposals(
   // Re-inject deferred proposals
   const deferred = popDeferredForScope(state.repoRoot, scope);
   if (deferred.length > 0) {
-    console.log(chalk.cyan(`  ♻ ${deferred.length} deferred proposal(s) now in scope`));
+    state.displayAdapter.log(chalk.cyan(`  ♻ ${deferred.length} deferred proposal(s) now in scope`));
     for (const dp of deferred) {
       proposals.push({
         id: `deferred-${Date.now()}`,
@@ -124,33 +152,23 @@ export async function filterProposals(
 
   // Show all proposals before filtering
   if (proposals.length > 0) {
-    console.log(chalk.gray(`  Proposals found:`));
+    state.displayAdapter.log(chalk.gray(`  Proposals found:`));
     for (const p of proposals) {
       const conf = p.confidence || 50;
       const impact = p.impact_score ?? '?';
       const cat = p.category || 'refactor';
-      console.log(chalk.gray(`    ${cat} | ${conf}% conf | impact ${impact} | ${p.title}`));
+      state.displayAdapter.log(chalk.gray(`    ${cat} | ${conf}% conf | impact ${impact} | ${p.title}`));
     }
   }
 
-  // Category filter
-  // Test proposals are soft-allowed: not in the focus list but not hard-blocked.
-  // balanceProposals() organically caps test ratio (default 40%).
-  // --tests flag adds test to the focus list for active test seeking.
+  // Category filter — only block explicitly blocked categories
   let rejectedByCategory = 0;
   let rejectedByScope = 0;
   const categoryFiltered = proposals.filter((p) => {
     const category = (p.category || 'refactor').toLowerCase();
-    if (blockCategories.some(blocked => category.includes(blocked))) {
+    if (blockCategories.length > 0 && blockCategories.some(blocked => category.includes(blocked))) {
       rejectedByCategory++;
-      console.log(chalk.gray(`  ✗ Blocked category (${category}): ${p.title}`));
-      return false;
-    }
-    if (!allowCategories.some(allowed => category.includes(allowed))) {
-      // Soft-allow test: not in focus list but not hard-blocked
-      if (category === 'test') return true;
-      rejectedByCategory++;
-      console.log(chalk.gray(`  ✗ Category not allowed (${category}): ${p.title}`));
+      state.displayAdapter.log(chalk.gray(`  ✗ Blocked category (${category}): ${p.title}`));
       return false;
     }
     return true;
@@ -179,7 +197,7 @@ export async function filterProposals(
             deferredAt: Date.now(),
           });
           const outOfScopeFiles = files.filter((f: string) => !minimatch(f, scope, { dot: true }));
-          console.log(chalk.gray(`  ✗ Out of scope (${scope}): ${p.title}${outOfScopeFiles.length > 0 ? ` [${outOfScopeFiles.join(', ')}]` : ''}`));
+          state.displayAdapter.log(chalk.gray(`  ✗ Out of scope (${scope}): ${p.title}${outOfScopeFiles.length > 0 ? ` [${outOfScopeFiles.join(', ')}]` : ''}`));
           return false;
         }
         return true;
@@ -191,8 +209,6 @@ export async function filterProposals(
     cat: categoryFiltered.length,
     scope: scopeFiltered.length,
     dedup: 0,  // filled after dedup
-    impact: 0, // filled after impact
-    balance: 0, // filled after balance
   };
 
   // Dedup filter
@@ -200,7 +216,7 @@ export async function filterProposals(
   try {
     dedupContext = await getDeduplicationContext(state.adapter, state.project.id, state.repoRoot);
   } catch (err) {
-    console.log(chalk.yellow(`  ⚠ Dedup context failed: ${err instanceof Error ? err.message : err}`));
+    state.displayAdapter.log(chalk.yellow(`  ⚠ Dedup context failed: ${err instanceof Error ? err.message : err}`));
     dedupContext = { existingTitles: [], openPrBranches: [] };
   }
   const approvedProposals: typeof scopeFiltered = [];
@@ -215,9 +231,9 @@ export async function filterProposals(
     if (dupCheck.isDuplicate) {
       duplicateCount++;
       rejectedDupTitles.push(p.title);
-      console.log(chalk.gray(`  ✗ Duplicate: ${p.title}`));
+      state.displayAdapter.log(chalk.gray(`  ✗ Duplicate: ${p.title}`));
       if (state.options.verbose) {
-        console.log(chalk.gray(`    Reason: ${dupCheck.reason}`));
+        state.displayAdapter.log(chalk.gray(`    Reason: ${dupCheck.reason}`));
       }
     } else {
       approvedProposals.push(p);
@@ -231,23 +247,6 @@ export async function filterProposals(
     recordDedupEntries(state.repoRoot, rejectedDupTitles.map(t => ({ title: t, completed: false })));
     state.dedupMemory = loadDedupMemory(state.repoRoot);
   }
-
-  // Impact floor filter (static — no dynamic escalation)
-  const impactFloor = state.autoConf.minImpactScore ?? 3;
-  let rejectedByImpact = 0;
-  const impactFiltered = approvedProposals.filter(p => {
-    const impact = p.impact_score ?? 5;
-    if (impact < impactFloor) {
-      rejectedByImpact++;
-      console.log(chalk.gray(`  ✗ Below impact floor (${impact} < ${impactFloor}): ${p.title}`));
-      return false;
-    }
-    return true;
-  });
-  approvedProposals.length = 0;
-  approvedProposals.push(...impactFiltered);
-
-  pipelineCounts.impact = approvedProposals.length;
 
   // Dependency enablement boost
   const enabledTitles = getEnabledProposals(state.repoRoot);
@@ -282,46 +281,31 @@ export async function filterProposals(
     }
   }
 
-  // Test balance
-  const maxTestRatio = state.autoConf.maxTestRatio ?? 0.4;
-  const preBalanceCount = approvedProposals.length;
-  const balanced = balanceProposals(approvedProposals, maxTestRatio);
-  approvedProposals.length = 0;
-  approvedProposals.push(...balanced);
-
-  if (balanced.length === 0 && preBalanceCount > 0) {
-    console.log(chalk.yellow(`  ⚠ Balance returned 0 from ${preBalanceCount} proposals (maxTestRatio: ${maxTestRatio}) — this is unexpected`));
-  }
-
-  pipelineCounts.balance = approvedProposals.length;
-
   // Always-on compact pipeline summary
-  const { found, cat, scope: sc, dedup: dd, impact: imp, balance: bal } = pipelineCounts;
-  console.log(chalk.gray(`  Filter: ${found} → cat:${cat} → scope:${sc} → dedup:${dd} → impact:${imp} → balance:${bal}`));
+  const { found, cat, scope: sc, dedup: dd } = pipelineCounts;
+  state.displayAdapter.log(chalk.gray(`  Filter: ${found} → cat:${cat} → scope:${sc} → dedup:${dd}`));
 
   if (approvedProposals.length === 0) {
     const parts: string[] = [];
     if (rejectedByCategory > 0) parts.push(`${rejectedByCategory} blocked by category`);
     if (rejectedByScope > 0) parts.push(`${rejectedByScope} out of scope`);
     if (duplicateCount > 0) parts.push(`${duplicateCount} duplicates`);
-    if (rejectedByImpact > 0) parts.push(`${rejectedByImpact} below impact floor`);
-    const balanceDropped = preBalanceCount - balanced.length;
-    if (balanceDropped > 0) parts.push(`${balanceDropped} dropped by balance`);
     const reason = parts.length > 0
       ? `No proposals approved (${parts.join(', ')})`
       : 'No proposals passed filters';
-    console.log(chalk.gray(`  ${reason}`));
+    state.displayAdapter.log(chalk.gray(`  ${reason}`));
     state.scoutedDirs.push(scope);
-    const MAX_SCOUT_RETRIES = 2;
-    if (state.scoutRetries < MAX_SCOUT_RETRIES) {
+    // CLI gets more retries than MCP plugin since it's a longer-running standalone process
+    const maxRetries = SCOUT_DEFAULTS.MAX_SCOUT_RETRIES + 2;
+    if (state.scoutRetries < maxRetries) {
       state.scoutRetries++;
-      console.log(chalk.gray(`  Retrying with fresh approach (attempt ${state.scoutRetries}/${MAX_SCOUT_RETRIES + 1})...`));
+      state.displayAdapter.log(chalk.gray(`  Retrying with fresh approach (attempt ${state.scoutRetries}/${maxRetries + 1})...`));
       await sleep(1000);
       return { toProcess: [], scope, shouldRetry: true, shouldBreak: false, categoryRejected: rejectedByCategory };
     }
     state.scoutRetries = 0;
     state.scoutedDirs = [];
-    if (state.isContinuous) {
+    if (state.runMode === 'wheel') {
       await sleep(2000);
     }
     // Let shouldContinue() decide whether to loop or stop
@@ -332,7 +316,7 @@ export async function filterProposals(
   const prsRemaining = state.milestoneMode
     ? (state.batchSize! - state.milestoneTicketCount + (state.maxPrs - state.totalMilestonePrs - 1) * state.batchSize!)
     : (state.maxPrs - state.totalPrsCreated);
-  const defaultBatch = state.milestoneMode ? 10 : (state.isContinuous ? 5 : 3);
+  const defaultBatch = state.milestoneMode ? 10 : (state.runMode === 'wheel' ? 5 : 3);
   const cooledFiles = getCooledFiles(state.repoRoot);
   if (cooledFiles.size > 0) {
     approvedProposals.sort((a, b) => {
@@ -350,23 +334,23 @@ export async function filterProposals(
   const statsMsg = duplicateCount > 0
     ? `Auto-approved: ${approvedProposals.length} (${duplicateCount} duplicates skipped), processing: ${toProcess.length}`
     : `Auto-approved: ${approvedProposals.length}, processing: ${toProcess.length}`;
-  console.log(chalk.gray(`  ${statsMsg}`));
-  console.log();
+  state.displayAdapter.log(chalk.gray(`  ${statsMsg}`));
+  state.displayAdapter.log('');
 
   // Reset retry state
   state.scoutRetries = 0;
   state.scoutedDirs = [];
 
   // Display batch
-  if (!state.isContinuous || state.cycleCount === 1) {
-    console.log(chalk.bold('Will process:'));
+  if (state.runMode !== 'wheel' || state.cycleCount === 1) {
+    state.displayAdapter.log(chalk.bold('Will process:'));
     for (const p of toProcess) {
       const confidenceStr = p.confidence ? `${p.confidence}%` : '?';
       const complexity = p.estimated_complexity || 'simple';
-      console.log(chalk.cyan(`  • ${p.title}`));
-      console.log(chalk.gray(`    ${p.category || 'refactor'} | ${complexity} | ${confidenceStr}`));
+      state.displayAdapter.log(chalk.cyan(`  • ${p.title}`));
+      state.displayAdapter.log(chalk.gray(`    ${p.category || 'refactor'} | ${complexity} | ${confidenceStr}`));
     }
-    console.log();
+    state.displayAdapter.log('');
   }
 
   return { toProcess, scope, shouldRetry: false, shouldBreak: false, categoryRejected: rejectedByCategory };

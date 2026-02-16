@@ -7,10 +7,10 @@ import type { ProviderConfig } from './types.js';
 export const codex: ProviderConfig = {
   displayName: 'Codex',
   defaultModel: 'gpt-5.3-codex',
-  apiKeyEnvVar: 'CODEX_API_KEY',
+  apiKeyEnvVar: 'OPENAI_API_KEY',
   altAuth: 'codex login',
   guidelinesFile: 'AGENTS.md',
-  defaultScoutTimeoutMs: 600_000,
+  defaultScoutTimeoutMs: 0,
   defaultScoutConcurrency: 4,
   defaultBatchTokenBudget: 60_000,
   async createScoutBackend(opts) {

@@ -60,7 +60,7 @@ export async function gitExecFile(
 }
 
 /**
- * Clean up worktree safely
+ * Clean up worktree directory. Branch is left for merge or later pruning.
  */
 export async function cleanupWorktree(repoRoot: string, worktreePath: string) {
   try {
@@ -68,7 +68,62 @@ export async function cleanupWorktree(repoRoot: string, worktreePath: string) {
       await gitExec(`git worktree remove --force "${worktreePath}"`, { cwd: repoRoot });
     }
   } catch {
-    // Ignore cleanup errors
+    // Ignore worktree removal errors
+  }
+}
+
+/**
+ * Delete a ticket branch after it has been merged.
+ */
+export async function deleteTicketBranch(repoRoot: string, branchName: string) {
+  try {
+    await gitExec(`git branch -D "${branchName}"`, { cwd: repoRoot });
+  } catch {
+    // Branch may already be deleted
+  }
+}
+
+/**
+ * Delete a remote branch (non-fatal).
+ */
+export async function deleteRemoteBranch(repoRoot: string, branchName: string): Promise<void> {
+  try {
+    await gitExecFile('git', ['push', 'origin', '--delete', branchName], { cwd: repoRoot });
+  } catch {
+    // Branch may not exist on remote, or no push access — non-fatal
+  }
+}
+
+/**
+ * Check if the direct branch's PR was merged; if so, delete local+remote branch.
+ * Returns true if cleanup was performed.
+ */
+export async function cleanupMergedDirectBranch(
+  repoRoot: string,
+  branchName: string,
+): Promise<boolean> {
+  try {
+    // Check if branch exists locally
+    await gitExecFile('git', ['rev-parse', '--verify', branchName], { cwd: repoRoot });
+  } catch {
+    return false; // branch doesn't exist
+  }
+  try {
+    // Check if there's a merged PR for this branch
+    const raw = await gitExecFile(
+      'gh', ['pr', 'list', '--head', branchName, '--state', 'merged', '--json', 'url', '--limit', '1'],
+      { cwd: repoRoot },
+    );
+    const prs = JSON.parse(raw.trim());
+    if (!Array.isArray(prs) || prs.length === 0) return false;
+
+    // PR was merged — clean up local branch
+    await gitExecFile('git', ['branch', '-D', branchName], { cwd: repoRoot }).catch(() => {});
+    // Clean up remote branch (non-fatal)
+    await deleteRemoteBranch(repoRoot, branchName).catch(() => {});
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -140,13 +195,19 @@ export async function mergeTicketToMilestone(
       }
 
       // Retry: rebase ticket branch onto milestone, then merge
+      const milestoneBranchName = (await gitExec('git rev-parse --abbrev-ref HEAD', {
+        cwd: milestoneWorktreePath,
+      })).trim();
       try {
-        const milestoneBranchName = (await gitExec('git rev-parse --abbrev-ref HEAD', {
-          cwd: milestoneWorktreePath,
-        })).trim();
-        // Rebase the ticket branch onto the current milestone tip
+        // Rebase the ticket branch onto the current milestone tip.
+        // Note: `git rebase <upstream> <branch>` switches HEAD to <branch>,
+        // so we must switch back to the milestone branch before merging.
         await gitExecFile('git', ['rebase', milestoneBranchName, ticketBranch], {
           cwd: repoRoot,
+        });
+        // Switch back to milestone branch (rebase left HEAD on ticketBranch)
+        await gitExecFile('git', ['checkout', milestoneBranchName], {
+          cwd: milestoneWorktreePath,
         });
         // Try merge again
         await gitExecFile('git', ['merge', '--no-ff', ticketBranch, '-m', `Merge ${ticketBranch}`], {
@@ -157,6 +218,10 @@ export async function mergeTicketToMilestone(
         // Abort any in-progress rebase or merge
         try { await gitExec('git rebase --abort', { cwd: repoRoot }); } catch { /* ignore */ }
         try { await gitExec('git merge --abort', { cwd: milestoneWorktreePath }); } catch { /* ignore */ }
+        // Restore HEAD to milestone branch if rebase left it on ticket branch
+        try {
+          await gitExecFile('git', ['checkout', milestoneBranchName], { cwd: milestoneWorktreePath });
+        } catch { /* ignore */ }
         return { success: false, conflicted: true };
       }
     }
@@ -333,19 +398,19 @@ export async function autoMergePr(repoRoot: string, prUrl: string): Promise<bool
 export async function checkPrStatuses(
   repoRoot: string,
   prUrls: string[],
-): Promise<Array<{ url: string; state: 'open' | 'merged' | 'closed'; mergedAt?: string }>> {
-  const results: Array<{ url: string; state: 'open' | 'merged' | 'closed'; mergedAt?: string }> = [];
+): Promise<Array<{ url: string; state: 'open' | 'merged' | 'closed'; mergedAt?: string; branch?: string }>> {
+  const results: Array<{ url: string; state: 'open' | 'merged' | 'closed'; mergedAt?: string; branch?: string }> = [];
   for (const url of prUrls) {
     try {
       const raw = await gitExecFile(
-        'gh', ['pr', 'view', url, '--json', 'state,mergedAt'],
+        'gh', ['pr', 'view', url, '--json', 'state,mergedAt,headRefName'],
         { cwd: repoRoot },
       );
       const parsed = JSON.parse(raw.trim());
       const state = parsed.state === 'MERGED' ? 'merged' as const
         : parsed.state === 'CLOSED' ? 'closed' as const
         : 'open' as const;
-      results.push({ url, state, mergedAt: parsed.mergedAt || undefined });
+      results.push({ url, state, mergedAt: parsed.mergedAt || undefined, branch: parsed.headRefName || undefined });
     } catch {
       // Non-fatal — skip this PR
     }

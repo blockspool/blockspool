@@ -50,13 +50,13 @@
   ],
   "license": "Apache-2.0",
   "dependencies": {
-    "@blockspool/core": "^0.5.32",
-    "@blockspool/sqlite": "^0.5.32",
+    "@blockspool/core": "^0.5.62",
+    "@blockspool/sqlite": "^0.5.62",
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "@types/minimatch": "^5.1.2",
     "minimatch": "^10.1.1"
   },
   "devDependencies": {
+    "@types/minimatch": "^5.1.2",
     "@types/node": "^22.0.0",
     "typescript": "^5.9.3"
   }

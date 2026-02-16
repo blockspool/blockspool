@@ -7,7 +7,7 @@ import chalk from 'chalk';
 import { createGitService } from '../lib/git.js';
 import { runAutoMode, runAutoWorkMode } from '../lib/solo-auto.js';
 import { handleCiMode } from './auto-ci-mode.js';
-import { resolveBackends, type AuthOptions } from './auto-auth.js';
+import { resolveBackends } from './auto-auth.js';
 
 export function registerAutoCommands(solo: Command): void {
   /**
@@ -19,24 +19,26 @@ export function registerAutoCommands(solo: Command): void {
     .addHelpText('after', `
 Auto-detects backend from environment:
   ANTHROPIC_API_KEY  → Claude
-  CODEX_API_KEY      → Codex
+  OPENAI_API_KEY     → Codex
   codex login        → Codex CLI
 
 Examples:
-  blockspool                    # One improvement cycle
-  blockspool --hours 4          # Run for 4 hours
-  blockspool --hours 0.5        # Run for 30 minutes
+  blockspool                    # Scout all, approve roadmap, execute
+  blockspool --wheel            # Wheel mode (run until Ctrl+C)
+  blockspool --wheel --hours 4  # Timed wheel
   blockspool --pr               # Create PRs instead of direct commits
   blockspool --formula deep     # Architectural review
   blockspool ci                 # Fix CI failures
 `)
     // Primary options (visible in help)
+    .option('--wheel', 'Wheel mode — scout, fix, repeat (run until Ctrl+C or --hours expires)')
     .option('--hours <n>', 'Run for N hours (accepts decimals: 0.5 = 30min)')
     .option('--pr', 'Create pull requests instead of direct commits')
     .option('--scope <path>', 'Directory to focus on')
     .option('--formula <name>', 'Formula: deep, security-audit, test-coverage')
     .option('--dry-run', 'Preview without making changes')
     .option('-v, --verbose', 'Detailed output')
+    .option('--no-tui', 'Disable live terminal UI (use spinner output instead)')
     // Hidden options (still functional for power users)
     .addOption(new Option('--codex', 'Force Codex').hideHelp())
     .addOption(new Option('--claude', 'Force Claude').hideHelp())
@@ -76,8 +78,10 @@ Examples:
     .addOption(new Option('--auto-merge').hideHelp())
     .addOption(new Option('--direct-branch <name>').hideHelp())
     .addOption(new Option('--direct-finalize <mode>').hideHelp())
-    .addOption(new Option('--qa-fix').hideHelp())
+    .addOption(new Option('--qa-fix').default(true).hideHelp())
+    .addOption(new Option('--no-qa-fix').hideHelp())
     .action(async (mode: string | undefined, options: {
+      wheel?: boolean;
       dryRun?: boolean;
       scope?: string;
       maxPrs?: string;
@@ -123,6 +127,7 @@ Examples:
       directFinalize?: string;
       individualPrs?: boolean;
       qaFix?: boolean;
+      tui?: boolean;
     }) => {
       if (options.deep && !options.formula) {
         options.formula = 'deep';
@@ -156,8 +161,10 @@ Examples:
       if (effectiveMode === 'auto') {
         await runAutoMode({
           ...options,
+          wheel: options.wheel,
           pr: options.pr,
           formula: options.formula,
+          tui: options.tui,
           scoutBackend: scoutBackendName,
           executeBackend: executeBackendName,
           deliveryMode: options.autoMerge ? 'auto-merge' : options.pr ? 'pr' : undefined,

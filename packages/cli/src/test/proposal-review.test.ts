@@ -235,8 +235,8 @@ describe('applyReviewToProposals', () => {
 // ---------------------------------------------------------------------------
 
 describe('config integration', () => {
-  it('DEFAULT_AUTO_CONFIG has adversarialReview enabled', async () => {
+  it('DEFAULT_AUTO_CONFIG has adversarialReview disabled', async () => {
     const { DEFAULT_AUTO_CONFIG } = await import('../lib/solo-config.js');
-    expect(DEFAULT_AUTO_CONFIG.adversarialReview).toBe(true);
+    expect(DEFAULT_AUTO_CONFIG.adversarialReview).toBe(false);
   });
 });

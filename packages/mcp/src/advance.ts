@@ -17,7 +17,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { DatabaseAdapter } from '@blockspool/core';
-import { repos } from '@blockspool/core';
+import { repos, EXECUTION_DEFAULTS } from '@blockspool/core';
 import type { Project } from '@blockspool/core';
 import { RunManager } from './run-manager.js';
 import type {
@@ -28,6 +28,7 @@ import type {
 } from './types.js';
 import { TERMINAL_PHASES } from './types.js';
 import { deriveScopePolicy } from './scope-policy.js';
+import { getRegistry } from './tool-registry.js';
 import { checkSpindle, getFileEditWarnings } from './spindle.js';
 import { loadFormula } from './formulas.js';
 import type { Formula } from './formulas.js';
@@ -39,19 +40,57 @@ import {
   selectRelevant,
   formatLearningsForPrompt,
   recordAccess,
-  extractTags,
 } from './learnings.js';
 import { loadDedupMemory, formatDedupForPrompt } from './dedup-memory.js';
+import {
+  computeRetryRisk,
+  scoreStrategies,
+  buildCriticBlock,
+  buildPlanRejectionCriticBlock,
+} from '@blockspool/core/critic/shared';
+import type { AdaptiveRiskAssessment } from '@blockspool/core/learnings/shared';
 import {
   pickNextSector as pickNextSectorCore,
   computeCoverage as computeCoverageCore,
   buildSectorSummary as buildSectorSummaryCore,
 } from '@blockspool/core/sectors/shared';
 import type { SectorState } from '@blockspool/core/sectors/shared';
+import {
+  type Trajectory,
+  type TrajectoryState,
+  parseTrajectoryYaml,
+  getNextStep as getTrajectoryNextStep,
+  formatTrajectoryForPrompt,
+} from '@blockspool/core/trajectory/shared';
 
 const MAX_PLAN_REJECTIONS = 3;
-const MAX_QA_RETRIES = 3;
+const MAX_QA_RETRIES = EXECUTION_DEFAULTS.MAX_QA_RETRIES;
 const DEFAULT_LEARNINGS_BUDGET = 2000;
+
+/** Load trajectory state from project root — returns null if missing/invalid. */
+function loadTrajectoryData(rootPath: string): { trajectory: Trajectory; state: TrajectoryState } | null {
+  try {
+    const statePath = path.join(rootPath, '.blockspool', 'trajectory-state.json');
+    if (!fs.existsSync(statePath)) return null;
+    const trajState: TrajectoryState = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    if (trajState.paused) return null;
+
+    const trajDir = path.join(rootPath, '.blockspool', 'trajectories');
+    if (!fs.existsSync(trajDir)) return null;
+
+    const files = fs.readdirSync(trajDir).filter(f => f.endsWith('.yaml') || f.endsWith('.yml'));
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(trajDir, file), 'utf8');
+      const traj = parseTrajectoryYaml(content);
+      if (traj.name === trajState.trajectoryName && traj.steps.length > 0) {
+        return { trajectory: traj, state: trajState };
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+  return null;
+}
 
 /** Load sectors.json from project root — returns null if missing/invalid. */
 function loadSectorsState(rootPath: string): SectorState | null {
@@ -103,6 +142,41 @@ function buildLearningsBlock(
   return block + '\n\n';
 }
 
+/**
+ * Build a risk context block for prompts when adaptive trust detects elevated/high risk.
+ * Returns empty string for low/normal risk.
+ */
+function buildRiskContextBlock(riskAssessment: AdaptiveRiskAssessment | undefined): string {
+  if (!riskAssessment) return '';
+  if (riskAssessment.level === 'low' || riskAssessment.level === 'normal') return '';
+
+  const lines = [
+    '<risk-context>',
+    `## Adaptive Risk: ${riskAssessment.level.toUpperCase()} (score: ${riskAssessment.score})`,
+    '',
+  ];
+
+  if (riskAssessment.fragile_paths.length > 0) {
+    lines.push('### Known Fragile Paths');
+    for (const fp of riskAssessment.fragile_paths.slice(0, 5)) {
+      lines.push(`- \`${fp}\``);
+    }
+    lines.push('');
+  }
+
+  if (riskAssessment.known_issues.length > 0) {
+    lines.push('### Known Issues in These Files');
+    for (const issue of riskAssessment.known_issues) {
+      lines.push(`- ${issue}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('**Be extra careful** — these files have a history of failures. Consider smaller changes and more thorough testing.');
+  lines.push('</risk-context>');
+  return lines.join('\n') + '\n\n';
+}
+
 export interface AdvanceContext {
   run: RunManager;
   db: DatabaseAdapter;
@@ -114,7 +188,7 @@ export interface AdvanceContext {
  * Returns the next action for the client to perform.
  */
 export async function advance(ctx: AdvanceContext): Promise<AdvanceResponse> {
-  const { run, db, project } = ctx;
+  const { run, db } = ctx;
   const s = run.require();
 
   // Increment step
@@ -214,22 +288,24 @@ export async function advance(ctx: AdvanceContext): Promise<AdvanceResponse> {
 // Phase handlers
 // ---------------------------------------------------------------------------
 
-const SCOUT_AUTO_APPROVE = [
-  'Read(*)', 'Glob(*)', 'Grep(*)', 'Bash(ls *)', 'Bash(find *)', 'Bash(cat *)', 'Bash(head *)', 'Bash(wc *)',
-];
+// Auto-approve patterns are now served by the ToolRegistry.
+// Legacy arrays removed — use getRegistry().getAutoApprovePatterns() instead.
 
-const EXECUTE_AUTO_APPROVE = [
-  'Read(*)', 'Glob(*)', 'Grep(*)', 'Edit(*)', 'Write(*)',
-  'Bash(npm test*)', 'Bash(npx vitest*)', 'Bash(npx tsc*)', 'Bash(git diff*)', 'Bash(git status*)',
-];
+function getScoutAutoApprove(): string[] {
+  return getRegistry().getAutoApprovePatterns({ phase: 'SCOUT', category: null });
+}
 
-const QA_AUTO_APPROVE = [
-  'Read(*)', 'Bash(npm test*)', 'Bash(npx vitest*)', 'Bash(npx tsc*)',
-];
+function getExecuteAutoApprove(category: string | null): string[] {
+  return getRegistry().getAutoApprovePatterns({ phase: 'EXECUTE', category });
+}
 
-const PR_AUTO_APPROVE = [
-  'Bash(git *)', 'Bash(gh pr *)',
-];
+function getQaAutoApprove(): string[] {
+  return getRegistry().getAutoApprovePatterns({ phase: 'QA', category: null });
+}
+
+function getPrAutoApprove(): string[] {
+  return getRegistry().getAutoApprovePatterns({ phase: 'PR', category: null });
+}
 
 async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
   const { run, db } = ctx;
@@ -264,7 +340,7 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
       max_lines: 0,
       required_commands: [],
       plan_required: false,
-      auto_approve_patterns: SCOUT_AUTO_APPROVE,
+      auto_approve_patterns: getScoutAutoApprove(),
     });
   }
 
@@ -354,7 +430,29 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     ? { scannedSectors: cov.sectors_scanned, totalSectors: cov.sectors_total, percent: cov.percent, sectorPercent, sectorSummary }
     : undefined;
 
-  const prompt = guidelinesBlock + metadataBlock + indexBlock + dedupBlock + learningsBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
+  // Trajectory context
+  let trajectoryBlock = '';
+  try {
+    const trajData = loadTrajectoryData(ctx.project.rootPath);
+    if (trajData) {
+      const currentStep = getTrajectoryNextStep(trajData.trajectory, trajData.state.stepStates);
+      if (currentStep) {
+        trajectoryBlock = formatTrajectoryForPrompt(trajData.trajectory, trajData.state.stepStates, currentStep) + '\n\n';
+        s.active_trajectory = trajData.trajectory.name;
+        s.trajectory_step_id = currentStep.id;
+        s.trajectory_step_title = currentStep.title;
+        // Override scope and categories from step
+        if (currentStep.scope) s.scope = currentStep.scope;
+        if (currentStep.categories && currentStep.categories.length > 0) {
+          s.categories = currentStep.categories;
+        }
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  const prompt = guidelinesBlock + metadataBlock + indexBlock + dedupBlock + trajectoryBlock + learningsBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
     s.max_proposals_per_scout, dedupContext, formula, hints, s.eco, s.min_impact_score, s.scouted_dirs, s.scout_exclude_dirs, coverageCtx);
 
   // Reset scout_retries at the start of a fresh cycle (non-retry entry)
@@ -371,7 +469,7 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     max_lines: 0,
     required_commands: [],
     plan_required: false,
-    auto_approve_patterns: SCOUT_AUTO_APPROVE,
+    auto_approve_patterns: getScoutAutoApprove(),
   });
 }
 
@@ -426,6 +524,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
         allowedPaths: ticket.allowedPaths ?? [],
         category: ticket.category ?? 'refactor',
         maxLinesPerTicket: s.max_lines_per_ticket,
+        learnings: s.cached_learnings,
       });
 
       parallelTickets.push({
@@ -440,7 +539,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
           max_lines: policy.max_lines,
           required_commands: ticket.verificationCommands ?? [],
           plan_required: policy.plan_required,
-          auto_approve_patterns: EXECUTE_AUTO_APPROVE,
+          auto_approve_patterns: getExecuteAutoApprove(ticket.category ?? null),
         },
         inline_prompt: '', // filled below
       });
@@ -546,6 +645,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
     allowedPaths: ticket.allowedPaths ?? [],
     category: ticket.category ?? 'refactor',
     maxLinesPerTicket: s.max_lines_per_ticket,
+    learnings: s.cached_learnings,
   });
 
   const constraints: AdvanceConstraints = {
@@ -556,7 +656,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
     max_lines: policy.max_lines,
     required_commands: ticket.verificationCommands ?? [],
     plan_required: policy.plan_required,
-    auto_approve_patterns: SCOUT_AUTO_APPROVE,
+    auto_approve_patterns: getScoutAutoApprove(),
   };
 
   // Docs category: skip plan, go straight to execute
@@ -572,7 +672,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
   const prompt = buildPlanPrompt(ticket);
 
   return promptResponse(run, 'PLAN', prompt,
-    `Planning ticket: ${ticket.title}`, { ...constraints, auto_approve_patterns: SCOUT_AUTO_APPROVE });
+    `Planning ticket: ${ticket.title}`, { ...constraints, auto_approve_patterns: getScoutAutoApprove() });
 }
 
 async function advancePlan(ctx: AdvanceContext): Promise<AdvanceResponse> {
@@ -616,14 +716,31 @@ async function advancePlan(ctx: AdvanceContext): Promise<AdvanceResponse> {
     allowedPaths: ticket.allowedPaths ?? [],
     category: ticket.category ?? 'refactor',
     maxLinesPerTicket: s.max_lines_per_ticket,
+    learnings: s.cached_learnings,
   });
 
   const learningsBlock = buildLearningsBlock(run, ticket.allowedPaths ?? [], ticket.verificationCommands ?? []);
+  const riskBlock = buildRiskContextBlock(policy.risk_assessment);
 
-  const basePlanPrompt = s.plan_rejections > 0
-    ? `Your previous commit plan was rejected. Please revise.\n\n${buildPlanPrompt(ticket)}`
-    : buildPlanPrompt(ticket);
-  const prompt = learningsBlock + basePlanPrompt;
+  let basePlanPrompt: string;
+  if (s.plan_rejections > 0) {
+    const planCriticBlock = buildPlanRejectionCriticBlock(
+      {
+        rejection_reason: s.last_plan_rejection_reason ?? 'Plan did not pass scope validation',
+        attempt: s.plan_rejections + 1,
+        max_attempts: MAX_PLAN_REJECTIONS,
+      },
+      s.cached_learnings,
+      ticket.allowedPaths ?? [],
+    );
+    const preamble = planCriticBlock
+      ? `${planCriticBlock}\n\n`
+      : `Your previous commit plan was rejected: ${s.last_plan_rejection_reason ?? 'scope violation'}. Please revise.\n\n`;
+    basePlanPrompt = preamble + buildPlanPrompt(ticket);
+  } else {
+    basePlanPrompt = buildPlanPrompt(ticket);
+  }
+  const prompt = learningsBlock + riskBlock + basePlanPrompt;
 
   return promptResponse(run, 'PLAN', prompt,
     s.plan_rejections > 0
@@ -637,7 +754,7 @@ async function advancePlan(ctx: AdvanceContext): Promise<AdvanceResponse> {
       max_lines: policy.max_lines,
       required_commands: ticket.verificationCommands ?? [],
       plan_required: policy.plan_required,
-      auto_approve_patterns: SCOUT_AUTO_APPROVE,
+      auto_approve_patterns: getScoutAutoApprove(),
     });
 }
 
@@ -669,13 +786,30 @@ async function advanceExecute(ctx: AdvanceContext): Promise<AdvanceResponse> {
     allowedPaths: ticket.allowedPaths ?? [],
     category: ticket.category ?? 'refactor',
     maxLinesPerTicket: s.max_lines_per_ticket,
+    learnings: s.cached_learnings,
   });
 
   const guidelines = loadGuidelines(ctx.project.rootPath);
   const guidelinesBlock = guidelines ? formatGuidelinesForPrompt(guidelines) + '\n\n' : '';
   const learningsBlock = buildLearningsBlock(run, ticket.allowedPaths ?? [], ticket.verificationCommands ?? []);
+  const riskBlock = buildRiskContextBlock(policy.risk_assessment);
 
-  const prompt = guidelinesBlock + learningsBlock + buildExecutePrompt(ticket, s.current_ticket_plan);
+  // Build critic block for QA retries
+  let criticBlock = '';
+  if (s.qa_retries > 0 && s.last_qa_failure) {
+    const failureContext = {
+      failed_commands: s.last_qa_failure.failed_commands,
+      error_output: s.last_qa_failure.error_output,
+      attempt: s.qa_retries + 1,
+      max_attempts: MAX_QA_RETRIES,
+    };
+    const risk = computeRetryRisk(ticket.allowedPaths ?? [], ticket.verificationCommands ?? [], s.cached_learnings, failureContext);
+    const strategies = scoreStrategies(ticket.allowedPaths ?? [], failureContext, s.cached_learnings);
+    criticBlock = buildCriticBlock(failureContext, risk, strategies, s.cached_learnings);
+    if (criticBlock) criticBlock += '\n\n';
+  }
+
+  const prompt = guidelinesBlock + learningsBlock + riskBlock + criticBlock + buildExecutePrompt(ticket, s.current_ticket_plan);
 
   return promptResponse(run, 'EXECUTE', prompt,
     `Executing ticket: ${ticket.title}`, {
@@ -686,7 +820,7 @@ async function advanceExecute(ctx: AdvanceContext): Promise<AdvanceResponse> {
       max_lines: policy.max_lines,
       required_commands: ticket.verificationCommands ?? [],
       plan_required: false,
-      auto_approve_patterns: EXECUTE_AUTO_APPROVE,
+      auto_approve_patterns: getExecuteAutoApprove(ticket.category ?? null),
     });
 }
 
@@ -714,7 +848,10 @@ async function advanceQa(ctx: AdvanceContext): Promise<AdvanceResponse> {
   }
 
   const learningsBlock = buildLearningsBlock(run, [], ticket.verificationCommands ?? []);
-  const prompt = learningsBlock + buildQaPrompt(ticket);
+  const crossVerifyPreamble = s.cross_verify
+    ? '## IMPORTANT — Independent Verification\n\nYou are verifying work as an INDEPENDENT verifier. Do NOT trust any prior claims of success. Run ALL commands yourself and report results honestly.\n\n'
+    : '';
+  const prompt = crossVerifyPreamble + learningsBlock + buildQaPrompt(ticket);
 
   return promptResponse(run, 'QA', prompt,
     `Running QA for: ${ticket.title} (attempt ${s.qa_retries + 1}/${MAX_QA_RETRIES})`, {
@@ -725,7 +862,7 @@ async function advanceQa(ctx: AdvanceContext): Promise<AdvanceResponse> {
       max_lines: 0,
       required_commands: ticket.verificationCommands ?? [],
       plan_required: false,
-      auto_approve_patterns: QA_AUTO_APPROVE,
+      auto_approve_patterns: getQaAutoApprove(),
     });
 }
 
@@ -748,7 +885,7 @@ async function advancePr(ctx: AdvanceContext): Promise<AdvanceResponse> {
       max_lines: 0,
       required_commands: [],
       plan_required: false,
-      auto_approve_patterns: PR_AUTO_APPROVE,
+      auto_approve_patterns: getPrAutoApprove(),
     });
 }
 
@@ -1064,7 +1201,12 @@ function buildScoutPrompt(
   return parts.join('\n');
 }
 
-function buildPlanPrompt(ticket: { title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[] }): string {
+function buildPlanPrompt(ticket: { title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[]; category?: string | null }): string {
+  const constraintNote = getRegistry().getConstraintNote({ phase: 'EXECUTE', category: ticket.category ?? null });
+  const toolRestrictionLines = constraintNote
+    ? ['', '## Tool Restrictions', '', constraintNote, '']
+    : [''];
+
   return [
     '# Commit Plan Required',
     '',
@@ -1085,13 +1227,13 @@ function buildPlanPrompt(ticket: { title: string; description: string | null; al
     '',
     `**Allowed paths:** ${ticket.allowedPaths.length > 0 ? ticket.allowedPaths.join(', ') : 'any'}`,
     `**Verification commands:** ${ticket.verificationCommands.join(', ') || 'none specified'}`,
-    '',
+    ...toolRestrictionLines,
     'Then call `blockspool_ingest_event` with type `PLAN_SUBMITTED` and the plan as payload.',
   ].join('\n');
 }
 
 function buildExecutePrompt(
-  ticket: { title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[] },
+  ticket: { title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[]; category?: string | null },
   plan: unknown,
 ): string {
   const parts = [
@@ -1116,6 +1258,14 @@ function buildExecutePrompt(
     `- Only modify files in: ${ticket.allowedPaths.length > 0 ? ticket.allowedPaths.join(', ') : 'any'}`,
     '- Make minimal, focused changes',
     '',
+  );
+
+  const constraintNote = getRegistry().getConstraintNote({ phase: 'EXECUTE', category: ticket.category ?? null });
+  if (constraintNote) {
+    parts.push('## Tool Restrictions', '', constraintNote, '');
+  }
+
+  parts.push(
     '## When done',
     'Output a `<ticket-result>` block with status, changed_files, summary, lines_added, lines_removed.',
     'Then call `blockspool_ingest_event` with type `TICKET_RESULT` and the result as payload.',
@@ -1164,7 +1314,7 @@ function shellEscape(s: string): string {
 }
 
 function buildInlineTicketPrompt(
-  ticket: { id: string; title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[]; metadata?: Record<string, unknown> | null },
+  ticket: { id: string; title: string; description: string | null; allowedPaths: string[]; verificationCommands: string[]; metadata?: Record<string, unknown> | null; category?: string | null },
   constraints: AdvanceConstraints,
   guidelinesBlock: string,
   metadataBlock: string,
@@ -1184,6 +1334,12 @@ function buildInlineTicketPrompt(
 
   const planningPreamble = buildPlanningPreamble(ticket);
 
+  // Build tool restriction block from registry
+  const inlineConstraintNote = getRegistry().getConstraintNote({ phase: 'EXECUTE', category: ticket.category ?? null });
+  const toolRestrictionBlock = inlineConstraintNote
+    ? ['## Tool Restrictions', '', inlineConstraintNote, '']
+    : [];
+
   // Direct mode: simpler flow, edit in place, no worktrees
   if (direct) {
     return [
@@ -1201,6 +1357,7 @@ function buildInlineTicketPrompt(
       `- **Max files:** ${constraints.max_files || 'unlimited'}`,
       `- **Max lines:** ${constraints.max_lines || 'unlimited'}`,
       '',
+      ...toolRestrictionBlock,
       '## Step 1 — Implement the change',
       '',
       '- Read the relevant files first to understand the current state.',
@@ -1259,6 +1416,7 @@ function buildInlineTicketPrompt(
     `- **Max files:** ${constraints.max_files || 'unlimited'}`,
     `- **Max lines:** ${constraints.max_lines || 'unlimited'}`,
     '',
+    ...toolRestrictionBlock,
     '## Step 1 — Set up worktree',
     '',
     '```bash',

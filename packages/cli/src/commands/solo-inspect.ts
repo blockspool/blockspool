@@ -141,7 +141,6 @@ export function registerInspectCommands(solo: Command): void {
         const model = (options.model || 'opus') as 'haiku' | 'sonnet' | 'opus';
         const maxFiles = options.maxFiles ? parseInt(options.maxFiles, 10) : undefined;
 
-        // eslint-disable-next-line no-undef
         const controller = new AbortController();
         process.on('SIGINT', () => {
           if (!isQuiet) {

@@ -86,6 +86,49 @@ export function registerLifecycleCommands(solo: Command): void {
     });
 
   /**
+   * solo report - View session reports
+   */
+  solo
+    .command('report')
+    .description('View session reports')
+    .option('--list', 'List all reports')
+    .option('--last', 'Show most recent report (default)')
+    .action(async (options: { list?: boolean; last?: boolean }) => {
+      const git = createGitService();
+      const repoRoot = await git.findRepoRoot(process.cwd());
+
+      if (!repoRoot) {
+        console.error(chalk.red('✗ Not a git repository'));
+        process.exit(1);
+      }
+
+      const reportsDir = path.join(getBlockspoolDir(repoRoot), 'reports');
+      if (!fs.existsSync(reportsDir)) {
+        console.log(chalk.gray('No reports yet. Run blockspool to generate one.'));
+        return;
+      }
+
+      const files = fs.readdirSync(reportsDir)
+        .filter(f => f.endsWith('.md'))
+        .sort()
+        .reverse();
+
+      if (files.length === 0) {
+        console.log(chalk.gray('No reports yet. Run blockspool to generate one.'));
+        return;
+      }
+
+      if (options.list) {
+        for (const f of files) {
+          console.log(f);
+        }
+      } else {
+        const latest = files[0];
+        console.log(fs.readFileSync(path.join(reportsDir, latest), 'utf-8'));
+      }
+    });
+
+  /**
    * solo doctor - Check prerequisites and environment
    */
   solo

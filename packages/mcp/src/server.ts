@@ -10,6 +10,7 @@ import { registerSessionTools } from './tools/session.js';
 import { registerExecuteTools } from './tools/execute.js';
 import { registerGitTools } from './tools/git.js';
 import { registerIntelligenceTools } from './tools/intelligence.js';
+import { registerTrajectoryTools } from './tools/trajectory.js';
 
 export interface ServerOptions {
   db: DatabaseAdapter;
@@ -42,6 +43,7 @@ export async function createServer(options: ServerOptions): Promise<{
   registerExecuteTools(server, getState);
   registerGitTools(server, getState);
   registerIntelligenceTools(server, getState);
+  registerTrajectoryTools(server, getState);
 
   return { server, state };
 }

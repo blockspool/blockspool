@@ -13,7 +13,7 @@ export const openaiLocal: ProviderConfig = {
   defaultModel: '',  // Must be specified via --local-model
   apiKeyEnvVar: null,
   guidelinesFile: 'CLAUDE.md',
-  defaultScoutTimeoutMs: 300_000,
+  defaultScoutTimeoutMs: 0,
   defaultScoutConcurrency: 2,
   defaultBatchTokenBudget: 40_000,
   async createScoutBackend(opts) {

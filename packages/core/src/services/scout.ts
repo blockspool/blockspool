@@ -15,7 +15,6 @@ import * as tickets from '../repos/tickets.js';
 import * as runs from '../repos/runs.js';
 import {
   scout as scanAndPropose,
-  type ScoutOptions as ScanOptions,
   type ScoutResult as ScanResult,
   type TicketProposal,
   type ScoutBackend,
@@ -84,6 +83,8 @@ export interface ScoutRepoOptions {
   signal?: AbortSignal;
   /** Progress callback */
   onProgress?: (progress: ScoutProgress) => void;
+  /** Raw output streaming callback (per-batch stdout/stderr) */
+  onRawOutput?: (batchIndex: number, chunk: string) => void;
   /** Auto-create tickets from proposals */
   autoApprove?: boolean;
   /** Scout backend override (default: ClaudeScoutBackend) */
@@ -244,6 +245,7 @@ export async function scoutRepo(
       scoutConcurrency: opts.scoutConcurrency,
       moduleGroups: opts.moduleGroups,
       coverageContext: opts.coverageContext,
+      onRawOutput: opts.onRawOutput,
       onProgress: (p) => {
         report({
           phase: 'analyzing',

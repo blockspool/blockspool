@@ -28,6 +28,15 @@ declare module 'neo-blessed' {
         fg?: string;
         bg?: string;
       };
+      selected?: {
+        fg?: string;
+        bg?: string;
+        bold?: boolean;
+      };
+      item?: {
+        fg?: string;
+        bg?: string;
+      };
     }
 
     interface BoxOptions extends NodeOptions {
@@ -41,7 +50,23 @@ declare module 'neo-blessed' {
       scrollbar?: {
         ch?: string;
         inverse?: boolean;
+        style?: { bg?: string; fg?: string };
       };
+      mouse?: boolean;
+      keys?: boolean;
+      vi?: boolean;
+      input?: boolean;
+      inputOnFocus?: boolean;
+    }
+
+    interface ListOptions extends BoxOptions {
+      items?: string[];
+      interactive?: boolean;
+      invertSelected?: boolean;
+    }
+
+    interface TextboxOptions extends BoxOptions {
+      inputOnFocus?: boolean;
     }
 
     interface ScreenOptions {
@@ -59,12 +84,41 @@ declare module 'neo-blessed' {
       focus(): void;
       setFront(): void;
       destroy(): void;
+      on(event: string, callback: (...args: any[]) => void): void;
+      removeAllListeners(event?: string): void;
     }
 
     interface BoxElement extends Node {
       setContent(content: string): void;
       getContent(): string;
       setLabel(label: string): void;
+      pushLine(line: string): void;
+      insertBottom(line: string): void;
+      setScrollPerc(perc: number): void;
+      getScrollPerc(): number;
+      scroll(offset: number): void;
+      scrollTo(index: number): void;
+      getScrollHeight(): number;
+      height: number;
+      width: number;
+    }
+
+    interface ListElement extends BoxElement {
+      select(index: number): void;
+      selected: number;
+      setItems(items: string[]): void;
+      addItem(item: string): void;
+      getItem(index: number): BoxElement;
+      items: BoxElement[];
+      removeItem(index: number): void;
+    }
+
+    interface TextboxElement extends BoxElement {
+      setValue(value: string): void;
+      getValue(): string;
+      clearValue(): void;
+      readInput(callback?: (err: any, value?: string) => void): void;
+      submit: string;
     }
 
     // Alias for backwards compatibility
@@ -73,6 +127,12 @@ declare module 'neo-blessed' {
     interface Screen extends Node {
       render(): void;
       key(keys: string | string[], callback: (ch: string, key: KeyEvent) => void): void;
+      width: number;
+      height: number;
+      program: {
+        showCursor(): void;
+        hideCursor(): void;
+      };
     }
 
     interface KeyEvent {
@@ -86,10 +146,16 @@ declare module 'neo-blessed' {
 
   export function screen(options?: Widgets.ScreenOptions): Widgets.Screen;
   export function box(options?: Widgets.BoxOptions): Widgets.BoxElement;
+  export function list(options?: Widgets.ListOptions): Widgets.ListElement;
+  export function textbox(options?: Widgets.TextboxOptions): Widgets.TextboxElement;
+  export function textarea(options?: Widgets.TextboxOptions): Widgets.TextboxElement;
 
   const blessed: {
     screen: typeof screen;
     box: typeof box;
+    list: typeof list;
+    textbox: typeof textbox;
+    textarea: typeof textarea;
     Widgets: typeof Widgets;
   };
 

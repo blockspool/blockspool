@@ -106,6 +106,10 @@ export interface RunState {
   qa_retries: number;
   scout_retries: number;
 
+  // Critic: last failure context for retry guidance
+  last_qa_failure: { failed_commands: string[]; error_output: string } | null;
+  last_plan_rejection_reason: string | null;
+
   // Time
   started_at: string;
   expires_at: string | null;
@@ -129,6 +133,9 @@ export interface RunState {
 
   // Direct mode: edit in place without worktrees/branches
   direct: boolean;
+
+  // Cross-verify: use separate verifier agent for QA
+  cross_verify: boolean;
 
   // Coverage
   sectors_scanned: number;
@@ -172,6 +179,11 @@ export interface RunState {
   // Sector rotation
   selected_sector_path?: string;
   current_sector_path?: string;
+
+  // Trajectory planning
+  active_trajectory: string | null;
+  trajectory_step_id: string | null;
+  trajectory_step_title: string | null;
 }
 
 export interface ProjectMetadataSnapshot {
@@ -191,13 +203,15 @@ export interface ProjectMetadataSnapshot {
 // ---------------------------------------------------------------------------
 
 export interface TicketWorkerState {
-  phase: 'PLAN' | 'EXECUTE' | 'QA' | 'PR' | 'DONE' | 'FAILED';
+  phase: 'PLAN' | 'EXECUTE' | 'QA' | 'CROSS_QA' | 'PR' | 'DONE' | 'FAILED';
   plan: CommitPlan | null;
   plan_approved: boolean;
   plan_rejections: number;
   qa_retries: number;
   step_count: number;
   spindle: SpindleState;
+  // Critic: last QA failure context for retry guidance
+  last_qa_failure: { failed_commands: string[]; error_output: string } | null;
 }
 
 export interface DeferredProposal {
@@ -251,6 +265,7 @@ export type EventType =
   | 'BUDGET_EXHAUSTED'
   | 'SPINDLE_WARNING'
   | 'SPINDLE_ABORT'
+  | 'TRACE_ANALYSIS'
   | 'HINT_CONSUMED'
   | 'USER_OVERRIDE'
   | 'PROPOSALS_REVIEWED'
@@ -338,4 +353,6 @@ export interface SessionConfig {
   learnings_decay_rate?: number;
   /** Direct mode: edit in place without worktrees/branches. Default: true (simpler for solo use). */
   direct?: boolean;
+  /** Cross-verify: use a separate verifier agent for QA instead of self-verification. Default: false. */
+  cross_verify?: boolean;
 }

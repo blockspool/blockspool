@@ -6,6 +6,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
@@ -29,7 +30,11 @@ export interface PruneReport {
   deferredProposalsRemoved: number;
   completedTicketsRemoved: number;
   mergedBranchesRemoved: number;
+  staleBranchesRemoved: number;
   staleWorktreesRemoved: number;
+  logsRotated: number;
+  metricsLinesRemoved: number;
+  artifactsByAgeRemoved: number;
   totalPruned: number;
 }
 
@@ -42,7 +47,11 @@ function emptyReport(): PruneReport {
     deferredProposalsRemoved: 0,
     completedTicketsRemoved: 0,
     mergedBranchesRemoved: 0,
+    staleBranchesRemoved: 0,
     staleWorktreesRemoved: 0,
+    logsRotated: 0,
+    metricsLinesRemoved: 0,
+    artifactsByAgeRemoved: 0,
     totalPruned: 0,
   };
 }
@@ -303,6 +312,72 @@ export function pruneMergedBranches(
 }
 
 // =============================================================================
+// Stale unmerged branch cleanup
+// =============================================================================
+
+/**
+ * Delete local blockspool/tkt_* and blockspool/milestone-* branches that are
+ * NOT merged and whose last commit is older than `maxDays` days. Never touches
+ * blockspool-direct or user branches. Never deletes the current branch.
+ */
+export function pruneStaleBranches(
+  repoRoot: string,
+  maxDays: number,
+  dryRun = false,
+): number {
+  if (maxDays <= 0) return 0;
+
+  try {
+    // Current branch — never delete
+    const headResult = spawnSync('git', ['branch', '--show-current'], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+    });
+    const currentBranch = headResult.stdout?.trim() ?? '';
+
+    const cutoff = Date.now() - (maxDays * 24 * 60 * 60 * 1000);
+    let removed = 0;
+
+    // Prune both tkt_* and milestone-* branches
+    const refPatterns = ['refs/heads/blockspool/tkt_*', 'refs/heads/blockspool/milestone-*'];
+    for (const pattern of refPatterns) {
+      const listResult = spawnSync(
+        'git',
+        ['for-each-ref', '--format=%(refname:short) %(committerdate:unix)', pattern],
+        { cwd: repoRoot, encoding: 'utf-8' },
+      );
+      if (listResult.status !== 0 || !listResult.stdout?.trim()) continue;
+
+      for (const line of listResult.stdout.trim().split('\n')) {
+        const parts = line.trim().split(' ');
+        if (parts.length < 2) continue;
+        const branch = parts[0];
+        const epochSec = parseInt(parts[1], 10);
+        if (!branch || isNaN(epochSec)) continue;
+        if (branch === currentBranch) continue;
+
+        const commitMs = epochSec * 1000;
+        if (commitMs >= cutoff) continue; // too recent
+
+        if (!dryRun) {
+          const delResult = spawnSync('git', ['branch', '-D', branch], {
+            cwd: repoRoot,
+            encoding: 'utf-8',
+          });
+          if (delResult.status === 0) removed++;
+        } else {
+          removed++;
+        }
+      }
+    }
+
+    return removed;
+  } catch {
+    return 0;
+  }
+}
+
+// =============================================================================
 // Stale worktree cleanup
 // =============================================================================
 
@@ -355,6 +430,15 @@ export function pruneStaleWorktrees(repoRoot: string, dryRun = false): number {
             // Not a git worktree anymore — just remove the directory
             fs.rmSync(worktreePath, { recursive: true, force: true });
           }
+
+          // Also delete the associated branch
+          if (entry.startsWith('tkt_')) {
+            spawnSync('git', ['branch', '-D', `blockspool/${entry}`], {
+              cwd: repoRoot,
+              encoding: 'utf-8',
+            });
+          }
+
           removed++;
         } catch {
           // Individual removal failure is non-fatal
@@ -368,6 +452,328 @@ export function pruneStaleWorktrees(repoRoot: string, dryRun = false): number {
   } catch {
     return 0;
   }
+}
+
+// =============================================================================
+// Stale codex session cleanup
+// =============================================================================
+
+/**
+ * Remove codex session rollout files from incompatible versions and old sessions.
+ *
+ * Codex stores per-thread rollout files in ~/.codex/sessions/YYYY/MM/DD/.
+ * After a codex upgrade, old-version rollout files cause "state db missing
+ * rollout path" errors on every invocation because the new version can't
+ * index the old format. This prunes:
+ *   1. Rollout files from a different major.minor codex version
+ *   2. Rollout files older than `maxDays` days
+ *   3. Abandoned rollout files — same version, recent, but the owning
+ *      process stopped writing (mtime > 5 min stale). These are left
+ *      behind when a codex process is killed mid-execution.
+ */
+export function pruneStaleCodexSessions(maxDays: number, dryRun = false): number {
+  if (maxDays <= 0) return 0;
+
+  try {
+    const codexDir = path.join(os.homedir(), '.codex', 'sessions');
+    if (!fs.existsSync(codexDir)) return 0;
+
+    // Detect current codex version
+    const verResult = spawnSync('codex', ['--version'], { encoding: 'utf-8', timeout: 5000 });
+    const verMatch = verResult.stdout?.match(/(\d+\.\d+)/);
+    const currentMajorMinor = verMatch?.[1] ?? null;
+
+    // Only prune abandoned threads if no codex process is running
+    const codexRunning = isCodexRunning();
+
+    const cutoff = Date.now() - (maxDays * 24 * 60 * 60 * 1000);
+    const staleCutoff = Date.now() - (5 * 60 * 1000); // 5 minutes
+    let removed = 0;
+
+    // Walk YYYY/MM/DD directory structure
+    for (const year of safeReaddir(codexDir)) {
+      const yearPath = path.join(codexDir, year);
+      if (!safeStat(yearPath)?.isDirectory()) continue;
+
+      for (const month of safeReaddir(yearPath)) {
+        const monthPath = path.join(yearPath, month);
+        if (!safeStat(monthPath)?.isDirectory()) continue;
+
+        for (const day of safeReaddir(monthPath)) {
+          const dayPath = path.join(monthPath, day);
+          if (!safeStat(dayPath)?.isDirectory()) continue;
+
+          for (const file of safeReaddir(dayPath)) {
+            const filePath = path.join(dayPath, file);
+            try {
+              const stat = fs.statSync(filePath);
+              let shouldRemove = stat.mtimeMs < cutoff;
+
+              // Check version incompatibility for rollout files
+              if (!shouldRemove && currentMajorMinor && file.endsWith('.jsonl')) {
+                const firstLine = readFirstLine(filePath);
+                if (firstLine) {
+                  const verInFile = firstLine.match(/"cli_version":"(\d+\.\d+)/);
+                  if (verInFile && verInFile[1] !== currentMajorMinor) {
+                    shouldRemove = true;
+                  }
+                }
+              }
+
+              // Check for abandoned rollout files — stale mtime, no codex running.
+              // These are left behind when a codex process is killed mid-execution.
+              // Only prune if no codex process is currently running (safe window).
+              if (!shouldRemove && !codexRunning && file.endsWith('.jsonl') && stat.mtimeMs < staleCutoff) {
+                shouldRemove = true;
+              }
+
+              if (shouldRemove) {
+                if (!dryRun) fs.unlinkSync(filePath);
+                removed++;
+              }
+            } catch { /* skip */ }
+          }
+
+          // Remove empty day directories
+          try {
+            if (!dryRun && safeReaddir(dayPath).length === 0) fs.rmdirSync(dayPath);
+          } catch { /* skip */ }
+        }
+
+        try {
+          if (!dryRun && safeReaddir(monthPath).length === 0) fs.rmdirSync(monthPath);
+        } catch { /* skip */ }
+      }
+
+      try {
+        if (!dryRun && safeReaddir(yearPath).length === 0) fs.rmdirSync(yearPath);
+      } catch { /* skip */ }
+    }
+
+    return removed;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Check if any codex process is currently running.
+ * Used to gate abandoned-thread pruning — if codex is running,
+ * skip aggressive pruning to avoid deleting active rollout files.
+ */
+function isCodexRunning(): boolean {
+  try {
+    const result = spawnSync('pgrep', ['-f', 'codex'], { encoding: 'utf-8', timeout: 5000 });
+    return result.status === 0 && !!result.stdout?.trim();
+  } catch {
+    return true; // assume running if we can't check — safer to skip pruning
+  }
+}
+
+function safeReaddir(dir: string): string[] {
+  try { return fs.readdirSync(dir); } catch { return []; }
+}
+
+function safeStat(p: string): fs.Stats | null {
+  try { return fs.statSync(p); } catch { return null; }
+}
+
+function readFirstLine(filePath: string): string | null {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(512);
+    const bytesRead = fs.readSync(fd, buf, 0, 512, 0);
+    fs.closeSync(fd);
+    const text = buf.toString('utf-8', 0, bytesRead);
+    const nl = text.indexOf('\n');
+    return nl >= 0 ? text.slice(0, nl) : text;
+  } catch { return null; }
+}
+
+// =============================================================================
+// Log rotation
+// =============================================================================
+
+/**
+ * Rotate tui.log when it exceeds maxBytes.
+ * Renames current to tui.log.1, starts fresh.
+ * Only keeps 1 backup — previous .1 is overwritten.
+ */
+export function rotateLogs(repoRoot: string, maxBytes: number, dryRun = false): number {
+  if (maxBytes <= 0) return 0;
+
+  const bsDir = getBlockspoolDir(repoRoot);
+  const logPath = path.join(bsDir, 'tui.log');
+  if (!fs.existsSync(logPath)) return 0;
+
+  try {
+    const stat = fs.statSync(logPath);
+    if (stat.size <= maxBytes) return 0;
+
+    if (!dryRun) {
+      const backupPath = path.join(bsDir, 'tui.log.1');
+      // Overwrite previous backup
+      try { fs.unlinkSync(backupPath); } catch { /* may not exist */ }
+      fs.renameSync(logPath, backupPath);
+    }
+    return 1;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Keep last N lines in metrics.ndjson, rewrite file.
+ */
+export function pruneMetrics(
+  repoRoot: string,
+  maxEntries: number,
+  dryRun = false,
+): number {
+  if (maxEntries <= 0) return 0;
+
+  const metricsPath = path.join(getBlockspoolDir(repoRoot), 'metrics.ndjson');
+  if (!fs.existsSync(metricsPath)) return 0;
+
+  const content = fs.readFileSync(metricsPath, 'utf-8');
+  const lines = content.split('\n').filter(l => l.trim().length > 0);
+
+  if (lines.length <= maxEntries) return 0;
+
+  const removed = lines.length - maxEntries;
+  if (!dryRun) {
+    const kept = lines.slice(-maxEntries);
+    fs.writeFileSync(metricsPath, kept.join('\n') + '\n');
+  }
+  return removed;
+}
+
+// =============================================================================
+// Time-based artifact expiry
+// =============================================================================
+
+/**
+ * Delete artifact files older than maxDays from .blockspool/artifacts/.
+ * Walks all subdirectories (executions/, diffs/, runs/, violations/).
+ * Removes empty subdirectories afterward.
+ */
+export function pruneArtifactsByAge(
+  repoRoot: string,
+  maxDays: number,
+  dryRun = false,
+): number {
+  if (maxDays <= 0) return 0;
+
+  const artifactsDir = path.join(getBlockspoolDir(repoRoot), 'artifacts');
+  if (!fs.existsSync(artifactsDir)) return 0;
+
+  const cutoff = Date.now() - (maxDays * 24 * 60 * 60 * 1000);
+  let removed = 0;
+
+  for (const subdir of safeReaddir(artifactsDir)) {
+    const subdirPath = path.join(artifactsDir, subdir);
+    if (!safeStat(subdirPath)?.isDirectory()) continue;
+
+    for (const file of safeReaddir(subdirPath)) {
+      const filePath = path.join(subdirPath, file);
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) continue;
+        if (stat.mtimeMs < cutoff) {
+          if (!dryRun) fs.unlinkSync(filePath);
+          removed++;
+        }
+      } catch { /* skip */ }
+    }
+
+    // Remove empty subdirectory
+    try {
+      if (!dryRun && safeReaddir(subdirPath).length === 0) {
+        fs.rmdirSync(subdirPath);
+      }
+    } catch { /* skip */ }
+  }
+
+  return removed;
+}
+
+// =============================================================================
+// Git worktree prune
+// =============================================================================
+
+/**
+ * Run `git worktree prune` to clean dangling worktree refs that manual
+ * cleanup misses (e.g. worktree directories deleted without `git worktree remove`).
+ */
+export function gitWorktreePrune(repoRoot: string): void {
+  try {
+    spawnSync('git', ['worktree', 'prune'], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      timeout: 10_000,
+    });
+  } catch { /* non-fatal */ }
+}
+
+// =============================================================================
+// Session lock file
+// =============================================================================
+
+/**
+ * Write a session lock file (.blockspool/session.pid) with the current PID.
+ * Returns true if lock acquired, false if another live session holds it.
+ */
+export function acquireSessionLock(repoRoot: string): { acquired: boolean; stalePid?: number } {
+  const lockPath = path.join(getBlockspoolDir(repoRoot), 'session.pid');
+
+  // Check existing lock
+  if (fs.existsSync(lockPath)) {
+    try {
+      const content = fs.readFileSync(lockPath, 'utf-8').trim();
+      const pid = parseInt(content, 10);
+      if (!isNaN(pid) && pid > 0) {
+        // Check if PID is still alive
+        try {
+          process.kill(pid, 0); // signal 0 = existence check only
+          // Process is alive — another session is running
+          return { acquired: false };
+        } catch {
+          // Process is dead — stale lock, clean it up
+          fs.unlinkSync(lockPath);
+          // Fall through to acquire
+          return acquireLock(lockPath, pid);
+        }
+      }
+    } catch {
+      // Corrupt lock file — remove and proceed
+      try { fs.unlinkSync(lockPath); } catch { /* skip */ }
+    }
+  }
+
+  return acquireLock(lockPath);
+}
+
+function acquireLock(lockPath: string, stalePid?: number): { acquired: boolean; stalePid?: number } {
+  try {
+    fs.writeFileSync(lockPath, String(process.pid));
+    return { acquired: true, stalePid };
+  } catch {
+    return { acquired: false };
+  }
+}
+
+/**
+ * Release the session lock file on clean shutdown.
+ */
+export function releaseSessionLock(repoRoot: string): void {
+  const lockPath = path.join(getBlockspoolDir(repoRoot), 'session.pid');
+  try {
+    // Only remove if we own it
+    const content = fs.readFileSync(lockPath, 'utf-8').trim();
+    if (parseInt(content, 10) === process.pid) {
+      fs.unlinkSync(lockPath);
+    }
+  } catch { /* non-fatal */ }
 }
 
 // =============================================================================
@@ -389,13 +795,24 @@ export function pruneAll(
   report.staleWorktreesRemoved = pruneStaleWorktrees(repoRoot, dryRun);
   // Branch pruning is NOT run here — only via explicit `blockspool prune`
 
+  // Log rotation & metrics pruning
+  report.logsRotated = rotateLogs(repoRoot, config.maxLogSizeBytes, dryRun);
+  report.metricsLinesRemoved = pruneMetrics(repoRoot, config.maxMetricsEntries, dryRun);
+  report.artifactsByAgeRemoved = pruneArtifactsByAge(repoRoot, config.maxArtifactAgeDays, dryRun);
+
+  // Git worktree prune (dangling refs)
+  if (!dryRun) gitWorktreePrune(repoRoot);
+
   report.totalPruned =
     report.runFoldersRemoved +
     report.historyLinesRemoved +
     report.artifactsRemoved +
     report.spoolArchivesRemoved +
     report.deferredProposalsRemoved +
-    report.staleWorktreesRemoved;
+    report.staleWorktreesRemoved +
+    report.logsRotated +
+    report.metricsLinesRemoved +
+    report.artifactsByAgeRemoved;
 
   return report;
 }
@@ -413,7 +830,8 @@ export async function pruneAllAsync(
 
   report.completedTicketsRemoved = await pruneCompletedTickets(adapter, config.maxCompletedTickets, dryRun);
   report.mergedBranchesRemoved = pruneMergedBranches(repoRoot, config.maxMergedBranches, dryRun);
-  report.totalPruned += report.completedTicketsRemoved + report.mergedBranchesRemoved;
+  report.staleBranchesRemoved = pruneStaleBranches(repoRoot, config.maxStaleBranchDays, dryRun);
+  report.totalPruned += report.completedTicketsRemoved + report.mergedBranchesRemoved + report.staleBranchesRemoved;
 
   return report;
 }
@@ -446,8 +864,20 @@ export function formatPruneReport(report: PruneReport, dryRun = false): string {
   if (report.mergedBranchesRemoved > 0) {
     lines.push(`  ${prefix} ${report.mergedBranchesRemoved} merged branch(es)`);
   }
+  if (report.staleBranchesRemoved > 0) {
+    lines.push(`  ${prefix} ${report.staleBranchesRemoved} stale ticket branch(es)`);
+  }
   if (report.staleWorktreesRemoved > 0) {
     lines.push(`  ${prefix} ${report.staleWorktreesRemoved} stale worktree(s)`);
+  }
+  if (report.logsRotated > 0) {
+    lines.push(`  Rotated tui.log`);
+  }
+  if (report.metricsLinesRemoved > 0) {
+    lines.push(`  ${prefix} ${report.metricsLinesRemoved} metrics line(s)`);
+  }
+  if (report.artifactsByAgeRemoved > 0) {
+    lines.push(`  ${prefix} ${report.artifactsByAgeRemoved} expired artifact(s)`);
   }
 
   if (lines.length === 0) {

@@ -11,7 +11,6 @@
  * - Special commands (?, s, p, q)
  */
 
-import * as readline from 'node:readline';
 import chalk from 'chalk';
 import { addHint, readHints, clearHints } from './solo-hints.js';
 
@@ -34,15 +33,7 @@ const CSI = ESC + '[';
 const SAVE_CURSOR = CSI + 's';
 const RESTORE_CURSOR = CSI + 'u';
 const CLEAR_LINE = CSI + '2K';
-const CURSOR_TO_COL = (col: number) => CSI + col + 'G';
-const CURSOR_UP = (n: number) => CSI + n + 'A';
-const CURSOR_DOWN = (n: number) => CSI + n + 'B';
-const SCROLL_UP = CSI + 'S';
-const SET_SCROLL_REGION = (top: number, bottom: number) => CSI + top + ';' + bottom + 'r';
 const CURSOR_TO = (row: number, col: number) => CSI + row + ';' + col + 'H';
-const CLEAR_SCREEN_BELOW = CSI + 'J';
-const HIDE_CURSOR = CSI + '?25l';
-const SHOW_CURSOR = CSI + '?25h';
 
 /**
  * Start the interactive console with a persistent input bar.
@@ -56,12 +47,12 @@ export function startInteractiveConsole(opts: ConsoleOptions): InteractiveConsol
 
   let isPaused = false;
   let stopped = false;
+  let quitRequested = false;
   let inputBuffer = '';
   let cursorPos = 0;
 
   // Get terminal dimensions
   const getHeight = () => process.stdout.rows || 24;
-  const getWidth = () => process.stdout.columns || 80;
 
   // Set raw mode for character-by-character input
   process.stdin.setRawMode(true);
@@ -161,10 +152,17 @@ export function startInteractiveConsole(opts: ConsoleOptions): InteractiveConsol
   function onData(key: string) {
     if (stopped || isPaused) return;
 
-    // Ctrl+C
+    // Ctrl+C — first graceful, second force-quit
     if (key === '\x03') {
+      if (quitRequested) {
+        // Second Ctrl+C — force quit immediately
+        stop();
+        console.log(chalk.red('\nForce quit. Exiting immediately.'));
+        process.exit(1);
+      }
+      quitRequested = true;
       if (onQuit) {
-        log(chalk.yellow('  ⏹  Stopping...'));
+        log(chalk.yellow('  ⏹  Stopping after current operation... (Ctrl+C again to force quit)'));
         onQuit();
       } else {
         stop();

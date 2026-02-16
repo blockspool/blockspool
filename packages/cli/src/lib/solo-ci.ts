@@ -301,7 +301,7 @@ export function extractFileFromStackLine(line: string): string | null {
 /**
  * Generate CI fix ticket description
  */
-export function generateCIFixDescription(failure: ParsedFailure, scope: string[], ciStatus: CIStatus): string {
+export function generateCIFixDescription(failure: ParsedFailure, scope: string[], _ciStatus: CIStatus): string {
   let desc = `## Task\n\nFix the CI failure detected in the latest run.\n\n`;
 
   desc += `## Failure Details\n\n`;

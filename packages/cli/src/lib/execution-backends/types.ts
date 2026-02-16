@@ -2,6 +2,8 @@
  * Execution backend types
  */
 
+import type { StreamJsonEvent } from '@blockspool/core/trace/shared';
+
 /**
  * Execution result with full details for artifact storage
  */
@@ -13,6 +15,10 @@ export interface ClaudeResult {
   exitCode: number | null;
   timedOut: boolean;
   durationMs: number;
+  /** Parsed JSONL events when using --output-format stream-json (undefined if text mode) */
+  traceEvents?: StreamJsonEvent[];
+  /** Per-event timestamps for liveness computation */
+  traceTimestamps?: number[];
 }
 
 /**
@@ -28,5 +34,7 @@ export interface ExecutionBackend {
     timeoutMs: number;
     verbose: boolean;
     onProgress: (msg: string) => void;
+    /** Stream raw stdout/stderr chunks for live TUI display */
+    onRawOutput?: (chunk: string) => void;
   }): Promise<ClaudeResult>;
 }

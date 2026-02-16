@@ -3,9 +3,14 @@
  *
  * Persists to `.blockspool/qa-stats.json` and provides:
  * - Per-command success/failure/timeout tracking
- * - Baseline result ring buffer for chronic failure detection
- * - Auto-tuning of QA config based on accumulated stats
+ * - Baseline result ring buffer for health monitoring
+ * - Auto-tuning of QA config (timeout adjustment)
  * - Confidence calibration from quality signals
+ *
+ * Philosophy: failing baseline commands are never disabled — they're
+ * skipped during QA verification (via the pass/fail map) and surfaced
+ * to the scout as high-priority healing targets. Only timeout-related
+ * config issues cause command demotion.
  */
 
 import * as fs from 'node:fs';
@@ -32,17 +37,11 @@ export interface QaCommandStats {
   recentBaselineResults: boolean[];
 }
 
-export interface DisabledCommand {
-  name: string;
-  reason: string;
-  disabledAt: number;
-}
-
 export interface QaStatsStore {
   commands: Record<string, QaCommandStats>;
   lastUpdated: number;
-  /** Commands disabled by auto-tune, persisted across restarts */
-  disabledCommands: DisabledCommand[];
+  /** @deprecated — no longer used. Baseline-failing commands are skipped, not disabled. */
+  disabledCommands: Array<{ name: string; reason: string; disabledAt: number }>;
   /** Quality rate when calibrateConfidence last adjusted (hysteresis) */
   lastCalibratedQualityRate: number | null;
 }
@@ -65,7 +64,6 @@ interface QaConfig {
 
 const QA_STATS_FILE = 'qa-stats.json';
 const MAX_BASELINE_RING = 10;
-const CHRONIC_FAILURE_THRESHOLD = 5;
 
 // ---------------------------------------------------------------------------
 // Async mutex (same pattern as run-state.ts)
@@ -108,36 +106,25 @@ export function loadQaStats(projectRoot: string): QaStatsStore {
 }
 
 /**
- * Reset QA stats for a fresh session start.
- * Clears disabled commands and baseline ring buffers so each session
- * gets a clean slate for auto-tuning. This prevents the catch-22 where
- * disabled commands can never re-enable because they never run.
- *
- * Returns the number of commands that were re-enabled.
+ * Reset QA execution streaks for a fresh session start.
+ * Preserves the baseline ring buffer for health monitoring.
  */
-export function resetQaStatsForSession(projectRoot: string): number {
+export function resetQaStatsForSession(projectRoot: string): void {
   const fp = statsPath(projectRoot);
-  if (!fs.existsSync(fp)) return 0;
+  if (!fs.existsSync(fp)) return;
 
   const store = loadQaStats(projectRoot);
-  const reEnabledCount = store.disabledCommands.length;
+  if (Object.keys(store.commands).length === 0) return;
 
-  if (reEnabledCount === 0 && Object.keys(store.commands).length === 0) {
-    return 0;
-  }
-
-  // Clear disabled commands - give them a fresh chance
-  store.disabledCommands = [];
-
-  // Clear baseline ring buffers - start fresh
   for (const name of Object.keys(store.commands)) {
-    store.commands[name].recentBaselineResults = [];
     store.commands[name].consecutiveFailures = 0;
     store.commands[name].consecutiveTimeouts = 0;
   }
 
+  // Clear stale disabledCommands — organic healing never disables
+  store.disabledCommands = [];
+
   saveQaStats(projectRoot, store);
-  return reEnabledCount;
 }
 
 export function saveQaStats(projectRoot: string, store: QaStatsStore): void {
@@ -255,97 +242,43 @@ export function getCommandSuccessRate(stats: QaCommandStats): number {
   return stats.successes / stats.totalRuns;
 }
 
-/**
- * Check if a command is chronically failing based on recent baseline results.
- * Returns true if the last CHRONIC_FAILURE_THRESHOLD baseline results are all false.
- */
-export function isChronicallyFailing(stats: QaCommandStats): boolean {
-  const recent = stats.recentBaselineResults;
-  if (recent.length < CHRONIC_FAILURE_THRESHOLD) return false;
-  const tail = recent.slice(-CHRONIC_FAILURE_THRESHOLD);
-  return tail.every(r => r === false);
-}
-
 // ---------------------------------------------------------------------------
-// Feature 3: Auto-Tune from Stats
+// Auto-Tune from Stats (timeout adjustment only)
 // ---------------------------------------------------------------------------
-
-/** Number of recent passing baselines needed to re-enable a disabled command */
-const RE_ENABLE_THRESHOLD = 3;
-
-/**
- * Check if a previously disabled command should be re-enabled.
- * Returns true if the last RE_ENABLE_THRESHOLD baseline results are all passing.
- */
-function shouldReEnable(stats: QaCommandStats): boolean {
-  const recent = stats.recentBaselineResults;
-  if (recent.length < RE_ENABLE_THRESHOLD) return false;
-  const tail = recent.slice(-RE_ENABLE_THRESHOLD);
-  return tail.every(r => r === true);
-}
 
 /**
  * Auto-tune QA config based on accumulated per-command stats.
  *
- * Persists disabled command decisions to qa-stats.json so they survive
- * process restarts. Commands are re-enabled if their recent baselines pass.
+ * Only adjusts timeouts for slow commands and demotes commands that
+ * consistently time out (config issue, not healable by code changes).
+ *
+ * Baseline-failing commands are NEVER disabled — they're skipped during
+ * QA verification via the pass/fail map and surfaced to the scout as
+ * high-priority healing targets through the baseline health block.
  */
 export function autoTuneQaConfig(
   projectRoot: string,
   qaConfig: QaConfig,
-): { config: QaConfig; disabled: Array<{ name: string; reason: string }>; reEnabled: string[] } {
+): { config: QaConfig; disabled: Array<{ name: string; reason: string }> } {
   const store = loadQaStats(projectRoot);
-  const newlyDisabled: Array<{ name: string; reason: string }> = [];
-  const reEnabled: string[] = [];
+  const disabled: Array<{ name: string; reason: string }> = [];
   const keptCommands: QaConfig['commands'] = [];
 
-  // Build set of previously persisted disabled names
-  const persistedDisabled = new Map(
-    store.disabledCommands.map(d => [d.name, d]),
-  );
-
-  // Check for re-enablement of previously disabled commands
-  for (const [name, entry] of persistedDisabled) {
-    const stats = store.commands[name];
-    if (stats && shouldReEnable(stats)) {
-      reEnabled.push(name);
-      persistedDisabled.delete(name);
-    }
-  }
-
   for (const cmd of qaConfig.commands) {
-    // Skip commands that are persisted-disabled (and not re-enabled)
-    if (persistedDisabled.has(cmd.name)) {
-      newlyDisabled.push({
-        name: cmd.name,
-        reason: persistedDisabled.get(cmd.name)!.reason + ' (persisted)',
-      });
-      continue;
-    }
-
     const stats = store.commands[cmd.name];
     if (!stats) {
       keptCommands.push(cmd);
       continue;
     }
 
-    // Rule 2: Chronic failure demotion
-    if (isChronicallyFailing(stats)) {
-      const reason = `Chronically failing (last ${CHRONIC_FAILURE_THRESHOLD} baselines all failed)`;
-      newlyDisabled.push({ name: cmd.name, reason });
-      persistedDisabled.set(cmd.name, { name: cmd.name, reason, disabledAt: Date.now() });
-      continue;
-    }
-
-    // Rule 3: Consecutive timeout demotion
+    // Consecutive timeout demotion (config issue — wrong command, missing deps)
     if (stats.consecutiveTimeouts >= 3 && stats.totalRuns >= 5) {
       const reason = `${stats.consecutiveTimeouts} consecutive timeouts (${stats.totalRuns} total runs)`;
-      newlyDisabled.push({ name: cmd.name, reason });
-      persistedDisabled.set(cmd.name, { name: cmd.name, reason, disabledAt: Date.now() });
+      disabled.push({ name: cmd.name, reason });
       continue;
     }
 
-    // Rule 1: Timeout adjustment
+    // Timeout adjustment for slow commands
     const currentTimeout = cmd.timeoutMs ?? 120_000;
     if (stats.avgDurationMs > currentTimeout * 0.8 && stats.totalRuns >= 5) {
       const newTimeout = Math.round(currentTimeout * 1.5);
@@ -355,17 +288,11 @@ export function autoTuneQaConfig(
     }
   }
 
-  // Persist disabled decisions to disk
-  store.disabledCommands = [...persistedDisabled.values()];
   saveQaStats(projectRoot, store);
 
   return {
-    config: {
-      ...qaConfig,
-      commands: keptCommands,
-    },
-    disabled: newlyDisabled,
-    reEnabled,
+    config: { ...qaConfig, commands: keptCommands },
+    disabled,
   };
 }
 
@@ -419,4 +346,56 @@ export function calibrateConfidence(
   }
 
   return delta;
+}
+
+// ---------------------------------------------------------------------------
+// Baseline health block for scout prompt
+// ---------------------------------------------------------------------------
+
+export function buildBaselineHealthBlock(projectRoot: string, currentScope?: string): string {
+  const baselinePath = path.join(projectRoot, '.blockspool', 'qa-baseline.json');
+  if (!fs.existsSync(baselinePath)) return '';
+  let data: any;
+  try {
+    data = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
+  } catch { return ''; }
+  if (!data.failures?.length) return '';
+
+  const details: Record<string, { cmd: string; output: string }> = data.details ?? {};
+  const lines: string[] = [
+    '<baseline-health>',
+    '## QA Baseline Failures (High Priority)',
+    'These QA commands fail BEFORE any changes (pre-existing).',
+    'Propose a targeted fix for one of these failures if it touches files in your current scope.',
+    'Healing these baselines is high-value work — it unblocks QA verification for all future tickets.',
+    '',
+  ];
+
+  // Scope filter: extract sector prefix (e.g., "scripts" from "scripts/**")
+  const scopePrefix = currentScope?.replace(/\/?\*\*?$/, '').replace(/\/$/, '') || '';
+
+  for (const name of data.failures) {
+    const detail = details[name];
+    lines.push(`### ${name}`);
+    if (detail?.cmd) lines.push(`Command: \`${detail.cmd}\``);
+    if (detail?.output) {
+      let outputLines = detail.output.split('\n');
+      // If scoped, filter to lines mentioning files in this sector
+      if (scopePrefix && scopePrefix !== '.') {
+        const scoped = outputLines.filter((l: string) => l.includes(scopePrefix));
+        if (scoped.length > 0) outputLines = scoped;
+      }
+      // Cap at 30 lines to avoid prompt bloat
+      if (outputLines.length > 30) {
+        outputLines = [...outputLines.slice(0, 28), `... (${outputLines.length - 28} more lines)`];
+      }
+      lines.push('```');
+      lines.push(...outputLines);
+      lines.push('```');
+    }
+    lines.push('');
+  }
+
+  lines.push('</baseline-health>');
+  return lines.join('\n');
 }

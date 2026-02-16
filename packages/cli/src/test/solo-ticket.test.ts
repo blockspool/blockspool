@@ -124,8 +124,7 @@ describe('solo-ticket: buildTicketPrompt', () => {
     const prompt = buildTicketPrompt(ticket);
 
     expect(prompt).toContain('## Verification');
-    expect(prompt).toContain('- `npm test`');
-    expect(prompt).toContain('- `npm run lint`');
+    expect(prompt).toContain('QA verification is handled automatically');
   });
 
   it('omits sections when arrays are empty', () => {
@@ -148,7 +147,8 @@ describe('solo-ticket: buildTicketPrompt', () => {
 
     expect(prompt).not.toContain('## Allowed Paths');
     expect(prompt).not.toContain('## Forbidden Paths');
-    expect(prompt).not.toContain('## Verification');
+    // Verification section is always present (QA is automated)
+    expect(prompt).toContain('## Verification');
   });
 
   it('includes all sections when all constraints present', () => {
@@ -217,7 +217,7 @@ describe('solo-ticket: runClaude', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'claude',
-      ['-p', '--dangerously-skip-permissions'],
+      ['-p', '--dangerously-skip-permissions', '--output-format', 'stream-json'],
       expect.objectContaining({
         cwd: '/tmp/worktree',
         env: expect.objectContaining({

@@ -5,7 +5,6 @@
 import chalk from 'chalk';
 import { readRunState, getQualityRate } from './run-state.js';
 import { loadQaStats } from './qa-stats.js';
-import { loadLearnings } from './learnings.js';
 import { computeCoverage, type SectorState } from './sectors.js';
 import { computeConvergenceMetrics } from './cycle-context.js';
 import { formatElapsed } from './solo-auto-utils.js';
@@ -37,6 +36,8 @@ export interface SessionSummaryContext {
   parallelOption: string | undefined;
   effectiveMinConfidence?: number;
   originalMinConfidence?: number;
+  completedDirectTicketCount?: number;
+  reportPath?: string;
 }
 
 /**
@@ -100,10 +101,12 @@ export function displayWheelHealth(ctx: SessionSummaryContext, verbose = false):
     console.log(chalk.gray(`  Confidence: ${effectiveConf}${deltaStr}`));
   }
 
-  // Disabled commands - only show if any
-  if (qaStats.disabledCommands.length > 0) {
-    const names = qaStats.disabledCommands.map(d => d.name).join(', ');
-    console.log(chalk.yellow(`  Disabled: ${names}`));
+  // Baseline failing commands — no longer disabled, surfaced for organic healing
+  const baselineFailNames = Object.values(qaStats.commands)
+    .filter(c => c.recentBaselineResults.length > 0 && c.recentBaselineResults.every(r => !r))
+    .map(c => c.name);
+  if (baselineFailNames.length > 0) {
+    console.log(chalk.yellow(`  Baseline failing: ${baselineFailNames.join(', ')}`));
   }
 
   // QA stats - only show problematic ones or in verbose mode
@@ -172,6 +175,7 @@ export function displayFinalSummary(ctx: SessionSummaryContext): void {
 
   console.log();
   console.log(chalk.bold('━'.repeat(50)));
+
   console.log(chalk.bold('Final Summary'));
   console.log();
   console.log(chalk.gray(`  Duration: ${formatElapsed(elapsed)}`));

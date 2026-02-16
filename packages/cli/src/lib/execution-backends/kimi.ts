@@ -24,8 +24,9 @@ export class KimiExecutionBackend implements ExecutionBackend {
     timeoutMs: number;
     verbose: boolean;
     onProgress: (msg: string) => void;
+    onRawOutput?: (chunk: string) => void;
   }): Promise<ClaudeResult> {
-    const { worktreePath, prompt, timeoutMs, verbose, onProgress } = opts;
+    const { worktreePath, prompt, timeoutMs, verbose, onProgress, onRawOutput } = opts;
     const startTime = Date.now();
 
     return new Promise<ClaudeResult>((resolve) => {
@@ -59,13 +60,16 @@ export class KimiExecutionBackend implements ExecutionBackend {
       proc.stdout.on('data', (data: Buffer) => {
         const text = data.toString();
         stdout += text;
+        onRawOutput?.(text);
         if (verbose) {
           onProgress(text.trim().slice(0, 100));
         }
       });
 
       proc.stderr.on('data', (data: Buffer) => {
-        stderr += data.toString();
+        const text = data.toString();
+        stderr += text;
+        onRawOutput?.(`[stderr] ${text}`);
       });
 
       proc.on('close', (code: number | null) => {

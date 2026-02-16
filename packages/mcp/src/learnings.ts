@@ -13,13 +13,14 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import {
   type Learning as CoreLearning,
+  type StructuredKnowledge,
   applyLearningsDecay,
   consolidateLearnings as coreConsolidate,
   LEARNINGS_DEFAULTS,
 } from '@blockspool/core/learnings/shared';
 
 // Re-export pure functions and types from core
-export type { Learning } from '@blockspool/core/learnings/shared';
+export type { Learning, StructuredKnowledge } from '@blockspool/core/learnings/shared';
 export {
   formatLearningsForPrompt,
   extractKeywords,
@@ -87,6 +88,7 @@ export function addLearning(
     category: Learning['category'];
     source: Learning['source'];
     tags?: string[];
+    structured?: StructuredKnowledge;
   },
 ): Learning {
   const learnings = readLearnings(projectRoot);
@@ -101,6 +103,7 @@ export function addLearning(
     created_at: now,
     last_confirmed_at: now,
     access_count: 0,
+    structured: input.structured,
   };
   learnings.push(learning);
   writeLearnings(projectRoot, learnings);

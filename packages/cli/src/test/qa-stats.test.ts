@@ -12,7 +12,6 @@ import {
   recordQaCommandResult,
   recordBaselineResult,
   getCommandSuccessRate,
-  isChronicallyFailing,
   autoTuneQaConfig,
   calibrateConfidence,
   type QaStatsStore,
@@ -258,38 +257,6 @@ describe('getCommandSuccessRate', () => {
 });
 
 // ---------------------------------------------------------------------------
-// isChronicallyFailing
-// ---------------------------------------------------------------------------
-
-describe('isChronicallyFailing', () => {
-  it('returns false with insufficient data', () => {
-    expect(isChronicallyFailing(makeStats({
-      recentBaselineResults: [false, false, false],
-    }))).toBe(false);
-  });
-
-  it('returns false when recent results include passes', () => {
-    expect(isChronicallyFailing(makeStats({
-      recentBaselineResults: [false, false, false, false, true],
-    }))).toBe(false);
-  });
-
-  it('returns true when last 5 baselines all fail', () => {
-    expect(isChronicallyFailing(makeStats({
-      recentBaselineResults: [true, true, false, false, false, false, false],
-    }))).toBe(true);
-  });
-
-  it('only looks at last 5 results', () => {
-    expect(isChronicallyFailing(makeStats({
-      recentBaselineResults: [false, false, false, false, false, true, false, false, false, false],
-    }))).toBe(false);
-    // Last 5: [true, false, false, false, false] — has a true, so not chronic
-    // Wait, slice(-5) of [f,f,f,f,f,t,f,f,f,f] = [t,f,f,f,f] — correct, not all false
-  });
-});
-
-// ---------------------------------------------------------------------------
 // autoTuneQaConfig
 // ---------------------------------------------------------------------------
 
@@ -303,10 +270,9 @@ describe('autoTuneQaConfig', () => {
     const result = autoTuneQaConfig(tmpDir, config);
     expect(result.config.commands).toHaveLength(2);
     expect(result.disabled).toHaveLength(0);
-    expect(result.reEnabled).toHaveLength(0);
   });
 
-  it('disables chronically failing commands', () => {
+  it('does not disable baseline-failing commands (they heal organically)', () => {
     writeStatsRaw({
       commands: {
         lint: makeStats({
@@ -325,10 +291,8 @@ describe('autoTuneQaConfig', () => {
     ]);
 
     const result = autoTuneQaConfig(tmpDir, config);
-    expect(result.config.commands).toHaveLength(1);
-    expect(result.config.commands[0].name).toBe('test');
-    expect(result.disabled).toHaveLength(1);
-    expect(result.disabled[0].name).toBe('lint');
+    expect(result.config.commands).toHaveLength(2);
+    expect(result.disabled).toHaveLength(0);
   });
 
   it('disables commands with consecutive timeouts', () => {
@@ -374,12 +338,16 @@ describe('autoTuneQaConfig', () => {
     expect(result.config.commands[0].timeoutMs).toBe(180_000); // 120k * 1.5
   });
 
-  it('persists disabled commands to disk', () => {
+  it('keeps all commands even with baseline failures', () => {
     writeStatsRaw({
       commands: {
         lint: makeStats({
           name: 'lint',
           recentBaselineResults: [false, false, false, false, false],
+        }),
+        test: makeStats({
+          name: 'test',
+          recentBaselineResults: [true, true, true],
         }),
       },
       lastUpdated: 0,
@@ -387,73 +355,14 @@ describe('autoTuneQaConfig', () => {
       lastCalibratedQualityRate: null,
     });
 
-    const config = makeQaConfig([{ name: 'lint', cmd: 'npm run lint' }]);
-    autoTuneQaConfig(tmpDir, config);
-
-    const store = readStatsRaw();
-    expect(store.disabledCommands).toHaveLength(1);
-    expect(store.disabledCommands[0].name).toBe('lint');
-  });
-
-  it('keeps persisted disabled commands across calls', () => {
-    writeStatsRaw({
-      commands: {
-        lint: makeStats({
-          name: 'lint',
-          recentBaselineResults: [false, false, false, false, false],
-        }),
-      },
-      lastUpdated: 0,
-      disabledCommands: [{ name: 'lint', reason: 'Chronically failing', disabledAt: Date.now() }],
-      lastCalibratedQualityRate: null,
-    });
-
-    const config = makeQaConfig([{ name: 'lint', cmd: 'npm run lint' }]);
+    const config = makeQaConfig([
+      { name: 'lint', cmd: 'npm run lint' },
+      { name: 'test', cmd: 'npm test' },
+    ]);
     const result = autoTuneQaConfig(tmpDir, config);
 
-    expect(result.config.commands).toHaveLength(0);
-    expect(result.disabled[0].reason).toContain('persisted');
-  });
-
-  it('re-enables commands when last 3 baselines pass', () => {
-    writeStatsRaw({
-      commands: {
-        lint: makeStats({
-          name: 'lint',
-          recentBaselineResults: [false, false, false, true, true, true],
-        }),
-      },
-      lastUpdated: 0,
-      disabledCommands: [{ name: 'lint', reason: 'Chronically failing', disabledAt: Date.now() }],
-      lastCalibratedQualityRate: null,
-    });
-
-    const config = makeQaConfig([{ name: 'lint', cmd: 'npm run lint' }]);
-    const result = autoTuneQaConfig(tmpDir, config);
-
-    expect(result.reEnabled).toContain('lint');
-    expect(result.config.commands).toHaveLength(1);
-    expect(result.config.commands[0].name).toBe('lint');
-  });
-
-  it('does not re-enable if only 2 recent baselines pass', () => {
-    writeStatsRaw({
-      commands: {
-        lint: makeStats({
-          name: 'lint',
-          recentBaselineResults: [false, false, true, true],
-        }),
-      },
-      lastUpdated: 0,
-      disabledCommands: [{ name: 'lint', reason: 'Chronically failing', disabledAt: Date.now() }],
-      lastCalibratedQualityRate: null,
-    });
-
-    const config = makeQaConfig([{ name: 'lint', cmd: 'npm run lint' }]);
-    const result = autoTuneQaConfig(tmpDir, config);
-
-    expect(result.reEnabled).toHaveLength(0);
-    expect(result.config.commands).toHaveLength(0);
+    expect(result.config.commands).toHaveLength(2);
+    expect(result.disabled).toHaveLength(0);
   });
 });
 

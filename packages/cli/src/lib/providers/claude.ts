@@ -9,7 +9,7 @@ export const claude: ProviderConfig = {
   defaultModel: 'opus',
   apiKeyEnvVar: 'ANTHROPIC_API_KEY',
   guidelinesFile: 'CLAUDE.md',
-  defaultScoutTimeoutMs: 120_000,
+  defaultScoutTimeoutMs: 0,
   defaultScoutConcurrency: 3,
   defaultBatchTokenBudget: 40_000,
   async createScoutBackend() {

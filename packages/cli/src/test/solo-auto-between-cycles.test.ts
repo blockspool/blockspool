@@ -140,7 +140,7 @@ function makeState(overrides: Partial<any> = {}): any {
       learningsDecayRate: 3,
     },
     config: { auto: {} },
-    isContinuous: false,
+    runMode: 'planning' as const,
     effectiveMinConfidence: 20,
     consecutiveLowYieldCycles: 0,
     pendingPrUrls: [],
@@ -319,7 +319,7 @@ describe('runPreCycleMaintenance', () => {
   // -----------------------------------------------------------------------
   it('returns shouldSkipCycle true when backpressure exceeds 0.7', async () => {
     const state = makeState({
-      isContinuous: true,
+      runMode: 'wheel' as const,
       pendingPrUrls: ['pr1', 'pr2', 'pr3', 'pr4', 'pr5', 'pr6', 'pr7', 'pr8'],
       maxPrs: 10,
       deliveryMode: 'pr',
@@ -334,7 +334,7 @@ describe('runPreCycleMaintenance', () => {
 
   it('does not skip when backpressure is at 0.7 exactly', async () => {
     const state = makeState({
-      isContinuous: true,
+      runMode: 'wheel' as const,
       pendingPrUrls: ['pr1', 'pr2', 'pr3', 'pr4', 'pr5', 'pr6', 'pr7'],
       maxPrs: 10,
       deliveryMode: 'pr',
@@ -348,7 +348,7 @@ describe('runPreCycleMaintenance', () => {
 
   it('does not apply backpressure in direct delivery mode', async () => {
     const state = makeState({
-      isContinuous: true,
+      runMode: 'wheel' as const,
       pendingPrUrls: ['pr1', 'pr2', 'pr3', 'pr4', 'pr5', 'pr6', 'pr7', 'pr8'],
       maxPrs: 10,
       deliveryMode: 'direct',

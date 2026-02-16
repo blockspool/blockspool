@@ -121,7 +121,7 @@ describe('validateProposalSchema', () => {
     expect(fields.length).toBeGreaterThan(3);
   });
 
-  it('validates array fields', () => {
+  it('validates array fields when present', () => {
     const result = validateProposalSchema(makeRaw({
       allowed_paths: 'not-an-array' as any,
       files: 'not-an-array' as any,
@@ -135,13 +135,23 @@ describe('validateProposalSchema', () => {
     expect(result).toContain('risk');
   });
 
-  it('requires touched_files_estimate as number', () => {
+  it('accepts missing touched_files_estimate (soft-required, defaults in normalize)', () => {
     const result = validateProposalSchema(makeRaw({ touched_files_estimate: undefined }));
+    expect(result).toBeNull();
+  });
+
+  it('rejects wrong-type touched_files_estimate', () => {
+    const result = validateProposalSchema(makeRaw({ touched_files_estimate: 'bad' as any }));
     expect(result).toContain('touched_files_estimate');
   });
 
-  it('requires rollback_note as string', () => {
+  it('accepts missing rollback_note (soft-required, defaults in normalize)', () => {
     const result = validateProposalSchema(makeRaw({ rollback_note: undefined }));
+    expect(result).toBeNull();
+  });
+
+  it('rejects wrong-type rollback_note', () => {
+    const result = validateProposalSchema(makeRaw({ rollback_note: 123 as any }));
     expect(result).toContain('rollback_note');
   });
 });

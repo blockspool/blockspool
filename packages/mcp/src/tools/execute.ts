@@ -8,7 +8,7 @@ import { repos } from '@blockspool/core';
 import type { Ticket } from '@blockspool/core';
 import { execSync } from 'node:child_process';
 import type { SessionManager } from '../state.js';
-import { deriveScopePolicy, isFileAllowed } from '../scope-policy.js';
+import { deriveScopePolicy, isFileAllowed, isCategoryFileAllowed } from '../scope-policy.js';
 
 /**
  * Allowlist of safe command prefixes for verification commands.
@@ -228,33 +228,45 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
       }
 
       // Use proper scope policy with minimatch-based validation
+      const s = state.run.require();
+      const worktreeRoot = s.direct ? undefined : `.blockspool/worktrees/${params.ticketId}`;
       const policy = deriveScopePolicy({
         allowedPaths: ticket.allowedPaths,
         category: ticket.category ?? 'fix',
         maxLinesPerTicket: 500,
+        worktreeRoot,
       });
 
       const violations: string[] = [];
+      const categoryViolations: string[] = [];
       for (const file of params.changedFiles) {
         if (!isFileAllowed(file, policy)) {
           violations.push(file);
+        } else if (!isCategoryFileAllowed(file, ticket.category ?? null)) {
+          categoryViolations.push(file);
         }
       }
 
-      if (violations.length > 0) {
+      if (violations.length > 0 || categoryViolations.length > 0) {
+        const allViolations = [...violations, ...categoryViolations];
         state.run.appendEvent('SCOPE_BLOCKED', {
           ticket_id: params.ticketId,
-          violations,
+          violations: allViolations,
+          category_violations: categoryViolations.length > 0 ? categoryViolations : undefined,
           allowed_paths: ticket.allowedPaths,
         });
+        const message = categoryViolations.length > 0
+          ? `Category "${ticket.category}" restricts file types. These files violate the restriction: ${categoryViolations.join(', ')}`
+          : 'Some changed files are outside the allowed scope. Revert those changes before completing.';
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({
               valid: false,
-              violations,
+              violations: allViolations,
+              categoryViolations: categoryViolations.length > 0 ? categoryViolations : undefined,
               allowedPaths: ticket.allowedPaths,
-              message: 'Some changed files are outside the allowed scope. Revert those changes before completing.',
+              message,
             }, null, 2),
           }],
         };

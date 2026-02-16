@@ -100,8 +100,9 @@ export class CodexExecutionBackend implements ExecutionBackend {
     timeoutMs: number;
     verbose: boolean;
     onProgress: (msg: string) => void;
+    onRawOutput?: (chunk: string) => void;
   }): Promise<ClaudeResult> {
-    const { worktreePath, prompt, timeoutMs, verbose, onProgress } = opts;
+    const { worktreePath, prompt, timeoutMs, verbose: _verbose, onProgress, onRawOutput } = opts;
     const startTime = Date.now();
 
     const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
@@ -127,7 +128,7 @@ export class CodexExecutionBackend implements ExecutionBackend {
 
         const env: Record<string, string> = { ...process.env } as Record<string, string>;
         if (this.apiKey) {
-          env.CODEX_API_KEY = this.apiKey;
+          env.OPENAI_API_KEY = this.apiKey;
         }
 
         const proc = spawn('codex', args, {
@@ -177,19 +178,26 @@ export class CodexExecutionBackend implements ExecutionBackend {
                 // Show full message for reasoning/commands
                 lastPhase = parsed.phase || lastPhase;
                 onProgress(`${parsed.phase}: ${parsed.message} (${elapsed})`);
+                onRawOutput?.(`[${parsed.phase}] ${parsed.message}\n`);
               } else if (parsed.phase) {
                 // Just phase update
                 lastPhase = parsed.phase;
                 const detail = parsed.detail ? `: ${parsed.detail}` : '';
                 onProgress(`${lastPhase}${detail} (${elapsed})`);
+                onRawOutput?.(`[${lastPhase}]${detail}\n`);
               }
+            } else {
+              // Unparsed lines: emit raw for TUI
+              onRawOutput?.(line + '\n');
             }
           }
           // Don't show raw JSONL even in verbose mode - it's not useful
         });
 
         proc.stderr.on('data', (data: Buffer) => {
-          stderr += data.toString();
+          const text = data.toString();
+          stderr += text;
+          onRawOutput?.(`[stderr] ${text}`);
         });
 
         proc.on('close', (code: number | null) => {

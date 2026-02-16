@@ -93,7 +93,7 @@ export interface BaselineInput {
  */
 export function generateBaselineGuidelines(
   input: BaselineInput,
-  backend: GuidelinesBackend = 'claude',
+  _backend: GuidelinesBackend = 'claude',
 ): string {
   const parts: string[] = [];
 

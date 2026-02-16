@@ -577,18 +577,18 @@ describe('per-file edit frequency tracking', () => {
     expect(state.warnings.some(w => w.includes('File churn'))).toBe(true);
   });
 
-  it('caps file_edit_counts at 50 keys', () => {
+  it('caps file_edit_counts at 200 keys', () => {
     const state = createSpindleState();
     const config = DEFAULT_SPINDLE_CONFIG;
 
-    // Build a diff with 60 files
+    // Build a diff with 250 files (exceeds the 200-key cap)
     const lines = [];
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 250; i++) {
       lines.push(`+++ b/src/file${i}.ts`, `+const x${i} = 1;`);
     }
     checkSpindleLoop(state, 'output', lines.join('\n'), config);
 
-    expect(Object.keys(state.fileEditCounts).length).toBeLessThanOrEqual(50);
+    expect(Object.keys(state.fileEditCounts).length).toBeLessThanOrEqual(200);
   });
 });
 

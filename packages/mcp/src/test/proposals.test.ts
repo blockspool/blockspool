@@ -350,7 +350,7 @@ describe('processEvent SCOUT_OUTPUT', () => {
   it('transitions to DONE when no proposals and retries exhausted', async () => {
     const s = run.require();
     s.phase = 'SCOUT';
-    s.scout_retries = 2;
+    s.scout_retries = 3;
 
     const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
       proposals: [],
@@ -378,7 +378,7 @@ describe('processEvent SCOUT_OUTPUT', () => {
   it('transitions to DONE when all proposals rejected after review and retries exhausted', async () => {
     const s = run.require();
     s.phase = 'SCOUT';
-    s.scout_retries = 2;
+    s.scout_retries = 3;
     // Use low impact score to trigger rejection
     s.pending_proposals = [makeProposal({ impact_score: 1, title: 'Too low impact' })];
 

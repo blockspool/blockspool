@@ -5,7 +5,11 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createRequire } from 'node:module';
 import chalk from 'chalk';
+
+const _require = createRequire(import.meta.url);
+const CLI_VERSION: string = _require('../../package.json').version;
 import { spawnSync } from 'node:child_process';
 import type { DatabaseAdapter } from '@blockspool/core/db';
 import type { ScoutBackend } from '@blockspool/core/services';
@@ -13,7 +17,6 @@ import { projects } from '@blockspool/core/repos';
 import { createGitService } from './git.js';
 import {
   getAdapter,
-  getBlockspoolDir,
   isInitialized,
   initSolo,
   loadConfig,
@@ -21,28 +24,25 @@ import {
 } from './solo-config.js';
 import { runPreflightChecks } from './solo-utils.js';
 import { readRunState } from './run-state.js';
-import type { RunTicketResult } from './solo-ticket-types.js';
-import { runClaude, type ExecutionBackend } from './execution-backends/index.js';
-import { getSessionPhase } from './solo-auto-utils.js';
+import { type ExecutionBackend } from './execution-backends/index.js';
 import { getCycleFormula as getCycleFormulaImpl, getCycleCategories as getCycleCategoriesImpl, type CycleFormulaContext } from './solo-cycle-formula.js';
 import {
   createMilestoneBranch,
   cleanupMilestone,
   pushAndPrMilestone,
   ensureDirectBranch,
+  cleanupMergedDirectBranch,
 } from './solo-git.js';
-import { startInteractiveConsole, type InteractiveConsole } from './solo-stdin.js';
-import { loadGuidelines, formatGuidelinesForPrompt } from './guidelines.js';
+import { startInteractiveConsole } from './solo-stdin.js';
+import { loadGuidelines } from './guidelines.js';
 import type { ProjectGuidelines, GuidelinesBackend } from './guidelines.js';
 import { loadLearnings, type Learning } from './learnings.js';
 import {
   loadDedupMemory,
   type DedupEntry,
 } from './dedup-memory.js';
-import { pruneStaleWorktrees } from './retention.js';
-import { resetQaStatsForSession, autoTuneQaConfig } from './qa-stats.js';
-import { captureQaBaseline } from './solo-ticket.js';
-import { normalizeQaConfig } from './solo-utils.js';
+import { pruneStaleWorktrees, pruneStaleBranches, pruneStaleCodexSessions, gitWorktreePrune, acquireSessionLock, releaseSessionLock } from './retention.js';
+import { resetQaStatsForSession } from './qa-stats.js';
 import {
   buildCodebaseIndex,
   type CodebaseIndex,
@@ -54,206 +54,68 @@ import {
   type SectorState,
 } from './sectors.js';
 import { loadTasteProfile } from './taste-profile.js';
-import type { TicketOutcome } from './run-history.js';
-import type { CycleSummary } from './cycle-context.js';
-import type { BatchProgressDisplay } from './spinner.js';
-import { initMetrics, closeMetrics, metric } from './metrics.js';
-
-// ── Options type (matches runAutoMode parameter) ────────────────────────────
-
-export interface AutoModeOptions {
-  // Primary options
-  hours?: string;
-  pr?: boolean;  // --pr flag sets deliveryMode to 'pr'
-  scope?: string;
-  formula?: string;
-  dryRun?: boolean;
-  verbose?: boolean;
-
-  // Secondary options (hidden but functional)
-  codex?: boolean;
-  safe?: boolean;
-  tests?: boolean;
-  yes?: boolean;
-  parallel?: string;
-  eco?: boolean;
-
-  // Legacy/advanced options (kept for backwards compat)
-  minutes?: string;
-  cycles?: string;
-  continuous?: boolean;
-  maxPrs?: string;
-  minConfidence?: string;
-  draft?: boolean;
-  deep?: boolean;
-  batchSize?: string;
-  scoutBackend?: string;
-  executeBackend?: string;
-  codexModel?: string;
-  kimiModel?: string;
-  codexUnsafeFullAccess?: boolean;
-  includeClaudeMd?: boolean;
-  batchTokenBudget?: string;
-  scoutTimeout?: string;
-  maxScoutFiles?: string;
-  docsAudit?: boolean;
-  docsAuditInterval?: string;
-  scoutConcurrency?: string;
-  codexMcp?: boolean;
-  localUrl?: string;
-  localModel?: string;
-  localMaxIterations?: string;
-  deliveryMode?: 'direct' | 'pr' | 'auto-merge';
-  directBranch?: string;
-  directFinalize?: 'pr' | 'merge' | 'none';
-  individualPrs?: boolean;
-  skipQaFix?: boolean;
-  /** Enable AI-powered QA baseline fix (off by default — modifies working tree) */
-  qaFix?: boolean;
-}
+import {
+  loadGoals, measureGoals, pickGoalByGap, recordGoalMeasurement,
+  type GoalMeasurement,
+} from './goals.js';
+import {
+  loadTrajectoryState,
+  loadTrajectory,
+} from './trajectory.js';
+import type { Trajectory, TrajectoryState, TrajectoryStep } from '@blockspool/core/trajectory/shared';
+import { getNextStep as getTrajectoryNextStep } from '@blockspool/core/trajectory/shared';
+import type { DisplayAdapter } from './display-adapter.js';
+import { SpinnerDisplayAdapter } from './display-adapter-spinner.js';
+import { LogDisplayAdapter } from './display-adapter-log.js';
+import { initMetrics, metric } from './metrics.js';
 
 // ── Session state ───────────────────────────────────────────────────────────
 
-export interface AutoSessionState {
-  // Options & config
-  options: AutoModeOptions;
-  config: ReturnType<typeof loadConfig>;
-  autoConf: Record<string, any>;
-  repoRoot: string;
+// RunMode and AutoModeOptions live in solo-auto-types.ts to avoid circular
+// imports; re-export them here for backwards compatibility.
+export type { RunMode, AutoModeOptions } from './solo-auto-types.js';
 
-  // Formula
+import type {
+  RunMode,
+  AutoModeOptions,
+  SessionOptions,
+  SessionConfig,
+  SessionRuntime,
+  SessionDeps,
+  SessionUI,
+} from './solo-auto-types.js';
+
+export type { SessionOptions, SessionConfig, SessionRuntime, SessionDeps, SessionUI };
+
+/**
+ * Full session state — extends all five sub-interfaces.
+ *
+ * Functions that need the full bag can take `AutoSessionState`.
+ * Functions that only need a subset can declare narrower types
+ * (e.g. `SessionConfig & SessionRuntime`).
+ */
+export interface AutoSessionState extends SessionOptions, SessionConfig, SessionRuntime, SessionDeps, SessionUI {}
+
+// ── Init — sub-functions ─────────────────────────────────────────────────────
+
+/** Resolved values from CLI options — no I/O, no side effects. */
+interface ResolvedOptions {
   activeFormula: import('./formulas.js').Formula | null;
-  deepFormula: import('./formulas.js').Formula | null;
-  docsAuditFormula: import('./formulas.js').Formula | null;
-  currentFormulaName: string;
-
-  // Timing
-  isContinuous: boolean;
   totalMinutes: number | undefined;
-  endTime: number | undefined;
-  startTime: number;
-
-  // Limits
-  maxPrs: number;
   maxCycles: number;
+  runMode: RunMode;
+  endTime: number | undefined;
+  maxPrs: number;
   minConfidence: number;
   useDraft: boolean;
-
-  // Milestone
-  milestoneMode: boolean;
   batchSize: number | undefined;
-  milestoneBranch: string | undefined;
-  milestoneWorktreePath: string | undefined;
-  milestoneTicketCount: number;
-  milestoneNumber: number;
-  totalMilestonePrs: number;
-  milestoneTicketSummaries: string[];
-
-  // Direct delivery
-  deliveryMode: 'direct' | 'pr' | 'auto-merge';
-  directBranch: string;
-  directFinalize: 'pr' | 'merge' | 'none';
-  completedDirectTickets: Array<{ title: string; category: string; files: string[] }>;
-
-  // Counters
-  totalPrsCreated: number;
-  totalFailed: number;
-  cycleCount: number;
-  allPrUrls: string[];
-  totalMergedPrs: number;
-  totalClosedPrs: number;
-  pendingPrUrls: string[];
-
-  // Sector
-  sectorState: SectorState | null;
-  currentSectorId: string | null;
-  currentSectorCycle: number;
-
-  // Quality
-  effectiveMinConfidence: number;
-  consecutiveLowYieldCycles: number;
-
-  // Phase
-  sessionPhase: 'warmup' | 'deep' | 'cooldown';
-
-  // Outcomes
-  allTicketOutcomes: TicketOutcome[];
-  cycleOutcomes: TicketOutcome[];
-
-  // PR meta tracking
-  prMetaMap: Map<string, { sectorId: string; formula: string }>;
-
-  // Guidelines
-  guidelines: ProjectGuidelines | null;
-  guidelinesOpts: { backend: GuidelinesBackend; autoCreate: boolean; customPath?: string };
-  guidelinesRefreshInterval: number;
-
-  // Learnings
-  allLearnings: Learning[];
-
-  // Dedup
-  dedupMemory: DedupEntry[];
-
-  // Codebase index
-  codebaseIndex: CodebaseIndex | null;
-  excludeDirs: string[];
-
-  // Project metadata
-  metadataBlock: string | null;
-
-  // Taste profile
-  tasteProfile: ReturnType<typeof loadTasteProfile>;
-
-  // Backend config
-  batchTokenBudget: number;
-  scoutConcurrency: number;
-  scoutTimeoutMs: number;
-  maxScoutFiles: number;
-  activeBackendName: string;
-
-  // Backends
-  scoutBackend: ScoutBackend | undefined;
-  executionBackend: ExecutionBackend | undefined;
-
-  // DB / project
-  adapter: DatabaseAdapter;
-  project: Awaited<ReturnType<typeof projects.ensureForRepo>>;
-  deps: ReturnType<typeof createScoutDeps>;
-  detectedBaseBranch: string;
-
-  // Shutdown / processing flags
-  shutdownRequested: boolean;
-  currentlyProcessing: boolean;
-
-  // Pull tracking
-  pullInterval: number;
-  pullPolicy: 'halt' | 'warn';
-  cyclesSinceLastPull: number;
-
-  // Scout retry
-  scoutRetries: number;
-  scoutedDirs: string[];
-
-  // Parallel
-  parallelExplicit: boolean;
-
-  // Scope
+  milestoneMode: boolean;
   userScope: string | undefined;
-
-  // Interactive console
-  interactiveConsole: InteractiveConsole | undefined;
-
-  // Helpers (closures that need state)
-  getCycleFormula: (cycle: number) => import('./formulas.js').Formula | null;
-  getCycleCategories: (formula: import('./formulas.js').Formula | null) => { allow: string[]; block: string[] };
-  finalizeMilestone: () => Promise<void>;
-  startNewMilestone: () => Promise<void>;
+  parallelExplicit: boolean;
 }
 
-// ── Init ────────────────────────────────────────────────────────────────────
-
-export async function initSession(options: AutoModeOptions): Promise<AutoSessionState> {
-  // Load formula if specified
+/** Parse CLI options into resolved values. Loads formula if specified. */
+async function resolveOptions(options: AutoModeOptions): Promise<ResolvedOptions> {
   let activeFormula: import('./formulas.js').Formula | null = null;
   if (options.formula) {
     const { loadFormula, listFormulas } = await import('./formulas.js');
@@ -272,39 +134,50 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     console.log();
   }
 
-  // Time handling: --hours accepts decimals (0.5 = 30min), --minutes is legacy
   const hoursValue = options.hours ? parseFloat(options.hours) : 0;
   const minutesValue = options.minutes ? parseFloat(options.minutes) : 0;
   const totalMinutes = (hoursValue * 60 + minutesValue) || undefined;
 
-  // Continuous mode: enabled by --hours, --continuous, or explicit --cycles > 1
-  const maxCycles = options.cycles ? parseInt(options.cycles, 10) : 1;
-  const isContinuous = options.continuous || totalMinutes !== undefined || maxCycles > 1;
+  const maxCycles = options.cycles ? parseInt(options.cycles, 10) : 999;
+  const explicitWheel = options.wheel || options.continuous;
+  const impliedWheel = totalMinutes !== undefined || (options.cycles && maxCycles > 1);
+  const runMode: RunMode = (explicitWheel || impliedWheel) ? 'wheel' : 'planning';
   const endTime = totalMinutes ? Date.now() + (totalMinutes * 60 * 1000) : undefined;
 
-  // PR limits: effectively unlimited for timed/continuous runs, otherwise use defaults
-  // Users can override with --max-prs
-  const defaultMaxPrs = isContinuous ? 999 : 3;
+  const defaultMaxPrs = runMode === 'wheel' ? 999 : 3;
   const maxPrs = parseInt(options.maxPrs || String(activeFormula?.maxPrs ?? defaultMaxPrs), 10);
   const minConfidence = parseInt(options.minConfidence || String(activeFormula?.minConfidence ?? DEFAULT_AUTO_CONFIG.minConfidence), 10);
   const useDraft = options.draft !== false;
 
-  // Milestone mode vs Direct mode:
-  // - Milestone mode: batches tickets into milestone PRs (good for PR-based workflows)
-  // - Direct mode: commits directly to a branch, no PRs by default (good for solo devs)
-  //
-  // Direct mode is the default (deliveryMode: 'direct').
-  // Milestone mode is enabled when:
-  // - deliveryMode is 'pr' or 'auto-merge', OR
-  // - --batch-size is explicitly set
-  //
-  // Use --individual-prs to create separate PR per ticket (disables milestone batching)
   const batchSize = options.batchSize ? parseInt(options.batchSize, 10) : undefined;
-  // Milestone mode is only enabled for PR-based delivery or explicit batch-size
   const milestoneMode = batchSize !== undefined && batchSize > 0;
-
   const userScope = options.scope || activeFormula?.scope;
+  const parallelExplicit = options.parallel !== undefined && options.parallel !== '3';
 
+  return {
+    activeFormula, totalMinutes, maxCycles, runMode, endTime,
+    maxPrs, minConfidence, useDraft, batchSize, milestoneMode,
+    userScope, parallelExplicit,
+  };
+}
+
+/** Environment result from initEnvironment. */
+interface EnvironmentResult {
+  repoRoot: string;
+  config: ReturnType<typeof loadConfig>;
+  autoConf: Record<string, any>;
+  cachedQaBaseline: Map<string, boolean> | null;
+  adapter: DatabaseAdapter;
+}
+
+/**
+ * Set up the execution environment: find repo, acquire lock, clean up stale
+ * resources, run setup command, QA baseline, preflight checks.
+ */
+async function initEnvironment(
+  options: AutoModeOptions,
+  resolved: ResolvedOptions,
+): Promise<EnvironmentResult> {
   const git = createGitService();
   const repoRoot = await git.findRepoRoot(process.cwd());
 
@@ -313,287 +186,87 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     process.exit(1);
   }
 
-  // Initialize metrics for this session
   initMetrics(repoRoot);
   metric('session', 'started', { codex: !!options.codex, hours: options.hours });
 
-  // Clean up stale worktrees from previous interrupted runs
+  // Session lock
+  const lockResult = acquireSessionLock(repoRoot);
+  if (!lockResult.acquired) {
+    console.error(chalk.red('✗ Another BlockSpool session is already running in this repo'));
+    process.exit(1);
+  }
+  if (lockResult.stalePid) {
+    console.log(chalk.gray(`  Cleaned up stale session lock (PID ${lockResult.stalePid})`));
+  }
+  const releaseLock = () => releaseSessionLock(repoRoot);
+  process.on('exit', releaseLock);
+
+  // Clean up stale resources
+  gitWorktreePrune(repoRoot);
   const prunedWorktrees = pruneStaleWorktrees(repoRoot);
   if (prunedWorktrees > 0) {
     console.log(chalk.gray(`  Cleaned up ${prunedWorktrees} stale worktree(s)`));
   }
-
-  // Reset QA stats for fresh auto-tuning each session
-  // This prevents the catch-22 where disabled commands can never re-enable
-  const reEnabledQa = resetQaStatsForSession(repoRoot);
-  if (reEnabledQa > 0) {
-    console.log(chalk.gray(`  Reset QA auto-tune (${reEnabledQa} command(s) re-enabled for fresh baseline)`));
+  const prunedBranches = pruneStaleBranches(repoRoot, 7);
+  if (prunedBranches > 0) {
+    console.log(chalk.gray(`  Cleaned up ${prunedBranches} stale branch(es)`));
   }
+  const prunedCodexSessions = pruneStaleCodexSessions(7);
+  if (prunedCodexSessions > 0) {
+    console.log(chalk.gray(`  Cleaned up ${prunedCodexSessions} stale codex session(s)`));
+  }
+
+  resetQaStatsForSession(repoRoot);
 
   let config = loadConfig(repoRoot);
 
-  // ── Pre-session QA Tuning ─────────────────────────────────────────────────
-  // Run all QA commands once upfront to establish baselines before any work.
-  // This "tunes" the auto-tune system so we know what's working immediately.
-  // If commands fail, offer to fix them first before proceeding.
-  if (config?.qa?.commands?.length && !options.dryRun) {
-    console.log(chalk.cyan('🎛️  Tuning QA baselines...'));
-    const qaConfig = normalizeQaConfig(config);
-
-    // Run each command to establish baseline
-    let baseline = await captureQaBaseline(repoRoot, config, (msg) => console.log(chalk.gray(msg)), repoRoot);
-
-    // Check for failures
-    const failingCommands = [...baseline.entries()].filter(([, r]) => !r.passed).map(([name]) => name);
-
-    // Try auto-fix for lint commands (--fix flag)
-    if (failingCommands.length > 0) {
-      const lintCommands = failingCommands.filter(name =>
-        name.toLowerCase().includes('lint') ||
-        qaConfig.commands.find(c => c.name === name)?.cmd.includes('eslint') ||
-        qaConfig.commands.find(c => c.name === name)?.cmd.includes('prettier')
-      );
-
-      if (lintCommands.length > 0) {
-        console.log(chalk.cyan('  🔧 Attempting auto-fix for lint issues...'));
-        for (const name of lintCommands) {
-          const cmd = qaConfig.commands.find(c => c.name === name);
-          if (!cmd) continue;
-
-          // Try adding --fix flag
-          const fixCmd = cmd.cmd.includes('--fix') ? cmd.cmd : `${cmd.cmd} --fix`;
-          try {
-            const { execFileSync } = await import('node:child_process');
-            execFileSync('sh', ['-c', fixCmd], {
-              cwd: cmd.cwd ? path.resolve(repoRoot, cmd.cwd) : repoRoot,
-              timeout: cmd.timeoutMs ?? 120_000,
-              stdio: 'pipe',
-            });
-            console.log(chalk.green(`    ✓ Auto-fixed: ${name}`));
-          } catch {
-            console.log(chalk.gray(`    • Could not auto-fix: ${name}`));
-          }
-        }
-
-        // Re-run baseline after auto-fix
-        console.log(chalk.gray('  Re-checking baselines...'));
-        // Reset stats before re-check
-        resetQaStatsForSession(repoRoot);
-        baseline = await captureQaBaseline(repoRoot, config, (msg) => console.log(chalk.gray(msg)), repoRoot);
-      }
-    }
-
-    // Check for remaining failures after auto-fix attempts
-    const stillFailing = [...baseline.entries()].filter(([, r]) => !r.passed).map(([name]) => name);
-
-    if (stillFailing.length > 0 && options.qaFix) {
-      // Try one AI fix cycle silently — no prompts, no wheel
-      console.log(chalk.gray(`  ${stillFailing.length} failing — trying quick fix...`));
-
-      const { ClaudeExecutionBackend, CodexExecutionBackend } = await import('./execution-backends/index.js');
-      const backend = options.codex
-        ? new CodexExecutionBackend({ model: options.codexModel })
-        : new ClaudeExecutionBackend();
-
-      // Build prompt with command info and error output
-      const failingDetails = stillFailing.map(name => {
-        const cmd = qaConfig.commands.find(c => c.name === name);
-        const result = baseline.get(name);
-        let detail = `## ${name}\nCommand: ${cmd?.cmd || name}`;
-        if (result?.output) {
-          detail += `\nError output:\n\`\`\`\n${result.output}\n\`\`\``;
-        }
-        return detail;
-      }).join('\n\n');
-
-      const fixPrompt = `These QA commands are failing. Fix the source code so they pass.
-
-${failingDetails}
-
-Read the error output above, then fix the source code. Minimal, targeted changes only.`;
-
-      const { createSpinner } = await import('./spinner.js');
-      const spinner = createSpinner(`Fixing ${stillFailing.length} QA issue(s)...`);
-
-      try {
-        await backend.run({
-          worktreePath: repoRoot,
-          prompt: fixPrompt,
-          timeoutMs: 0,
-          verbose: true,
-          onProgress: (msg) => spinner.update(msg),
-        });
-        spinner.stop();
-
-        // Re-check baselines
-        const checkSpinner = createSpinner('Re-checking baselines...');
-        resetQaStatsForSession(repoRoot);
-        baseline = await captureQaBaseline(repoRoot, config, (msg) => checkSpinner.update(msg), repoRoot);
-
-        const nowFailing = [...baseline.entries()].filter(([, r]) => !r.passed).map(([name]) => name);
-
-        if (nowFailing.length === 0) {
-          checkSpinner.succeed('All QA commands now passing!');
-        } else if (nowFailing.length < stillFailing.length) {
-          const fixed = stillFailing.length - nowFailing.length;
-          checkSpinner.succeed(`${fixed} fixed, ${nowFailing.length} still failing`);
-        } else {
-          checkSpinner.fail(`${nowFailing.length} still failing`);
-        }
-
-        // Update stillFailing for final reporting
-        stillFailing.length = 0;
-        stillFailing.push(...nowFailing);
-      } catch (err) {
-        spinner.fail(`Fix error: ${err instanceof Error ? err.message : err}`);
-      }
-      console.log();
-    }
-
-    // Persist baseline failures for inline prompts (plugin/MCP path)
+  // Project setup command
+  if (config?.setup && !options.dryRun) {
+    console.log(chalk.gray(`  Running setup: ${config.setup}`));
     try {
-      const baselineFailures = [...baseline.entries()]
-        .filter(([, r]) => !r.passed)
-        .map(([name]) => name);
-      const baselinePath = path.join(getBlockspoolDir(repoRoot), 'qa-baseline.json');
-      fs.writeFileSync(baselinePath, JSON.stringify({ failures: baselineFailures, timestamp: Date.now() }));
-    } catch { /* non-fatal */ }
-
-    // Now auto-tune based on final results
-    const tuneResult = autoTuneQaConfig(repoRoot, qaConfig);
-
-    const working = qaConfig.commands.length - tuneResult.disabled.length;
-    if (tuneResult.disabled.length > 0) {
-      console.log(chalk.yellow(`  ⚠ ${tuneResult.disabled.length} command(s) failing — will be skipped:`));
-      for (const d of tuneResult.disabled) {
-        console.log(chalk.gray(`    • ${d.name}`));
-      }
+      const { execSync } = await import('node:child_process');
+      execSync(config.setup, { cwd: repoRoot, timeout: 300_000, stdio: 'pipe' });
+      console.log(chalk.green('  ✓ Setup complete'));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(chalk.yellow(`  ⚠ Setup failed: ${msg.split('\n')[0]}`));
     }
-    if (working > 0) {
-      console.log(chalk.green(`  ✓ ${working} QA command(s) ready`));
-    } else {
-      console.log(chalk.yellow(`  ⚠ No QA commands passing — tickets won't be verified`));
-    }
+  }
 
-    // Update config with tuned commands
-    config = {
-      ...config,
-      qa: {
-        ...config.qa,
-        commands: tuneResult.config.commands.map(c => ({
-          name: c.name,
-          cmd: c.cmd,
-          cwd: c.cwd,
-          timeoutMs: c.timeoutMs,
-        })),
-      },
-    };
+  // QA baseline
+  let cachedQaBaseline: Map<string, boolean> | null = null;
+  if (config?.qa?.commands?.length && !options.dryRun) {
+    const { initQaBaseline } = await import('./solo-auto-init-qa.js');
+    const qaResult = await initQaBaseline(repoRoot, config, {
+      qaFix: !!options.qaFix,
+      codex: options.codex,
+      codexModel: options.codexModel,
+      dryRun: options.dryRun,
+    });
+    config = qaResult.config;
+    cachedQaBaseline = qaResult.qaBaseline;
+  }
+
+  // Auto-init if needed (before .gitignore and dirty check so the
+  // auto-committed .gitignore doesn't trip the "uncommitted changes" error)
+  if (!isInitialized(repoRoot)) {
+    console.log(chalk.cyan('First run — initializing BlockSpool...'));
+    const { detectedQa } = await initSolo(repoRoot);
+    if (detectedQa.length > 0) {
+      console.log(chalk.green(`  ✓ Detected QA: ${detectedQa.map(q => q.name).join(', ')}`));
+    }
+    console.log(chalk.green('  ✓ Ready'));
     console.log();
   }
 
-  // Session phase (initialized as deep)
-  const sessionPhase: 'warmup' | 'deep' | 'cooldown' = 'deep';
-
-  const DEEP_SCAN_INTERVAL = 5;
-  let deepFormula: import('./formulas.js').Formula | null = null;
-  let docsAuditFormula: import('./formulas.js').Formula | null = null;
-  if (!activeFormula) {
-    const { loadFormula: loadF } = await import('./formulas.js');
-    if (isContinuous) {
-      deepFormula = loadF('deep');
-    }
-    if (options.docsAudit !== false) {
-      docsAuditFormula = loadF('docs-audit');
+  // Ensure .blockspool is in .gitignore
+  const gitignorePath = path.join(repoRoot, '.gitignore');
+  if (fs.existsSync(gitignorePath)) {
+    const giContent = fs.readFileSync(gitignorePath, 'utf-8');
+    if (!giContent.includes('.blockspool')) {
+      fs.appendFileSync(gitignorePath, '\n# BlockSpool local state\n.blockspool/\n');
     }
   }
-
-  // Build getCycleFormula/getCycleCategories (need state reference — we'll patch after)
-  // These closures reference `state` which we build below.
-
-  // Single shutdown handler using a mutable reference.  Before `state` is
-  // constructed the reference points at a temporary flags object; once `state`
-  // exists we redirect it so the handler reads/writes `state` directly.
-  // This eliminates the old dual-handler pattern and the race window where a
-  // SIGINT could set a local variable that the state object never observed.
-  let shutdownRef: { shutdownRequested: boolean; currentlyProcessing: boolean } = {
-    shutdownRequested: false,
-    currentlyProcessing: false,
-  };
-
-  const shutdownHandler = () => {
-    if (shutdownRef.shutdownRequested) {
-      console.log(chalk.red('\nForce quit. Exiting immediately.'));
-      process.exit(1);
-    }
-    shutdownRef.shutdownRequested = true;
-    if (shutdownRef.currentlyProcessing) {
-      console.log(chalk.yellow('\nShutdown requested. Finishing current ticket...'));
-    } else {
-      console.log(chalk.yellow('\nShutdown requested. Exiting...'));
-      process.exit(0);
-    }
-  };
-
-  process.on('SIGINT', shutdownHandler);
-  process.on('SIGTERM', shutdownHandler);
-
-  const autoConf: Record<string, any> = { ...DEFAULT_AUTO_CONFIG, ...config?.auto };
-
-  // We need a temporary getFormulaCtx before state exists
-  const getFormulaCtx = (): CycleFormulaContext => ({
-    activeFormula, sessionPhase, deepFormula, docsAuditFormula,
-    isContinuous, repoRoot, options, config,
-    sectorProductionFileCount: undefined,
-  });
-  const getCycleFormula = (cycle: number) => getCycleFormulaImpl(getFormulaCtx(), cycle);
-  const getCycleCategories = (formula: typeof activeFormula) => getCycleCategoriesImpl(getFormulaCtx(), formula);
-
-  // Print header
-  const initialCategories = getCycleCategories(getCycleFormula(1));
-
-  console.log(chalk.blue('🧵 BlockSpool Auto'));
-  console.log();
-  if (isContinuous) {
-    console.log(chalk.gray('  Mode: Continuous (Ctrl+C to stop gracefully)'));
-    if (totalMinutes) {
-      const endDate = new Date(endTime!);
-      const budgetLabel = totalMinutes < 60
-        ? `${Math.round(totalMinutes)} minutes`
-        : totalMinutes % 60 === 0
-          ? `${totalMinutes / 60} hours`
-          : `${Math.floor(totalMinutes / 60)}h ${Math.round(totalMinutes % 60)}m`;
-      console.log(chalk.gray(`  Time budget: ${budgetLabel} (until ${endDate.toLocaleTimeString()})`));
-    }
-  } else {
-    console.log(chalk.gray('  Mode: Scout → Auto-approve → Run → PR'));
-  }
-  console.log(chalk.gray(`  Scope: ${userScope || (isContinuous ? 'rotating' : 'auto')}`));
-  console.log(chalk.gray(`  Categories: ${initialCategories.allow.join(', ')}`));
-
-  // Delivery mode resolution
-  // - 'direct': commits to a branch, no PRs (default)
-  // - 'pr': creates individual PRs per ticket
-  // - 'auto-merge': creates PRs with auto-merge enabled
-  const deliveryMode = options.deliveryMode ?? autoConf.deliveryMode ?? 'direct';
-  const directBranch = options.directBranch ?? autoConf.directBranch ?? 'blockspool-direct';
-  // Default to 'none' - no PR creation at end of session (truly "no PRs" by default)
-  const directFinalize = options.directFinalize ?? autoConf.directFinalize ?? 'none';
-  {
-    const finalizeLabel = directFinalize === 'none' ? 'no PR' : directFinalize;
-    console.log(chalk.gray(`  Delivery: ${deliveryMode}${deliveryMode === 'direct' ? ` (branch: ${directBranch}, finalize: ${finalizeLabel})` : ''}`));
-  }
-  if (milestoneMode) {
-    console.log(chalk.gray(`  Milestone mode: batch size ${batchSize}, max PRs ${maxPrs}`));
-    console.log(chalk.gray(`  Draft PRs: ${useDraft ? 'yes' : 'no'}`));
-  } else if (deliveryMode === 'pr' || deliveryMode === 'auto-merge') {
-    console.log(chalk.gray(`  Max PRs: ${maxPrs}`));
-  }
-  console.log();
-
-  // Start interactive console
-  let interactiveConsole: InteractiveConsole | undefined;
-  // Will be wired up to shutdownRequested after state is created
-  let requestShutdown: (() => void) | undefined;
 
   // Check working tree
   const statusResult = spawnSync('git', ['status', '--porcelain'], { cwd: repoRoot });
@@ -603,8 +276,8 @@ Read the error output above, then fix the source code. Minimal, targeted changes
     const onlyGitignore = modifiedFiles.length === 1 &&
       modifiedFiles[0].trim().endsWith('.gitignore');
     if (onlyGitignore) {
-      const gitignorePath = path.join(repoRoot, '.gitignore');
-      const content = fs.readFileSync(gitignorePath, 'utf-8');
+      const giPath = path.join(repoRoot, '.gitignore');
+      const content = fs.readFileSync(giPath, 'utf-8');
       if (content.includes('.blockspool')) {
         spawnSync('git', ['add', '.gitignore'], { cwd: repoRoot });
         spawnSync('git', ['commit', '-m', 'chore: add .blockspool to .gitignore'], { cwd: repoRoot });
@@ -617,13 +290,10 @@ Read the error output above, then fix the source code. Minimal, targeted changes
     }
   }
 
-  if (!isInitialized(repoRoot)) {
-    console.log(chalk.gray('Initializing BlockSpool...'));
-    await initSolo(repoRoot);
-  }
-
-  // Only require PR capability if we'll actually create PRs
-  const willCreatePrs = milestoneMode || deliveryMode === 'pr' || deliveryMode === 'auto-merge' || directFinalize === 'pr';
+  // Preflight — delivery mode isn't resolved yet (needs autoConf), so check
+  // the raw CLI flags. Config-level delivery defaults to 'direct' which
+  // doesn't need PR capabilities, so CLI flags are sufficient here.
+  const willCreatePrs = resolved.milestoneMode || options.deliveryMode === 'pr' || options.deliveryMode === 'auto-merge' || options.directFinalize === 'pr';
   const preflight = await runPreflightChecks(repoRoot, { needsPr: willCreatePrs });
   if (!preflight.ok) {
     console.error(chalk.red(`✗ ${preflight.error}`));
@@ -633,7 +303,64 @@ Read the error output above, then fix the source code. Minimal, targeted changes
     console.log(chalk.yellow(`⚠ ${warning}`));
   }
 
+  const autoConf: Record<string, any> = { ...DEFAULT_AUTO_CONFIG, ...config?.auto };
   const adapter = await getAdapter(repoRoot);
+
+  return { repoRoot, config, autoConf, cachedQaBaseline, adapter };
+}
+
+/** Loaded session data — read from disk, no external services. */
+interface SessionData {
+  deepFormula: import('./formulas.js').Formula | null;
+  docsAuditFormula: import('./formulas.js').Formula | null;
+  guidelines: ProjectGuidelines | null;
+  guidelinesOpts: { backend: GuidelinesBackend; autoCreate: boolean; customPath?: string };
+  guidelinesRefreshInterval: number;
+  allLearnings: Learning[];
+  dedupMemory: DedupEntry[];
+  codebaseIndex: CodebaseIndex | null;
+  excludeDirs: string[];
+  metadataBlock: string | null;
+  sectorState: SectorState | null;
+  tasteProfile: ReturnType<typeof loadTasteProfile>;
+  goals: import('./formulas.js').Formula[];
+  activeGoal: import('./formulas.js').Formula | null;
+  activeGoalMeasurement: GoalMeasurement | null;
+  activeTrajectory: Trajectory | null;
+  activeTrajectoryState: TrajectoryState | null;
+  currentTrajectoryStep: TrajectoryStep | null;
+  batchTokenBudget: number;
+  scoutConcurrency: number;
+  scoutTimeoutMs: number;
+  maxScoutFiles: number;
+  activeBackendName: string;
+}
+
+/**
+ * Load all session data from disk: formulas, guidelines, learnings, dedup
+ * memory, codebase index, metadata, sectors, goals, backend settings.
+ */
+async function loadSessionData(
+  options: AutoModeOptions,
+  resolved: ResolvedOptions,
+  repoRoot: string,
+  config: ReturnType<typeof loadConfig>,
+  autoConf: Record<string, any>,
+  cachedQaBaseline: Map<string, boolean> | null,
+  adapter: DatabaseAdapter,
+): Promise<SessionData> {
+  // Formulas for deep scan and docs audit
+  let deepFormula: import('./formulas.js').Formula | null = null;
+  let docsAuditFormula: import('./formulas.js').Formula | null = null;
+  if (!resolved.activeFormula) {
+    const { loadFormula: loadF } = await import('./formulas.js');
+    if (resolved.runMode === 'wheel') {
+      deepFormula = loadF('deep');
+    }
+    if (options.docsAudit !== false) {
+      docsAuditFormula = loadF('docs-audit');
+    }
+  }
 
   // Guidelines
   const guidelinesBackend: GuidelinesBackend =
@@ -659,14 +386,16 @@ Read the error output above, then fix the source code. Minimal, targeted changes
   // Wheel health summary
   {
     const { getQualityRate } = await import('./run-state.js');
-    const { loadQaStats } = await import('./qa-stats.js');
     const qualityRate = getQualityRate(repoRoot);
-    const qaStats = loadQaStats(repoRoot);
-    const disabledCount = qaStats.disabledCommands.length;
     const qualityPct = Math.round(qualityRate * 100);
     const confValue = autoConf.minConfidence ?? 20;
+    const baselineFailing = cachedQaBaseline
+      ? [...cachedQaBaseline.values()].filter(v => !v).length
+      : 0;
     const qualityColor = qualityRate < 0.5 ? chalk.yellow : chalk.gray;
-    console.log(qualityColor(`  Quality rate: ${qualityPct}% | Confidence: ${confValue} | Disabled: ${disabledCount} cmds`));
+    const healthParts = [`Quality rate: ${qualityPct}%`, `Confidence: ${confValue}`];
+    if (baselineFailing > 0) healthParts.push(`Baseline failing: ${baselineFailing}`);
+    console.log(qualityColor(`  ${healthParts.join(' | ')}`));
   }
 
   // Backend settings
@@ -694,8 +423,7 @@ Read the error output above, then fix the source code. Minimal, targeted changes
     console.log(chalk.gray(`  Dedup memory loaded: ${dedupMemory.length} titles`));
   }
 
-  // Codebase index — git tracking auto-excludes build artifacts (playwright-report, etc.)
-  // Hardcoded list is fallback for non-git repos
+  // Codebase index
   const excludeDirs = ['node_modules', 'dist', 'build', '.git', '.blockspool', 'coverage', '__pycache__'];
   let codebaseIndex: CodebaseIndex | null = null;
   try {
@@ -738,14 +466,94 @@ Read the error output above, then fix the source code. Minimal, targeted changes
   // Taste profile
   const tasteProfile = loadTasteProfile(repoRoot);
 
-  // Project & deps
+  // Goals
+  const goals = loadGoals(repoRoot);
+  let activeGoal: import('./formulas.js').Formula | null = null;
+  let activeGoalMeasurement: GoalMeasurement | null = null;
+  if (goals.length > 0 && !options.formula) {
+    console.log(chalk.cyan(`🎯 Goals loaded: ${goals.length}`));
+    const measurements = measureGoals(goals, repoRoot);
+    for (const m of measurements) {
+      if (m.current !== null) {
+        const arrow = m.direction === 'up' ? '↑' : '↓';
+        const statusIcon = m.met ? '✓' : '○';
+        console.log(chalk.gray(`  ${statusIcon} ${m.goalName}: ${m.current} ${arrow} ${m.target}${m.met ? ' (met)' : ` (gap: ${m.gapPercent}%)`}`));
+      } else {
+        console.log(chalk.yellow(`  ⚠ ${m.goalName}: measurement failed${m.error ? ` — ${m.error}` : ''}`));
+      }
+      recordGoalMeasurement(repoRoot, m);
+    }
+    const picked = pickGoalByGap(measurements);
+    if (picked) {
+      activeGoal = goals.find(g => g.name === picked.goalName) ?? null;
+      activeGoalMeasurement = picked;
+      console.log(chalk.cyan(`  → Active goal: ${picked.goalName} (gap: ${picked.gapPercent}%)`));
+    } else {
+      const allMet = measurements.every(m => m.met);
+      if (allMet) {
+        console.log(chalk.green(`  ✓ All goals met!`));
+      }
+    }
+    console.log();
+  }
+
+  // Trajectories
+  let activeTrajectory: Trajectory | null = null;
+  let activeTrajectoryState: TrajectoryState | null = null;
+  let currentTrajectoryStep: TrajectoryStep | null = null;
+  {
+    const trajState = loadTrajectoryState(repoRoot);
+    if (trajState && !trajState.paused) {
+      const traj = loadTrajectory(repoRoot, trajState.trajectoryName);
+      if (traj) {
+        activeTrajectory = traj;
+        activeTrajectoryState = trajState;
+        const nextStep = getTrajectoryNextStep(traj, trajState.stepStates);
+        if (nextStep) {
+          currentTrajectoryStep = nextStep;
+          activeTrajectoryState.currentStepId = nextStep.id;
+          const completed = traj.steps.filter(s => trajState.stepStates[s.id]?.status === 'completed').length;
+          console.log(chalk.cyan(`📐 Trajectory: ${traj.name} — step ${completed + 1}/${traj.steps.length}: ${nextStep.title}`));
+        } else {
+          console.log(chalk.green(`  ✓ Trajectory "${traj.name}" — all steps complete`));
+          activeTrajectory = null;
+          activeTrajectoryState = null;
+        }
+      }
+    }
+  }
+
+  return {
+    deepFormula, docsAuditFormula, guidelines, guidelinesOpts, guidelinesRefreshInterval,
+    allLearnings, dedupMemory, codebaseIndex, excludeDirs, metadataBlock,
+    sectorState, tasteProfile, goals, activeGoal, activeGoalMeasurement,
+    activeTrajectory, activeTrajectoryState, currentTrajectoryStep,
+    batchTokenBudget, scoutConcurrency, scoutTimeoutMs, maxScoutFiles, activeBackendName,
+  };
+}
+
+/** External service dependencies. */
+interface DepsResult {
+  project: Awaited<ReturnType<typeof projects.ensureForRepo>>;
+  deps: ReturnType<typeof createScoutDeps>;
+  scoutBackend: ScoutBackend | undefined;
+  executionBackend: ExecutionBackend | undefined;
+  detectedBaseBranch: string;
+}
+
+/** Initialize external dependencies: project, scout deps, backends, base branch. */
+async function initDependencies(
+  options: AutoModeOptions,
+  repoRoot: string,
+  autoConf: Record<string, any>,
+  adapter: DatabaseAdapter,
+): Promise<DepsResult> {
   const project = await projects.ensureForRepo(adapter, {
     name: path.basename(repoRoot),
     rootPath: repoRoot,
   });
   const deps = createScoutDeps(adapter, { verbose: options.verbose });
 
-  // Instantiate backends
   const { getProvider } = await import('./providers/index.js');
   let scoutBackend: ScoutBackend | undefined;
   let executionBackend: ExecutionBackend | undefined;
@@ -768,7 +576,7 @@ Read the error output above, then fix the source code. Minimal, targeted changes
   if (scoutBackendName !== 'claude') {
     if (scoutBackendName === 'codex' && options.codexMcp) {
       const { CodexMcpScoutBackend } = await import('@blockspool/core/scout');
-      scoutBackend = new CodexMcpScoutBackend({ apiKey: process.env.CODEX_API_KEY, model: options.codexModel });
+      scoutBackend = new CodexMcpScoutBackend({ apiKey: process.env.OPENAI_API_KEY, model: options.codexModel });
       console.log(chalk.cyan('  Scout: Codex MCP (persistent session)'));
     } else {
       const scoutProvider = getProvider(scoutBackendName);
@@ -790,7 +598,6 @@ Read the error output above, then fix the source code. Minimal, targeted changes
       maxIterations: options.localMaxIterations ? parseInt(options.localMaxIterations, 10) : undefined,
     });
 
-    // Non-Claude backends (Codex, Kimi) are slower — apply timeout multiplier
     if (!autoConf.timeoutMultiplier) {
       autoConf.timeoutMultiplier = 1.5;
     }
@@ -809,16 +616,31 @@ Read the error output above, then fix the source code. Minimal, targeted changes
     // Fall back to master
   }
 
-  // Branch initialization - mutually exclusive:
-  // - Milestone mode: creates milestone branches for batched PRs
-  // - Direct mode: commits directly to a single branch (no PRs)
+  return { project, deps, scoutBackend, executionBackend, detectedBaseBranch };
+}
+
+/** Branch initialization result. */
+interface BranchResult {
+  milestoneBranch: string | undefined;
+  milestoneWorktreePath: string | undefined;
+  milestoneNumber: number;
+}
+
+/** Initialize milestone or direct branches. */
+async function initBranches(
+  options: AutoModeOptions,
+  resolved: ResolvedOptions,
+  deliveryMode: string,
+  directBranch: string,
+  repoRoot: string,
+  detectedBaseBranch: string,
+): Promise<BranchResult> {
   let milestoneBranch: string | undefined;
   let milestoneWorktreePath: string | undefined;
   let milestoneNumber = 0;
 
   if (!options.dryRun) {
-    if (milestoneMode) {
-      // Milestone mode: create milestone branch for batched PR workflow
+    if (resolved.milestoneMode) {
       const ms = await createMilestoneBranch(repoRoot, detectedBaseBranch);
       milestoneBranch = ms.milestoneBranch;
       milestoneWorktreePath = ms.milestoneWorktreePath;
@@ -826,124 +648,91 @@ Read the error output above, then fix the source code. Minimal, targeted changes
       console.log(chalk.cyan(`Milestone branch: ${milestoneBranch}`));
       console.log();
     } else if (deliveryMode === 'direct') {
-      // Direct mode: commit directly to branch (no PRs by default)
+      const cleaned = await cleanupMergedDirectBranch(repoRoot, directBranch);
+      if (cleaned) console.log(chalk.gray(`  Cleaned up merged direct branch: ${directBranch}`));
       await ensureDirectBranch(repoRoot, directBranch, detectedBaseBranch);
       console.log(chalk.cyan(`Direct branch: ${directBranch}`));
       console.log();
     }
-    // Note: 'pr' and 'auto-merge' modes create per-ticket branches, no init needed
   }
 
-  const pullInterval = config?.auto?.pullEveryNCycles ?? 5;
-  const pullPolicy: 'halt' | 'warn' = config?.auto?.pullPolicy ?? 'halt';
-  const parallelExplicit = options.parallel !== undefined && options.parallel !== '3';
+  return { milestoneBranch, milestoneWorktreePath, milestoneNumber };
+}
 
-  // Build state object
-  const state: AutoSessionState = {
-    options,
-    config,
-    autoConf,
-    repoRoot,
+/** Print the session header to console. */
+function printSessionHeader(
+  resolved: ResolvedOptions,
+  deliveryMode: string,
+  directBranch: string,
+  directFinalize: string,
+  autoConf: Record<string, any>,
+  cachedQaBaseline: Map<string, boolean> | null,
+  getCycleFormula: (cycle: number) => import('./formulas.js').Formula | null,
+  getCycleCategories: (formula: import('./formulas.js').Formula | null) => { allow: string[]; block: string[] },
+) {
+  const { runMode, totalMinutes, endTime, userScope, milestoneMode, batchSize, maxPrs, useDraft } = resolved;
 
-    activeFormula,
-    deepFormula,
-    docsAuditFormula,
-    currentFormulaName: 'default',
+  const initialCategories = getCycleCategories(getCycleFormula(1));
 
-    isContinuous,
-    totalMinutes,
-    endTime,
-    startTime: Date.now(),
+  {
+    console.log(chalk.blue(`🧵 BlockSpool Auto v${CLI_VERSION}`));
+    console.log();
+    if (runMode === 'wheel') {
+      console.log(chalk.gray('  Mode: Wheel (Ctrl+C to stop gracefully)'));
+      if (totalMinutes) {
+        const endDate = new Date(endTime!);
+        const budgetLabel = totalMinutes < 60
+          ? `${Math.round(totalMinutes)} minutes`
+          : totalMinutes % 60 === 0
+            ? `${totalMinutes / 60} hours`
+            : `${Math.floor(totalMinutes / 60)}h ${Math.round(totalMinutes % 60)}m`;
+        console.log(chalk.gray(`  Time budget: ${budgetLabel} (until ${endDate.toLocaleTimeString()})`));
+        if ((totalMinutes ?? 0) >= 360) {
+          console.log(chalk.gray(`  Tip: For always-on improvement, try: blockspool solo daemon start`));
+        }
+      }
+    } else {
+      console.log(chalk.gray('  Mode: Planning (scout all → roadmap → approve → execute)'));
+    }
+  }
+  console.log(chalk.gray(`  Scope: ${userScope || (runMode === 'wheel' ? 'rotating' : 'all sectors')}`));
 
-    maxPrs,
-    maxCycles,
-    minConfidence,
-    useDraft,
+  const catDisplay = initialCategories.allow.join(', ');
+  const baselineFailCount = cachedQaBaseline
+    ? [...cachedQaBaseline.values()].filter(v => !v).length
+    : 0;
+  if (baselineFailCount > 0 && !initialCategories.allow.includes('fix')) {
+    console.log(chalk.gray(`  Categories: ${catDisplay} (+fix for baseline healing)`));
+  } else {
+    console.log(chalk.gray(`  Categories: ${catDisplay}`));
+  }
 
-    milestoneMode,
-    batchSize,
-    milestoneBranch,
-    milestoneWorktreePath,
-    milestoneTicketCount: 0,
-    milestoneNumber,
-    totalMilestonePrs: 0,
-    milestoneTicketSummaries: [],
+  {
+    const finalizeLabel = directFinalize === 'none' ? 'no PR' : directFinalize;
+    console.log(chalk.gray(`  Delivery: ${deliveryMode}${deliveryMode === 'direct' ? ` (branch: ${directBranch}, finalize: ${finalizeLabel})` : ''}`));
+  }
+  if (milestoneMode) {
+    console.log(chalk.gray(`  Milestone mode: batch size ${batchSize}, max PRs ${maxPrs}`));
+    console.log(chalk.gray(`  Draft PRs: ${useDraft ? 'yes' : 'no'}`));
+  } else if (deliveryMode === 'pr' || deliveryMode === 'auto-merge') {
+    console.log(chalk.gray(`  Max PRs: ${maxPrs}`));
+  }
+  console.log();
+}
 
-    deliveryMode,
-    directBranch,
-    directFinalize,
-    completedDirectTickets: [],
-
-    totalPrsCreated: 0,
-    totalFailed: 0,
-    cycleCount: 0,
-    allPrUrls: [],
-    totalMergedPrs: 0,
-    totalClosedPrs: 0,
-    pendingPrUrls: [],
-
-    sectorState,
-    currentSectorId: null,
-    currentSectorCycle: 0,
-
-    effectiveMinConfidence: autoConf.minConfidence ?? 20,
-    consecutiveLowYieldCycles: 0,
-
-    sessionPhase,
-    allTicketOutcomes: [],
-    cycleOutcomes: [],
-    prMetaMap: new Map(),
-
-    guidelines,
-    guidelinesOpts,
-    guidelinesRefreshInterval,
-
-    allLearnings,
-    dedupMemory,
-    codebaseIndex,
-    excludeDirs,
-    metadataBlock,
-    tasteProfile,
-
-    batchTokenBudget,
-    scoutConcurrency,
-    scoutTimeoutMs,
-    maxScoutFiles,
-    activeBackendName,
-
-    scoutBackend,
-    executionBackend,
-
-    adapter,
-    project,
-    deps,
-    detectedBaseBranch,
-
-    shutdownRequested: shutdownRef.shutdownRequested,  // carry over any early signal
-    currentlyProcessing: false,
-
-    pullInterval,
-    pullPolicy,
-    cyclesSinceLastPull: 0,
-
-    scoutRetries: 0,
-    scoutedDirs: [],
-
-    parallelExplicit,
-    userScope,
-    interactiveConsole,
-
-    // These closures capture `state` via the getFormulaCtx closure which reads sessionPhase.
-    // We need to patch them to read from state.
-    getCycleFormula: null as any,
-    getCycleCategories: null as any,
-    finalizeMilestone: null as any,
-    startNewMilestone: null as any,
-  };
-
+/**
+ * Patch closures on state that need a back-reference to the state object.
+ * Called after the state object is constructed.
+ */
+function patchStateClosures(
+  state: AutoSessionState,
+  shutdownRef: { shutdownRequested: boolean; currentlyProcessing: boolean },
+) {
   // Redirect shutdown handler to read/write state flags directly.
-  // No listener removal needed — same handler, just a new backing object.
-  shutdownRef = state;
+  Object.assign(shutdownRef, { shutdownRequested: state.shutdownRequested, currentlyProcessing: state.currentlyProcessing });
+  // Reassigning shutdownRef won't work here (local binding), so the caller
+  // passes the original object and we need to redirect at the call site.
+  // Instead, the caller will do: shutdownRef = state; after this call.
 
   // Patch formula helpers to read from state
   const stateFormulaCtx = (): CycleFormulaContext => ({
@@ -951,7 +740,7 @@ Read the error output above, then fix the source code. Minimal, targeted changes
     sessionPhase: state.sessionPhase,
     deepFormula: state.deepFormula,
     docsAuditFormula: state.docsAuditFormula,
-    isContinuous: state.isContinuous,
+    isContinuous: state.runMode === 'wheel',
     repoRoot: state.repoRoot,
     options: state.options,
     config: state.config,
@@ -959,7 +748,12 @@ Read the error output above, then fix the source code. Minimal, targeted changes
       ? state.sectorState?.sectors.find(s => s.path === state.currentSectorId)?.productionFileCount
       : undefined,
   });
-  state.getCycleFormula = (cycle: number) => getCycleFormulaImpl(stateFormulaCtx(), cycle);
+  state.getCycleFormula = (cycle: number) => {
+    if (state.activeGoal && !state.options.formula) {
+      return state.activeGoal;
+    }
+    return getCycleFormulaImpl(stateFormulaCtx(), cycle);
+  };
   state.getCycleCategories = (formula) => getCycleCategoriesImpl(stateFormulaCtx(), formula);
 
   // Milestone helpers
@@ -996,38 +790,249 @@ Read the error output above, then fix the source code. Minimal, targeted changes
     state.milestoneNumber++;
     console.log(chalk.cyan(`New milestone branch: ${state.milestoneBranch}`));
   };
+}
 
-  // Start interactive console now that state exists
-  if (isContinuous) {
-    state.interactiveConsole = startInteractiveConsole({
-      repoRoot,
-      onQuit: () => {
-        state.shutdownRequested = true;
-      },
-      onStatus: () => {
-        const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
-        const mins = Math.floor(elapsed / 60);
-        const secs = elapsed % 60;
-        console.log(chalk.cyan('\n  📊 Session Status:'));
-        console.log(chalk.gray(`    Cycle: ${state.cycleCount}`));
-        console.log(chalk.gray(`    Elapsed: ${mins}m ${secs}s`));
-        if (state.milestoneMode) {
-          console.log(chalk.gray(`    Tickets this milestone: ${state.milestoneTicketCount}`));
-          console.log(chalk.gray(`    Milestone PRs: ${state.totalMilestonePrs}/${state.maxPrs}`));
-        } else if (state.deliveryMode === 'direct') {
-          console.log(chalk.gray(`    Completed tickets: ${state.completedDirectTickets.length}`));
-        } else {
-          console.log(chalk.gray(`    PRs created: ${state.totalPrsCreated}/${state.maxPrs}`));
-        }
-        console.log(chalk.gray(`    Failed: ${state.totalFailed}`));
-        if (state.endTime) {
-          const remaining = Math.max(0, Math.floor((state.endTime - Date.now()) / 60000));
-          console.log(chalk.gray(`    Time remaining: ${remaining}m`));
-        }
-        console.log();
-      },
-    });
+/** Start the interactive console (wheel mode only, not in daemon mode). */
+function initInteractiveConsole(state: AutoSessionState) {
+  if (state.runMode !== 'wheel' || state.options.daemon) return;
+
+  state.interactiveConsole = startInteractiveConsole({
+    repoRoot: state.repoRoot,
+    onQuit: () => {
+      state.shutdownRequested = true;
+    },
+    onStatus: () => {
+      const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
+      const mins = Math.floor(elapsed / 60);
+      const secs = elapsed % 60;
+      console.log(chalk.cyan('\n  📊 Session Status:'));
+      console.log(chalk.gray(`    Cycle: ${state.cycleCount}`));
+      console.log(chalk.gray(`    Elapsed: ${mins}m ${secs}s`));
+      if (state.milestoneMode) {
+        console.log(chalk.gray(`    Tickets this milestone: ${state.milestoneTicketCount}`));
+        console.log(chalk.gray(`    Milestone PRs: ${state.totalMilestonePrs}/${state.maxPrs}`));
+      } else if (state.deliveryMode === 'direct') {
+        console.log(chalk.gray(`    Completed tickets: ${state.completedDirectTickets.length}`));
+      } else {
+        console.log(chalk.gray(`    PRs created: ${state.totalPrsCreated}/${state.maxPrs}`));
+      }
+      console.log(chalk.gray(`    Failed: ${state.totalFailed}`));
+      if (state.endTime) {
+        const remaining = Math.max(0, Math.floor((state.endTime - Date.now()) / 60000));
+        console.log(chalk.gray(`    Time remaining: ${remaining}m`));
+      }
+      console.log();
+    },
+  });
+}
+
+// ── Init ────────────────────────────────────────────────────────────────────
+
+export async function initSession(options: AutoModeOptions): Promise<AutoSessionState> {
+  const resolved = await resolveOptions(options);
+  const env = await initEnvironment(options, resolved);
+  const { repoRoot, config, autoConf, cachedQaBaseline, adapter } = env;
+
+  const sessionData = await loadSessionData(
+    options, resolved, repoRoot, config, autoConf, cachedQaBaseline, adapter,
+  );
+  const depsResult = await initDependencies(options, repoRoot, autoConf, adapter);
+
+  // Shutdown handler — mutable reference that gets redirected to state after construction
+  let shutdownRef: { shutdownRequested: boolean; currentlyProcessing: boolean } = {
+    shutdownRequested: false,
+    currentlyProcessing: false,
+  };
+
+  const shutdownHandler = () => {
+    if (shutdownRef.shutdownRequested) {
+      console.log(chalk.red('\nForce quit. Exiting immediately.'));
+      process.exit(1);
+    }
+    shutdownRef.shutdownRequested = true;
+    if (shutdownRef.currentlyProcessing) {
+      console.log(chalk.yellow('\nShutdown requested. Finishing current ticket then finalizing...'));
+    } else {
+      console.log(chalk.yellow('\nShutdown requested. Finalizing session...'));
+    }
+  };
+
+  // In daemon mode, the daemon loop handles signals itself
+  if (!options.daemon) {
+    process.on('SIGINT', shutdownHandler);
+    process.on('SIGTERM', shutdownHandler);
   }
+
+  // Temporary formula helpers for header printing (before state exists)
+  const sessionPhase: 'warmup' | 'deep' | 'cooldown' = 'deep';
+  const tmpFormulaCtx = (): CycleFormulaContext => ({
+    activeFormula: resolved.activeFormula,
+    sessionPhase,
+    deepFormula: sessionData.deepFormula,
+    docsAuditFormula: sessionData.docsAuditFormula,
+    isContinuous: resolved.runMode === 'wheel',
+    repoRoot,
+    options,
+    config,
+    sectorProductionFileCount: undefined,
+  });
+  const tmpGetCycleFormula = (cycle: number) => getCycleFormulaImpl(tmpFormulaCtx(), cycle);
+  const tmpGetCycleCategories = (formula: import('./formulas.js').Formula | null) =>
+    getCycleCategoriesImpl(tmpFormulaCtx(), formula);
+
+  // Delivery mode — need autoConf for defaults
+  const deliveryMode = options.deliveryMode ?? autoConf.deliveryMode ?? 'direct';
+  const directBranch = options.directBranch ?? autoConf.directBranch ?? 'blockspool-direct';
+  const directFinalize = options.directFinalize ?? autoConf.directFinalize ?? 'merge';
+
+  printSessionHeader(resolved, deliveryMode, directBranch, directFinalize, autoConf, cachedQaBaseline, tmpGetCycleFormula, tmpGetCycleCategories);
+
+  const branches = await initBranches(options, resolved, deliveryMode, directBranch, repoRoot, depsResult.detectedBaseBranch);
+
+  // Display adapter
+  let displayAdapter: DisplayAdapter;
+  if (options.daemon) {
+    displayAdapter = new LogDisplayAdapter();
+  } else {
+    const useTui = options.tui !== false && process.stdout.isTTY;
+    displayAdapter = new SpinnerDisplayAdapter();
+    if (useTui) {
+      const { TuiDisplayAdapter } = await import('./display-adapter-tui.js');
+      displayAdapter = new TuiDisplayAdapter({
+        repoRoot,
+        onQuit: () => { shutdownRef.shutdownRequested = true; },
+        onStatus: () => {
+          // Will be patched after state is created
+        },
+      });
+    }
+  }
+
+  const pullInterval = config?.auto?.pullEveryNCycles ?? 5;
+  const pullPolicy: 'halt' | 'warn' = config?.auto?.pullPolicy ?? 'halt';
+
+  // Build state object
+  const state: AutoSessionState = {
+    options,
+    config,
+    autoConf,
+    repoRoot,
+
+    activeFormula: resolved.activeFormula,
+    deepFormula: sessionData.deepFormula,
+    docsAuditFormula: sessionData.docsAuditFormula,
+    currentFormulaName: 'default',
+
+    runMode: resolved.runMode,
+    totalMinutes: resolved.totalMinutes,
+    endTime: resolved.endTime,
+    startTime: Date.now(),
+
+    maxPrs: resolved.maxPrs,
+    maxCycles: resolved.maxCycles,
+    minConfidence: resolved.minConfidence,
+    useDraft: resolved.useDraft,
+
+    milestoneMode: resolved.milestoneMode,
+    batchSize: resolved.batchSize,
+    milestoneBranch: branches.milestoneBranch,
+    milestoneWorktreePath: branches.milestoneWorktreePath,
+    milestoneTicketCount: 0,
+    milestoneNumber: branches.milestoneNumber,
+    totalMilestonePrs: 0,
+    milestoneTicketSummaries: [],
+
+    deliveryMode,
+    directBranch,
+    directFinalize,
+    completedDirectTickets: [],
+    allTraceAnalyses: [],
+
+    totalPrsCreated: 0,
+    totalFailed: 0,
+    cycleCount: 0,
+    allPrUrls: [],
+    totalMergedPrs: 0,
+    totalClosedPrs: 0,
+    pendingPrUrls: [],
+
+    sectorState: sessionData.sectorState,
+    currentSectorId: null,
+    currentSectorCycle: 0,
+    sessionScannedSectors: new Set(),
+
+    effectiveMinConfidence: autoConf.minConfidence ?? 20,
+    consecutiveLowYieldCycles: 0,
+
+    sessionPhase,
+    allTicketOutcomes: [],
+    cycleOutcomes: [],
+    prMetaMap: new Map(),
+
+    guidelines: sessionData.guidelines,
+    guidelinesOpts: sessionData.guidelinesOpts,
+    guidelinesRefreshInterval: sessionData.guidelinesRefreshInterval,
+
+    allLearnings: sessionData.allLearnings,
+    dedupMemory: sessionData.dedupMemory,
+    codebaseIndex: sessionData.codebaseIndex,
+    excludeDirs: sessionData.excludeDirs,
+    metadataBlock: sessionData.metadataBlock,
+    tasteProfile: sessionData.tasteProfile,
+
+    goals: sessionData.goals,
+    activeGoal: sessionData.activeGoal,
+    activeGoalMeasurement: sessionData.activeGoalMeasurement,
+
+    activeTrajectory: sessionData.activeTrajectory,
+    activeTrajectoryState: sessionData.activeTrajectoryState,
+    currentTrajectoryStep: sessionData.currentTrajectoryStep,
+
+    qaBaseline: cachedQaBaseline,
+
+    batchTokenBudget: sessionData.batchTokenBudget,
+    scoutConcurrency: sessionData.scoutConcurrency,
+    scoutTimeoutMs: sessionData.scoutTimeoutMs,
+    maxScoutFiles: sessionData.maxScoutFiles,
+    activeBackendName: sessionData.activeBackendName,
+
+    scoutBackend: depsResult.scoutBackend,
+    executionBackend: depsResult.executionBackend,
+
+    adapter,
+    project: depsResult.project,
+    deps: depsResult.deps,
+    detectedBaseBranch: depsResult.detectedBaseBranch,
+
+    shutdownRequested: shutdownRef.shutdownRequested,
+    currentlyProcessing: false,
+
+    pullInterval,
+    pullPolicy,
+    cyclesSinceLastPull: 0,
+
+    scoutRetries: 0,
+    scoutedDirs: [],
+
+    parallelExplicit: resolved.parallelExplicit,
+    userScope: resolved.userScope,
+    interactiveConsole: undefined,
+    displayAdapter,
+
+    getCycleFormula: null as any,
+    getCycleCategories: null as any,
+    finalizeMilestone: null as any,
+    startNewMilestone: null as any,
+  };
+
+  // Redirect shutdown handler to state
+  shutdownRef = state;
+
+  // Patch closures that need state reference
+  patchStateClosures(state, shutdownRef);
+
+  // Start interactive console
+  initInteractiveConsole(state);
 
   return state;
 }
@@ -1046,20 +1051,60 @@ export function shouldContinue(state: AutoSessionState): boolean {
   // Direct mode: no PR limit, just time/cycles
 
   if (state.endTime && Date.now() >= state.endTime) return false;
-  if (state.cycleCount >= state.maxCycles && !state.isContinuous) return false;
+  if (state.cycleCount >= state.maxCycles && state.runMode !== 'wheel') return false;
   return true;
 }
 
-export function getNextScope(state: AutoSessionState): string {
+/**
+ * Check if a sector has files modified since its last scan.
+ * Uses `git diff --name-only` against the sector's scope.
+ */
+function sectorHasChanges(repoRoot: string, sector: { path: string; lastScannedAt: number }): boolean {
+  if (sector.lastScannedAt === 0) return true; // never scanned = always scan
+  try {
+    const sinceDate = new Date(sector.lastScannedAt).toISOString();
+    const result = spawnSync('git', ['log', '--since', sinceDate, '--name-only', '--pretty=format:', '--', `${sector.path}/**`], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+    const changedFiles = (result.stdout ?? '').trim();
+    return changedFiles.length > 0;
+  } catch {
+    return true; // on error, assume changes exist
+  }
+}
+
+export function getNextScope(state: AutoSessionState): string | null {
   if (state.userScope) return state.userScope;
   if (state.sectorState) {
     const rs = readRunState(state.repoRoot);
     state.currentSectorCycle = rs.totalCycles;
-    const pick = pickNextSector(state.sectorState, state.currentSectorCycle);
-    if (pick) {
-      state.currentSectorId = pick.sector.path;
-      return pick.scope;
+
+    // Keep picking sectors until we find one with changes (or unscanned)
+    const tried = new Set<string>();
+    while (tried.size < state.sectorState.sectors.length) {
+      const pick = pickNextSector(state.sectorState, state.currentSectorCycle);
+      if (!pick) break;
+
+      if (tried.has(pick.sector.path)) break; // looped back
+      tried.add(pick.sector.path);
+
+      // Always scan each sector at least once per session; after that, only on changes
+      const scannedThisSession = state.sessionScannedSectors.has(pick.sector.path);
+      if (pick.sector.scanCount === 0 || !scannedThisSession || sectorHasChanges(state.repoRoot, pick.sector)) {
+        state.sessionScannedSectors.add(pick.sector.path);
+        state.currentSectorId = pick.sector.path;
+        return pick.scope;
+      }
+
+      // Mark as "just scanned" so pickNextSector moves to the next one
+      pick.sector.lastScannedCycle = state.currentSectorCycle;
     }
+
+    // All sectors scanned and no changes detected
+    state.currentSectorId = null;
+    return null;
   }
   state.currentSectorId = null;
   return '**';

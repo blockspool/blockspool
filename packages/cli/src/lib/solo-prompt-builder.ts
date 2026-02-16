@@ -63,20 +63,17 @@ export function buildTicketPrompt(ticket: NonNullable<Awaited<ReturnType<typeof 
     parts.push('');
   }
 
-  if (ticket.verificationCommands.length > 0) {
-    parts.push('## Verification');
-    parts.push('After making changes, verify with:');
-    for (const cmd of ticket.verificationCommands) {
-      parts.push(`- \`${cmd}\``);
-    }
-    parts.push('');
-  }
+  parts.push('## Verification');
+  parts.push('QA verification is handled automatically AFTER your changes — do NOT run test suites yourself.');
+  parts.push('Running tests wastes your time budget and they may have pre-existing failures unrelated to your work.');
+  parts.push('Focus only on making the code changes correctly.');
+  parts.push('');
 
   parts.push('## Instructions');
   parts.push('1. Analyze the codebase to understand the context');
   parts.push('2. Implement the required changes');
-  parts.push('3. Ensure all verification commands pass');
-  parts.push('4. Keep changes minimal and focused');
+  parts.push('3. Keep changes minimal and focused');
+  parts.push('4. Do NOT run test/build/lint commands — QA is automated after you finish');
 
   return parts.join('\n');
 }

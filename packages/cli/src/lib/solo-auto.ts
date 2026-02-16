@@ -1,16 +1,13 @@
 /**
- * Solo mode continuous execution
+ * Solo mode wheel execution
  */
 
-import * as path from 'node:path';
 import chalk from 'chalk';
-import type { DatabaseAdapter } from '@blockspool/core/db';
 import { projects, tickets, runs } from '@blockspool/core/repos';
 import { createGitService } from './git.js';
 import {
   getAdapter,
   isInitialized,
-  initSolo,
   loadConfig,
 } from './solo-config.js';
 import { soloRunTicket } from './solo-ticket.js';
@@ -19,7 +16,6 @@ import { loadGuidelines, formatGuidelinesForPrompt } from './guidelines.js';
 import {
   loadLearnings, addLearning, confirmLearning, recordAccess,
   formatLearningsForPrompt, selectRelevant, extractTags,
-  type Learning,
 } from './learnings.js';
 import { detectProjectMetadata, formatMetadataForPrompt } from './project-metadata/index.js';
 import { DEFAULT_AUTO_CONFIG } from './solo-config.js';
@@ -319,59 +315,87 @@ export async function runAutoWorkMode(options: {
 }
 
 /**
- * Run auto mode - the full "just run it" experience
- * Scout → auto-approve safe changes → run → create draft PRs
+ * Run auto mode - the full "just run it" experience.
+ *
+ * Defaults to planning mode: scout all → roadmap → approve → execute → done.
+ * With --wheel (or --hours): wheel loop — scout, fix, repeat.
+ *
+ * In daemon mode, returns the exit code instead of calling process.exit().
  */
-export async function runAutoMode(options: AutoModeOptions): Promise<void> {
+export async function runAutoMode(options: AutoModeOptions): Promise<number> {
   const state = await initSession(options);
 
   try {
-    do {
-      const preCycle = await runPreCycleMaintenance(state);
-      if (preCycle.shouldSkipCycle) continue;
-
-      const scoutResult = await runScoutPhase(state);
-      if (scoutResult.shouldBreak) break;
-      if (scoutResult.shouldRetry) continue;
-
-      const filterResult = await filterProposals(state, scoutResult.proposals, scoutResult.scope, scoutResult.cycleFormula);
-
-      // Diminishing returns: post-filter yield check
-      const LOW_YIELD_THRESHOLD = 0.2;
-      const MAX_LOW_YIELD_CYCLES = 3;
-      if (state.cycleCount > 2) {
-        const approved = filterResult.toProcess.length;
-        const scanned = Math.max(scoutResult.scoutResult?.scannedFiles ?? 1, 1);
-        const yieldRate = approved / scanned;
-        if (yieldRate < LOW_YIELD_THRESHOLD) {
-          state.consecutiveLowYieldCycles++;
-        } else {
-          state.consecutiveLowYieldCycles = 0;
-        }
-        if (state.consecutiveLowYieldCycles >= MAX_LOW_YIELD_CYCLES) {
-          const catNote = filterResult.categoryRejected > 0
-            ? ` (${filterResult.categoryRejected} proposals rejected by category — consider broadening categories)`
-            : '';
-          console.log(chalk.yellow(`  Diminishing returns: ${MAX_LOW_YIELD_CYCLES} consecutive low-yield cycles${catNote}. Stopping.`));
-          state.shutdownRequested = true;
-        }
-      }
-
-      if (filterResult.shouldBreak) break;
-      if (filterResult.shouldRetry) continue;
-
-      const execResult = await executeProposals(state, filterResult.toProcess);
-      if (execResult.shouldBreak) break;
-
-      await runPostCycleMaintenance(state, filterResult.scope, scoutResult.isDocsAuditCycle);
-    } while (shouldContinue(state));
+    if (state.runMode === 'planning') {
+      await runPlanningRound(state);
+    } else {
+      await runWheelMode(state);
+    }
 
     const exitCode = await finalizeSession(state);
-    process.exit(exitCode);
+    if (!options.daemon) {
+      process.exit(exitCode);
+    }
+    return exitCode;
   } catch (err) {
     // Best-effort finalization even on error — push milestone PRs, save state
     // finalizeSession handles its own resource cleanup in a finally block
-    try { await finalizeSession(state); } catch { /* already cleaned up */ }
+    let exitCode = 1;
+    try { exitCode = await finalizeSession(state); } catch { /* already cleaned up */ }
+    if (options.daemon) return exitCode;
     throw err;
   }
+}
+
+/**
+ * Wheel mode — scout, fix, repeat until stopped.
+ * Runs until Ctrl+C, --hours expires, or cycle/PR limits are hit.
+ */
+async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionState): Promise<void> {
+  do {
+    const preCycle = await runPreCycleMaintenance(state);
+    if (preCycle.shouldSkipCycle) continue;
+
+    const scoutResult = await runScoutPhase(state);
+    if (scoutResult.shouldBreak) break;
+    if (scoutResult.shouldRetry) continue;
+
+    const filterResult = await filterProposals(state, scoutResult.proposals, scoutResult.scope, scoutResult.cycleFormula);
+
+    if (filterResult.shouldBreak) break;
+    if (filterResult.shouldRetry) continue;
+
+    const execResult = await executeProposals(state, filterResult.toProcess);
+    if (execResult.shouldBreak) break;
+
+    await runPostCycleMaintenance(state, filterResult.scope, scoutResult.isDocsAuditCycle);
+  } while (shouldContinue(state));
+}
+
+/**
+ * Planning round — scout all sectors, present roadmap, execute approved set.
+ * Natural bounded end: no Ctrl+C needed.
+ */
+async function runPlanningRound(state: import('./solo-auto-state.js').AutoSessionState): Promise<void> {
+  const { scoutAllSectors, presentRoadmap } = await import('./solo-auto-planning.js');
+
+  // Phase 1: Scout all sectors
+  const { proposals, sectorsScanned } = await scoutAllSectors(state);
+
+  if (state.shutdownRequested) return;
+
+  state.displayAdapter.log('');
+  state.displayAdapter.log(chalk.gray(`Scanned ${sectorsScanned} sector(s), found ${proposals.length} proposal(s).`));
+
+  // Phase 2: Present roadmap and get approval
+  const { approved, cancelled } = await presentRoadmap(state, proposals);
+
+  if (cancelled || approved.length === 0) return;
+
+  // Phase 3: Execute approved proposals
+  state.displayAdapter.log('');
+  state.displayAdapter.log(chalk.bold(`Executing ${approved.length} approved proposal(s)...`));
+  state.displayAdapter.log('');
+
+  await executeProposals(state, approved);
 }

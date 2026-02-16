@@ -57,5 +57,14 @@ export * as sectors from './sectors/shared.js';
 // Wave scheduling shared algorithms
 export * as waves from './waves/shared.js';
 
+// Trace analysis shared algorithms
+export * as trace from './trace/shared.js';
+
+// Trajectory planning shared algorithms
+export * as trajectory from './trajectory/shared.js';
+
+// Centralized defaults
+export { SESSION_DEFAULTS, SCOUT_DEFAULTS, EXECUTION_DEFAULTS } from './config/defaults.js';
+
 // Utilities
 export * from './utils/index.js';

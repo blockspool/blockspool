@@ -12,6 +12,7 @@ import type { TicketProposal, ProposalCategory } from '@blockspool/core/scout';
 import { createGitService } from './git.js';
 import { createLogger } from './logger.js';
 import type { SpindleConfig } from './spindle/index.js';
+import type { DaemonConfig } from './daemon.js';
 import { detectProjectMetadata } from './project-metadata/index.js';
 import { LINTER_COMMANDS, TYPE_CHECKER_COMMANDS } from './tool-command-map.js';
 
@@ -36,6 +37,14 @@ export interface RetentionConfig {
   maxSpindleFileEditKeys: number;
   /** Keep last N local blockspool/* branches (default 10) */
   maxMergedBranches: number;
+  /** Delete unmerged blockspool/tkt_* branches older than N days (default 7) */
+  maxStaleBranchDays: number;
+  /** Rotate tui.log when it exceeds this size in bytes (default 1MB) */
+  maxLogSizeBytes: number;
+  /** Delete artifact files older than N days (default 14) */
+  maxArtifactAgeDays: number;
+  /** Keep last N lines in metrics.ndjson (default 500) */
+  maxMetricsEntries: number;
 }
 
 /**
@@ -48,8 +57,12 @@ export const DEFAULT_RETENTION_CONFIG: RetentionConfig = {
   maxSpoolArchives: 5,
   maxDeferredProposals: 20,
   maxCompletedTickets: 200,
-  maxSpindleFileEditKeys: 50,
+  maxSpindleFileEditKeys: 200,
   maxMergedBranches: 10,
+  maxStaleBranchDays: 7,
+  maxLogSizeBytes: 1_048_576, // 1MB
+  maxArtifactAgeDays: 14,
+  maxMetricsEntries: 500,
 };
 
 /**
@@ -60,10 +73,6 @@ export interface AutoConfig {
   blockCategories: string[];
   minConfidence: number;
   maxPrs: number;
-  maxFilesPerTicket: number;
-  maxLinesPerTicket: number;
-  draftPrs: boolean;
-  defaultScope: string;
   docsAudit: boolean;
   docsAuditInterval: number;
   /** Pull from origin every N cycles to stay current with team changes (0 = disabled, default 5) */
@@ -81,7 +90,7 @@ export interface AutoConfig {
    * Examples: "docs/GUIDELINES.md", "CONVENTIONS.md", false
    */
   guidelinesPath: string | false | null;
-  /** Enable adversarial proposal review — second-pass critique before acceptance (default: true) */
+  /** Enable adversarial proposal review — second-pass critique before acceptance (default: false) */
   adversarialReview: boolean;
   /** Enable cross-run learnings (default: true) */
   learningsEnabled: boolean;
@@ -91,16 +100,12 @@ export interface AutoConfig {
   learningsDecayRate: number;
   /** Token budget per scout batch (default: auto based on backend — 20k codex, 10k claude) */
   batchTokenBudget?: number;
-  /** Timeout per scout batch in ms (default: auto — 300s codex, 120s claude) */
+  /** Timeout per scout batch in ms (default: 0 = no timeout; override to set a hard limit) */
   scoutTimeoutMs?: number;
   /** Maximum files to scan per scout cycle (default: 60) */
   maxFilesPerCycle?: number;
   /** Max parallel scout batches (default: auto — 4 for codex, 3 for claude) */
   scoutConcurrency?: number;
-  /** Max fraction of test proposals per batch (default 0.4) */
-  maxTestRatio?: number;
-  /** Minimum impact score for proposals to be accepted (default 3). Static floor — no dynamic escalation. */
-  minImpactScore?: number;
   /** Per-category ticket timeouts in ms (e.g. { test: 300000, refactor: 600000 }) */
   categoryTimeouts?: Record<string, number>;
   /** Delivery mode: how completed work is shipped */
@@ -126,17 +131,14 @@ export interface AutoConfig {
 }
 
 /**
- * Default auto config - conservative "safe demo" settings
+ * Default auto config — permissive wheel settings.
+ * Let the scout and dedup do their jobs; don't gate artificially.
  */
 export const DEFAULT_AUTO_CONFIG: AutoConfig = {
-  allowCategories: ['refactor', 'docs', 'types', 'perf', 'security', 'fix', 'cleanup'],
-  blockCategories: ['deps', 'auth', 'config', 'migration'],
+  allowCategories: ['refactor', 'docs', 'types', 'perf', 'security', 'fix', 'cleanup', 'test'],
+  blockCategories: [],
   minConfidence: 0,
   maxPrs: 3,
-  maxFilesPerTicket: 10,
-  maxLinesPerTicket: 300,
-  draftPrs: true,
-  defaultScope: 'src',
   docsAudit: true,
   docsAuditInterval: 3,
   pullEveryNCycles: 5,
@@ -144,10 +146,11 @@ export const DEFAULT_AUTO_CONFIG: AutoConfig = {
   guidelinesRefreshCycles: 10,
   autoCreateGuidelines: true,
   guidelinesPath: null,
-  adversarialReview: true,
+  adversarialReview: false,
   learningsEnabled: true,
   learningsBudget: 2000,
   learningsDecayRate: 3,
+  conflictSensitivity: 'relaxed',
 };
 
 /**
@@ -184,6 +187,8 @@ export interface SoloConfig {
   retention?: Partial<RetentionConfig>;
   /** Max parallel tickets for plugin mode (default: 2, max: 5) */
   pluginParallel?: number;
+  /** Daemon mode configuration */
+  daemon?: Partial<DaemonConfig>;
   /** Saved Codex model choice (persisted across runs) */
   codexModel?: string;
   /**

@@ -9,6 +9,11 @@
     "./skills/cancel",
     "./skills/analytics",
     "./skills/audit",
-    "./skills/heal"
+    "./skills/heal",
+    "./skills/trajectory",
+    "./skills/formulas",
+    "./skills/history",
+    "./skills/scout",
+    "./skills/guidelines"
   ]
 }

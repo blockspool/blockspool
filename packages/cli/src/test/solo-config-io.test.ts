@@ -128,7 +128,11 @@ describe('loadConfig', () => {
   it('returns parsed config when config exists', async () => {
     const { loadConfig } = await import('../lib/solo-config.js');
     const config = { version: 1, repoRoot: '/repo', createdAt: '2025-01-01', dbPath: '/repo/.blockspool/state.sqlite' };
-    mockedFs.existsSync.mockReturnValue(true);
+    // Only return true for config.json path; false for setup-detection paths
+    // (package.json, pnpm-lock.yaml, etc.) so detectSetupCommand doesn't inject a setup field
+    mockedFs.existsSync.mockImplementation((p: fs.PathLike) => {
+      return String(p).includes('config.json');
+    });
     mockedFs.readFileSync.mockReturnValue(JSON.stringify(config));
     expect(loadConfig('/repo')).toEqual(config);
   });

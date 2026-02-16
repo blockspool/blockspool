@@ -39,7 +39,6 @@ import {
   buildSectors,
   normalizeSectorFields,
   mergeSectors,
-  sectorToScope,
   pickNextSector as pickNextSectorCore,
 } from '@blockspool/core/sectors/shared';
 

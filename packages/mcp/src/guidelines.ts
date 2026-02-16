@@ -11,7 +11,6 @@ import {
   type ProjectGuidelines,
   type GuidelinesBackend,
   resolveGuidelinesPaths,
-  formatGuidelinesForPrompt,
 } from '@blockspool/core/guidelines/shared';
 
 // Re-export types and pure functions

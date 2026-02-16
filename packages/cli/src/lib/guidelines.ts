@@ -13,7 +13,6 @@ import {
   type BaselineInput,
   resolveGuidelinesPaths,
   getBaselineFilename,
-  formatGuidelinesForPrompt,
   generateBaselineGuidelines,
 } from '@blockspool/core/guidelines/shared';
 

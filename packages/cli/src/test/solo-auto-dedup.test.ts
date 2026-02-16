@@ -5,15 +5,19 @@ import type { DatabaseAdapter } from '@blockspool/core/db';
 // execFile must call its callback with { stdout, stderr } because promisify
 // on a vi.fn() uses generic wrapping (no custom symbol), and gitExecFile
 // accesses result.stdout.
-vi.mock('node:child_process', () => ({
-  spawnSync: vi.fn(),
-  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, callback: Function) => {
-    const cb = typeof _opts === 'function' ? _opts : callback;
-    if (typeof cb === 'function') {
-      (cb as Function)(null, { stdout: '', stderr: '' });
-    }
-  }),
-}));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawnSync: vi.fn(),
+    execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, callback: Function) => {
+      const cb = typeof _opts === 'function' ? _opts : callback;
+      if (typeof cb === 'function') {
+        (cb as Function)(null, { stdout: '', stderr: '' });
+      }
+    }),
+  };
+});
 
 // Mock the repos
 vi.mock('@blockspool/core/repos', () => ({

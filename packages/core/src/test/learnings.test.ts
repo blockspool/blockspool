@@ -20,6 +20,7 @@ import {
   extractKeywords,
   extractTags,
   selectRelevant,
+  assessAdaptiveRisk,
   LEARNINGS_DEFAULTS,
 } from '../learnings/shared.js';
 
@@ -469,5 +470,305 @@ describe('selectRelevant', () => {
     const result = selectRelevant([gotcha, pattern], { commands: ['npm test'] });
     // gotcha should be boosted when commands are present
     expect(result[0].id).toBe('g');
+  });
+
+  // -- Structured knowledge scoring --
+
+  it('boosts learnings with matching cochange_files', () => {
+    const withCochange = makeLearning({
+      id: 'cochange',
+      text: 'Auth and middleware change together',
+      tags: ['path:src/auth'],
+      weight: 40,
+      structured: { cochange_files: ['src/auth/login.ts', 'src/middleware/auth.ts'], pattern_type: 'dependency' },
+    });
+    const plain = makeLearning({
+      id: 'plain',
+      text: 'Unrelated database tip',
+      tags: ['path:src/db'],
+      weight: 60,
+    });
+    // Context touches middleware — cochange learning should be boosted
+    const result = selectRelevant([withCochange, plain], { paths: ['src/middleware'] });
+    expect(result[0].id).toBe('cochange');
+  });
+
+  it('boosts learnings with matching fragile_paths', () => {
+    const fragile = makeLearning({
+      id: 'fragile',
+      text: 'Config file breaks easily',
+      tags: [],
+      weight: 40,
+      structured: { fragile_paths: ['src/config/settings.ts'] },
+    });
+    const normal = makeLearning({
+      id: 'normal',
+      text: 'Normal learning',
+      tags: [],
+      weight: 40,
+    });
+    // fragile_paths match adds +15, so fragile should rank higher
+    const result = selectRelevant([fragile, normal], { paths: ['src/config'] });
+    expect(result[0].id).toBe('fragile');
+  });
+
+  it('boosts learnings with matching failure_context command', () => {
+    const withFailure = makeLearning({
+      id: 'fail',
+      text: 'npm test fails on auth module',
+      tags: [],
+      weight: 30,
+      structured: { failure_context: { command: 'npm test', error_signature: 'TypeError: x is not a function' } },
+    });
+    const plain = makeLearning({
+      id: 'plain2',
+      text: 'Some other tip',
+      tags: [],
+      weight: 40,
+    });
+    const result = selectRelevant([withFailure, plain], { commands: ['npm test'] });
+    expect(result[0].id).toBe('fail');
+  });
+
+  it('boosts antipattern and dependency pattern types', () => {
+    const antipattern = makeLearning({
+      id: 'anti',
+      text: 'Do not use execSync here',
+      tags: ['path:src/lib'],
+      weight: 30,
+      structured: { pattern_type: 'antipattern' },
+    });
+    const plain = makeLearning({
+      id: 'plain3',
+      text: 'Some general tip',
+      tags: ['path:src/lib'],
+      weight: 30,
+    });
+    const result = selectRelevant([antipattern, plain], { paths: ['src/lib'] });
+    expect(result[0].id).toBe('anti');
+  });
+
+  it('handles learnings without structured field (backward compat)', () => {
+    const old = makeLearning({ id: 'old', text: 'Legacy learning', tags: ['path:src'], weight: 50 });
+    const newer = makeLearning({
+      id: 'new',
+      text: 'Structured learning',
+      tags: ['path:src'],
+      weight: 50,
+      structured: { cochange_files: ['src/a.ts', 'src/b.ts'], pattern_type: 'dependency' },
+    });
+    // Both should be returned without errors
+    const result = selectRelevant([old, newer], { paths: ['src'] });
+    expect(result).toHaveLength(2);
+    // Structured one should rank higher due to cochange bonus
+    expect(result[0].id).toBe('new');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatLearningsForPrompt with structured knowledge
+// ---------------------------------------------------------------------------
+
+describe('formatLearningsForPrompt with structured data', () => {
+  it('includes cochange annotation', () => {
+    const learnings = [makeLearning({
+      text: 'Auth files co-change',
+      weight: 80,
+      structured: { cochange_files: ['src/auth.ts', 'src/middleware.ts'] },
+    })];
+    const result = formatLearningsForPrompt(learnings);
+    expect(result).toContain('Co-change: src/auth.ts, src/middleware.ts');
+  });
+
+  it('includes root cause annotation', () => {
+    const learnings = [makeLearning({
+      text: 'Test fails because of env',
+      weight: 80,
+      structured: { root_cause: 'Missing DATABASE_URL environment variable' },
+    })];
+    const result = formatLearningsForPrompt(learnings);
+    expect(result).toContain('Cause: Missing DATABASE_URL environment variable');
+  });
+
+  it('includes error signature annotation', () => {
+    const learnings = [makeLearning({
+      text: 'QA fails on auth',
+      weight: 80,
+      structured: { failure_context: { command: 'npm test', error_signature: 'TypeError: x is not a function' } },
+    })];
+    const result = formatLearningsForPrompt(learnings);
+    expect(result).toContain('Error: TypeError: x is not a function');
+  });
+
+  it('includes fix_applied annotation', () => {
+    const learnings = [makeLearning({
+      text: 'Fixed by adding type guard',
+      weight: 80,
+      structured: { failure_context: { command: 'npm test', error_signature: 'TypeError', fix_applied: 'Added null check' } },
+    })];
+    const result = formatLearningsForPrompt(learnings);
+    expect(result).toContain('Fix: Added null check');
+  });
+
+  it('includes fragile paths annotation', () => {
+    const learnings = [makeLearning({
+      text: 'Config is fragile',
+      weight: 80,
+      structured: { fragile_paths: ['src/config.ts'] },
+    })];
+    const result = formatLearningsForPrompt(learnings);
+    expect(result).toContain('Fragile: src/config.ts');
+  });
+
+  it('omits structured annotation when no actionable data', () => {
+    const learnings = [makeLearning({
+      text: 'Pattern without details',
+      weight: 80,
+      structured: { pattern_type: 'convention' },
+    })];
+    const result = formatLearningsForPrompt(learnings);
+    expect(result).not.toContain('→');
+  });
+
+  it('renders multiple annotations separated by pipe', () => {
+    const learnings = [makeLearning({
+      text: 'Complex learning',
+      weight: 80,
+      structured: {
+        root_cause: 'Missing env var',
+        fragile_paths: ['src/config.ts'],
+      },
+    })];
+    const result = formatLearningsForPrompt(learnings);
+    expect(result).toContain('Fragile: src/config.ts');
+    expect(result).toContain('Cause: Missing env var');
+    expect(result).toContain(' | ');
+  });
+
+  it('respects budget with structured annotations', () => {
+    const learnings = Array.from({ length: 50 }, (_, i) => makeLearning({
+      id: `l-${i}`,
+      text: `Learning ${i}`,
+      weight: 100 - i,
+      structured: { cochange_files: ['src/a.ts', 'src/b.ts', 'src/c.ts'], root_cause: 'Some detailed cause here' },
+    }));
+    const result = formatLearningsForPrompt(learnings, 500);
+    expect(result.length).toBeLessThanOrEqual(500);
+  });
+
+  it('handles mix of structured and non-structured learnings', () => {
+    const learnings = [
+      makeLearning({ id: '1', text: 'Plain learning', weight: 80 }),
+      makeLearning({ id: '2', text: 'Structured learning', weight: 70, structured: { root_cause: 'env missing' } }),
+    ];
+    const result = formatLearningsForPrompt(learnings);
+    expect(result).toContain('Plain learning');
+    expect(result).toContain('Structured learning');
+    expect(result).toContain('Cause: env missing');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assessAdaptiveRisk
+// ---------------------------------------------------------------------------
+
+describe('assessAdaptiveRisk', () => {
+  it('returns low risk with no learnings', () => {
+    const result = assessAdaptiveRisk([], ['src/**']);
+    expect(result.level).toBe('low');
+    expect(result.score).toBe(0);
+    expect(result.failure_count).toBe(0);
+    expect(result.fragile_paths).toHaveLength(0);
+    expect(result.known_issues).toHaveLength(0);
+  });
+
+  it('returns low risk when no path overlap', () => {
+    const learnings = [makeLearning({
+      source: { type: 'qa_failure' },
+      tags: ['path:lib/utils'],
+      weight: 80,
+    })];
+    const result = assessAdaptiveRisk(learnings, ['src/**']);
+    expect(result.level).toBe('low');
+    expect(result.score).toBe(0);
+    expect(result.failure_count).toBe(0);
+  });
+
+  it('returns normal risk for single failure overlap', () => {
+    const learnings = [makeLearning({
+      source: { type: 'qa_failure' },
+      tags: ['path:src/auth'],
+      weight: 50,
+    })];
+    const result = assessAdaptiveRisk(learnings, ['src/auth']);
+    expect(result.level).toBe('normal');
+    expect(result.score).toBe(10); // 10 * (50/50) = 10
+    expect(result.failure_count).toBe(1);
+  });
+
+  it('returns elevated risk for multiple failures', () => {
+    const learnings = Array.from({ length: 4 }, (_, i) => makeLearning({
+      id: `fail-${i}`,
+      source: { type: 'qa_failure' },
+      tags: ['path:src/config'],
+      weight: 50,
+    }));
+    const result = assessAdaptiveRisk(learnings, ['src/config']);
+    // 4 * 10 * (50/50) = 40
+    expect(result.level).toBe('elevated');
+    expect(result.score).toBe(40);
+    expect(result.failure_count).toBe(4);
+  });
+
+  it('returns high risk with fragile paths and antipatterns', () => {
+    const learnings = Array.from({ length: 3 }, (_, i) => makeLearning({
+      id: `fragile-${i}`,
+      source: { type: 'qa_failure' },
+      tags: ['path:src/config'],
+      weight: 80,
+      structured: {
+        fragile_paths: ['src/config/settings.ts'],
+        pattern_type: 'antipattern',
+      },
+    }));
+    const result = assessAdaptiveRisk(learnings, ['src/config']);
+    // Each: 10*(80/50) + 8*(80/50) + 5*(80/50) = 16 + 12.8 + 8 = 36.8 → 3 * 36.8 = 110.4 → capped at 100
+    expect(result.level).toBe('high');
+    expect(result.score).toBeLessThanOrEqual(100);
+    expect(result.fragile_paths).toContain('src/config/settings.ts');
+  });
+
+  it('ignores success-sourced learnings', () => {
+    const learnings = [
+      makeLearning({
+        id: 'success',
+        source: { type: 'ticket_success' },
+        tags: ['path:src/auth'],
+        weight: 90,
+      }),
+      makeLearning({
+        id: 'review',
+        source: { type: 'review_downgrade' },
+        tags: ['path:src/auth'],
+        weight: 90,
+      }),
+    ];
+    const result = assessAdaptiveRisk(learnings, ['src/auth']);
+    expect(result.level).toBe('low');
+    expect(result.score).toBe(0);
+    expect(result.failure_count).toBe(0);
+  });
+
+  it('caps known_issues at 5', () => {
+    const learnings = Array.from({ length: 10 }, (_, i) => makeLearning({
+      id: `issue-${i}`,
+      text: `Known issue number ${i}`,
+      source: { type: 'qa_failure' },
+      tags: ['path:src/config'],
+      weight: 50,
+    }));
+    const result = assessAdaptiveRisk(learnings, ['src/config']);
+    expect(result.known_issues).toHaveLength(5);
+    expect(result.failure_count).toBe(10);
   });
 });

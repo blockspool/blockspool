@@ -18,11 +18,6 @@ const SUN_COLORS = [
   (s: string) => chalk.cyan(s),
 ];
 
-// Legacy frame sets (kept for compatibility)
-const BLOCK_FRAMES = ['▖', '▘', '▝', '▗'];
-const SPOOL_FRAMES = ['◐', '◓', '◑', '◒'];
-const CUBE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const STACK_FRAMES = ['░', '▒', '▓', '█', '▓', '▒'];
 
 export type SpinnerStyle = 'block' | 'spool' | 'cube' | 'stack' | 'sun';
 
@@ -36,14 +31,6 @@ export interface BlockSpinner {
   /** Stop and show a failure message */
   fail(message: string): void;
 }
-
-const FRAME_SETS: Record<SpinnerStyle, string[]> = {
-  block: BLOCK_FRAMES,
-  spool: SPOOL_FRAMES,
-  cube: CUBE_FRAMES,
-  stack: STACK_FRAMES,
-  sun: [SUN, SUN, SUN, SUN], // Same symbol, color changes
-};
 
 function formatElapsedCompact(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -172,7 +159,7 @@ export function createBatchProgress(totalBatches: number): BatchProgressDisplay 
 /**
  * Create and start a spinner with sun symbol cycling blue/green
  */
-export function createSpinner(message: string, style: SpinnerStyle = 'sun'): BlockSpinner {
+export function createSpinner(message: string, _style: SpinnerStyle = 'sun'): BlockSpinner {
   let frameIndex = 0;
   let currentMessage = message;
   let interval: ReturnType<typeof setInterval> | null = null;

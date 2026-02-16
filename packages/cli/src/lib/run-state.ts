@@ -223,14 +223,39 @@ export function recordFormulaTicketOutcome(repoRoot: string, formulaName: string
 /** Max age for deferred proposals (7 days) */
 const MAX_DEFERRED_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Promote out-of-scope proposals after ~2 full cycles */
+const PROMOTION_AGE_MS = 2 * 60 * 60 * 1000;
+
 /**
  * Defer a proposal for later when the scope matches.
  */
 export function deferProposal(repoRoot: string, proposal: DeferredProposal): Promise<void> {
   return withRunStateLock(() => {
     const state = readRunState(repoRoot);
+
     // Avoid duplicates by title
     if (state.deferredProposals.some(d => d.title === proposal.title)) return;
+
+    // File-overlap dedup: if an existing deferred proposal targets the same
+    // primary files, replace it (fresher description, updated timestamp).
+    const proposalFiles = new Set(proposal.allowed_paths);
+    if (proposalFiles.size > 0) {
+      const overlapIdx = state.deferredProposals.findIndex(d => {
+        const existingFiles = new Set(d.allowed_paths);
+        if (existingFiles.size === 0 || proposalFiles.size === 0) return false;
+        if (existingFiles.size !== proposalFiles.size) return false;
+        for (const f of proposalFiles) {
+          if (!existingFiles.has(f)) return false;
+        }
+        return true;
+      });
+      if (overlapIdx !== -1) {
+        state.deferredProposals[overlapIdx] = proposal;
+        writeRunState(repoRoot, state);
+        return;
+      }
+    }
+
     state.deferredProposals.push(proposal);
     writeRunState(repoRoot, state);
   });
@@ -250,7 +275,7 @@ export function popDeferredForScope(repoRoot: string, scope: string): DeferredPr
   const normalizedScope = scope.replace(/\*\*$/, '').replace(/\*$/, '').replace(/\/$/, '');
 
   const matched: DeferredProposal[] = [];
-  const remaining: DeferredProposal[] = [];
+  let remaining: DeferredProposal[] = [];
 
   for (const dp of state.deferredProposals) {
     // Prune stale
@@ -267,6 +292,19 @@ export function popDeferredForScope(repoRoot: string, scope: string): DeferredPr
       remaining.push(dp);
     }
   }
+
+  // Promote stale out-of-scope proposals: if a proposal has survived 2+
+  // full cycle durations it will never find a matching scope — promote it
+  // to the current cycle rather than letting it sit until the 7-day prune.
+  const stillRemaining: DeferredProposal[] = [];
+  for (const dp of remaining) {
+    if (now - dp.deferredAt > PROMOTION_AGE_MS) {
+      matched.push(dp);
+    } else {
+      stillRemaining.push(dp);
+    }
+  }
+  remaining = stillRemaining;
 
   if (matched.length > 0 || remaining.length !== state.deferredProposals.length) {
     state.deferredProposals = remaining;

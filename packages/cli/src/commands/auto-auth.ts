@@ -39,27 +39,9 @@ export async function resolveBackends(options: AuthOptions): Promise<{
   }
 
   // Auto-detect backend from environment if no explicit choice
+  // Default: Codex. Use --claude to opt into Claude.
   if (!options.codex && !options.claude && !options.kimi && !options.local && !options.scoutBackend && !options.executeBackend) {
-    const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
-    const hasCodex = !!process.env.CODEX_API_KEY;
-
-    if (hasAnthropic) {
-      // Anthropic key present → use Claude
-      options.claude = true;
-    } else if (hasCodex) {
-      // Only Codex key → use Codex
-      options.codex = true;
-      console.log(chalk.gray('Auto-detected: CODEX_API_KEY'));
-    } else {
-      // No API keys — check for codex login
-      const { spawnSync } = await import('node:child_process');
-      const loginCheck = spawnSync('codex', ['login', 'status'], { encoding: 'utf-8', timeout: 10000 });
-      if (loginCheck.status === 0) {
-        options.codex = true;
-        console.log(chalk.gray('Auto-detected: codex login'));
-      }
-      // If nothing found, will fail later with helpful error
-    }
+    options.codex = true;
   }
 
   if (options.codex) {
@@ -111,7 +93,7 @@ export async function resolveBackends(options: AuthOptions): Promise<{
       console.error(chalk.gray('  Or run from a regular terminal:'));
       console.error();
       console.error(chalk.white('    blockspool          # Claude (needs ANTHROPIC_API_KEY)'));
-      console.error(chalk.white('    blockspool --codex  # Codex (needs CODEX_API_KEY)'));
+      console.error(chalk.white('    blockspool --codex  # Codex (needs OPENAI_API_KEY)'));
       console.error();
       process.exit(1);
     } else {
@@ -127,19 +109,19 @@ export async function resolveBackends(options: AuthOptions): Promise<{
   if (needsClaude && !process.env.ANTHROPIC_API_KEY) {
     console.error(chalk.red('✗ ANTHROPIC_API_KEY not set'));
     console.error(chalk.gray('  Required for Claude backend. Set the env var, or use:'));
-    console.error(chalk.gray('    blockspool --codex  (uses CODEX_API_KEY or codex login)'));
+    console.error(chalk.gray('    blockspool --codex  (uses OPENAI_API_KEY or codex login)'));
     console.error(chalk.gray('    /blockspool:run    (inside Claude Code, uses subscription)'));
     process.exit(1);
   }
 
   // Auth: Codex lane
   if (needsCodex) {
-    if (!process.env.CODEX_API_KEY) {
+    if (!process.env.OPENAI_API_KEY) {
       const { spawnSync } = await import('node:child_process');
       const loginCheck = spawnSync('codex', ['login', 'status'], { encoding: 'utf-8', timeout: 10000 });
       if (loginCheck.status !== 0) {
         console.error(chalk.red('✗ Codex not authenticated'));
-        console.error(chalk.gray('  Set CODEX_API_KEY or run: codex login'));
+        console.error(chalk.gray('  Set OPENAI_API_KEY or run: codex login'));
         process.exit(1);
       }
     }
@@ -191,7 +173,7 @@ export async function resolveBackends(options: AuthOptions): Promise<{
 }
 
 async function resolveCodexModel(options: AuthOptions): Promise<void> {
-  const hasApiKey = !!process.env.CODEX_API_KEY;
+  const hasApiKey = !!process.env.OPENAI_API_KEY;
   const CODEX_MODELS = [
     { key: '1', name: 'gpt-5.3-codex', desc: 'Latest — strongest coding + reasoning (default)' },
     { key: '2', name: 'gpt-5.2-codex', desc: 'Previous generation' },
@@ -211,9 +193,9 @@ async function resolveCodexModel(options: AuthOptions): Promise<void> {
   if (options.codexModel) {
     // Explicit model — validate
     if (!hasApiKey && !LOGIN_SAFE_MODELS.includes(options.codexModel)) {
-      console.log(chalk.yellow(`\nModel "${options.codexModel}" requires CODEX_API_KEY (not available with codex login).`));
+      console.log(chalk.yellow(`\nModel "${options.codexModel}" requires OPENAI_API_KEY (not available with codex login).`));
       console.log(chalk.yellow(`Available models: ${LOGIN_SAFE_MODELS.join(', ')}`));
-      console.log(chalk.yellow('Set CODEX_API_KEY or choose a compatible model.\n'));
+      console.log(chalk.yellow('Set OPENAI_API_KEY or choose a compatible model.\n'));
       process.exit(1);
     }
     const earlyGit = createGitService();
@@ -232,7 +214,7 @@ async function resolveCodexModel(options: AuthOptions): Promise<void> {
 
   if (savedModel && ALL_MODEL_NAMES.includes(savedModel)) {
     if (!hasApiKey && !LOGIN_SAFE_MODELS.includes(savedModel)) {
-      console.log(chalk.yellow(`\nSaved model "${savedModel}" requires CODEX_API_KEY.`));
+      console.log(chalk.yellow(`\nSaved model "${savedModel}" requires OPENAI_API_KEY.`));
       console.log(chalk.yellow('Please select a compatible model:\n'));
     } else {
       options.codexModel = savedModel;

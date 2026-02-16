@@ -13,9 +13,14 @@ import {
   pushDirectBranch,
   createDirectSummaryPr,
   autoMergePr,
+  deleteTicketBranch,
+  deleteRemoteBranch,
+  gitExecFile,
 } from './solo-git.js';
 import { recordMergeOutcome, saveSectors } from './sectors.js';
 import { displayConvergenceSummary, displayWheelHealth, recordSessionHistory, displayFinalSummary, type SessionSummaryContext } from './solo-session-summary.js';
+import { generateSessionReport, writeSessionReport } from './session-report.js';
+import { writeDaemonWakeMetrics, type DaemonWakeMetrics } from './daemon.js';
 
 export async function finalizeSession(state: AutoSessionState): Promise<number> {
   let exitCode = 0;
@@ -24,6 +29,7 @@ export async function finalizeSession(state: AutoSessionState): Promise<number> 
   } finally {
     // Always release resources, even if finalization logic throws
     state.interactiveConsole?.stop();
+    try { state.displayAdapter.destroy(); } catch { /* best-effort */ }
     try { await state.adapter.close(); } catch { /* best-effort */ }
   }
   return exitCode;
@@ -82,7 +88,13 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
     } catch (err) {
       console.error(chalk.red(`  Direct finalize failed: ${err instanceof Error ? err.message : err}`));
     }
+
   }
+
+  // Return to base branch so user isn't left on a blockspool working branch
+  try {
+    await gitExecFile('git', ['checkout', state.detectedBaseBranch], { cwd: state.repoRoot });
+  } catch { /* non-fatal — user can checkout manually */ }
 
   // Final PR status poll
   if (state.allPrUrls.length > 0) {
@@ -103,6 +115,11 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
               source: { type: 'ticket_success', detail: 'pr_merged' },
               tags: [],
             });
+          }
+          // Clean up merged branch (local + remote)
+          if (pr.branch) {
+            await deleteTicketBranch(state.repoRoot, pr.branch).catch(() => {});
+            await deleteRemoteBranch(state.repoRoot, pr.branch).catch(() => {});
           }
         } else if (pr.state === 'closed') {
           state.totalClosedPrs++;
@@ -139,6 +156,41 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
   // Save final sector state
   if (state.sectorState) saveSectors(state.repoRoot, state.sectorState);
 
+  // Generate session report (before summary so we can show path in overnight output)
+  let reportPath: string | undefined;
+  try {
+    const reportCtx = {
+      repoRoot: state.repoRoot,
+      startTime: state.startTime,
+      cycleCount: state.cycleCount,
+      allPrUrls: state.allPrUrls,
+      totalPrsCreated: state.totalPrsCreated,
+      totalFailed: state.totalFailed,
+      totalMergedPrs: state.totalMergedPrs,
+      totalClosedPrs: state.totalClosedPrs,
+      totalMilestonePrs: state.totalMilestonePrs,
+      milestoneMode: state.milestoneMode,
+      isContinuous: state.runMode === 'wheel',
+      shutdownRequested: state.shutdownRequested,
+      maxPrs: state.maxPrs,
+      endTime: state.endTime,
+      totalMinutes: state.totalMinutes,
+      sectorState: state.sectorState,
+      allLearningsCount: state.allLearnings.length,
+      allTicketOutcomes: state.allTicketOutcomes,
+      activeFormula: state.activeFormula,
+      userScope: state.userScope,
+      parallelExplicit: state.parallelExplicit,
+      parallelOption: state.options.parallel,
+      completedDirectTickets: state.completedDirectTickets,
+      traceAnalyses: state.allTraceAnalyses,
+    };
+    const report = generateSessionReport(reportCtx);
+    reportPath = writeSessionReport(state.repoRoot, report);
+  } catch {
+    // Non-fatal
+  }
+
   // Summary
   const summaryCtx: SessionSummaryContext = {
     repoRoot: state.repoRoot,
@@ -151,7 +203,7 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
     totalClosedPrs: state.totalClosedPrs,
     totalMilestonePrs: state.totalMilestonePrs,
     milestoneMode: state.milestoneMode,
-    isContinuous: state.isContinuous,
+    isContinuous: state.runMode === 'wheel',
     shutdownRequested: state.shutdownRequested,
     maxPrs: state.maxPrs,
     endTime: state.endTime,
@@ -165,11 +217,31 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
     parallelOption: state.options.parallel,
     effectiveMinConfidence: state.effectiveMinConfidence,
     originalMinConfidence: state.autoConf.minConfidence ?? 20,
+    completedDirectTicketCount: state.completedDirectTickets.length,
+    reportPath,
   };
   displayConvergenceSummary(summaryCtx);
   displayWheelHealth(summaryCtx);
   await recordSessionHistory(summaryCtx);
   displayFinalSummary(summaryCtx);
+
+  if (reportPath) {
+    console.log(chalk.gray(`  Report: ${reportPath}`));
+  }
+
+  // Persist wake metrics for daemon notification consumption
+  if (state.options.daemon) {
+    try {
+      const metrics: DaemonWakeMetrics = {
+        cyclesCompleted: state.cycleCount,
+        ticketsCompleted: state.completedDirectTickets.length + state.totalPrsCreated,
+        ticketsFailed: state.totalFailed,
+        prUrls: [...state.allPrUrls],
+        reportPath,
+      };
+      writeDaemonWakeMetrics(state.repoRoot, metrics);
+    } catch { /* non-fatal */ }
+  }
 
   return state.totalFailed > 0 && state.allPrUrls.length === 0 ? 1 : 0;
 }

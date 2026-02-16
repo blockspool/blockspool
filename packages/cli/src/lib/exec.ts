@@ -28,10 +28,10 @@ export interface NodeExecRunnerOptions {
  */
 
 /** Maximum bytes to write per output stream (stdout/stderr). Prevents runaway disk usage. */
-const DEFAULT_MAX_LOG_BYTES = 200_000; // 200KB per stream
+const DEFAULT_MAX_LOG_BYTES = 2_000_000; // 2MB per stream
 
 /** Bytes to retain in memory for the tail buffer, used for fast UI display. */
-const DEFAULT_TAIL_BYTES = 16_384; // 16KB tail for fast UI
+const DEFAULT_TAIL_BYTES = 65_536; // 64KB tail for fast UI
 
 /** Grace period in ms between SIGTERM and SIGKILL when killing a child process. */
 const DEFAULT_KILL_GRACE_MS = 1_500;

@@ -34,13 +34,7 @@ vi.mock('../lib/run-state.js', () => ({
   readRunState: vi.fn().mockReturnValue({ totalCycles: 5, formulaStats: {} }),
 }));
 
-vi.mock('../lib/qa-stats.js', () => ({
-  autoTuneQaConfig: vi.fn().mockReturnValue({
-    config: { commands: [] },
-    disabled: [],
-    reEnabled: [],
-  }),
-}));
+vi.mock('../lib/qa-stats.js', () => ({}));
 
 vi.mock('../lib/learnings.js', () => ({
   addLearning: vi.fn(),
@@ -158,7 +152,6 @@ import { executeProposals } from '../lib/solo-auto-execute.js';
 import { soloRunTicket } from '../lib/solo-ticket.js';
 import { recordQualitySignal, recordFormulaTicketOutcome, pushRecentDiff } from '../lib/run-state.js';
 import { recordDedupEntry } from '../lib/dedup-memory.js';
-import { autoTuneQaConfig } from '../lib/qa-stats.js';
 import { addLearning } from '../lib/learnings.js';
 import { shouldContinue } from '../lib/solo-auto-state.js';
 import { recordTicketOutcome } from '../lib/sectors.js';
@@ -202,7 +195,7 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
     docsAuditFormula: null,
     currentFormulaName: 'default',
 
-    isContinuous: false,
+    runMode: 'planning' as const,
     totalMinutes: undefined,
     endTime: undefined,
     startTime: Date.now(),
@@ -257,6 +250,8 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
     metadataBlock: null,
     tasteProfile: null,
 
+    qaBaseline: null,
+
     batchTokenBudget: 50_000,
     scoutConcurrency: 1,
     scoutTimeoutMs: 60_000,
@@ -291,6 +286,21 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
     parallelExplicit: false,
     userScope: undefined,
     interactiveConsole: undefined,
+    displayAdapter: {
+      sessionStarted: vi.fn(),
+      sessionEnded: vi.fn(),
+      scoutStarted: vi.fn(),
+      scoutProgress: vi.fn(),
+      scoutBatchProgress: vi.fn(),
+      scoutCompleted: vi.fn(),
+      scoutFailed: vi.fn(),
+      ticketAdded: vi.fn(),
+      ticketProgress: vi.fn(),
+      ticketRawOutput: vi.fn(),
+      ticketDone: vi.fn(),
+      log: vi.fn(),
+      destroy: vi.fn(),
+    },
 
     getCycleFormula: vi.fn().mockReturnValue(null),
     getCycleCategories: vi.fn().mockReturnValue({ allow: [], block: [] }),
@@ -714,102 +724,6 @@ describe('executeProposals', () => {
         'run_mock',
         expect.stringContaining('Scope expanded'),
       );
-    });
-  });
-
-  // ────────────────────────────────────────────────────────────────────────
-  // Auto-tune QA config
-  // ────────────────────────────────────────────────────────────────────────
-
-  describe('auto-tune QA config', () => {
-    it('updates state config when commands are disabled', async () => {
-      vi.mocked(autoTuneQaConfig).mockReturnValue({
-        config: {
-          commands: [
-            { name: 'test', cmd: 'npm test', timeoutMs: 30_000 },
-          ],
-        } as any,
-        disabled: [{ name: 'lint', reason: 'flaky' }],
-        reEnabled: [],
-      });
-
-      // Use a failure result to avoid the wasRetried bug path
-      vi.mocked(soloRunTicket).mockResolvedValue({
-        success: false,
-        durationMs: 5000,
-        error: 'fail',
-        failureReason: 'agent_error',
-      });
-
-      const state = makeState();
-      state.config = {
-        qa: {
-          commands: [
-            { name: 'test', cmd: 'npm test' },
-            { name: 'lint', cmd: 'npm run lint' },
-          ],
-        },
-      } as any;
-
-      await executeProposals(state, [makeProposal()]);
-
-      // Config should be updated with the tuned commands (lint disabled)
-      expect(state.config.qa.commands).toHaveLength(1);
-      expect(state.config.qa.commands[0].name).toBe('test');
-    });
-
-    it('updates state config when commands are re-enabled', async () => {
-      vi.mocked(autoTuneQaConfig).mockReturnValue({
-        config: {
-          commands: [
-            { name: 'test', cmd: 'npm test', timeoutMs: 30_000 },
-            { name: 'lint', cmd: 'npm run lint', timeoutMs: 30_000 },
-          ],
-        } as any,
-        disabled: [],
-        reEnabled: ['lint'],
-      });
-
-      vi.mocked(soloRunTicket).mockResolvedValue({
-        success: false,
-        durationMs: 5000,
-        error: 'fail',
-        failureReason: 'agent_error',
-      });
-
-      const state = makeState();
-      state.config = {
-        qa: {
-          commands: [{ name: 'test', cmd: 'npm test' }],
-        },
-      } as any;
-
-      await executeProposals(state, [makeProposal()]);
-
-      expect(state.config.qa.commands).toHaveLength(2);
-    });
-
-    it('does not crash when autoTuneQaConfig throws', async () => {
-      vi.mocked(autoTuneQaConfig).mockImplementation(() => {
-        throw new Error('stats file corrupt');
-      });
-
-      vi.mocked(soloRunTicket).mockResolvedValue({
-        success: false,
-        durationMs: 5000,
-        error: 'fail',
-        failureReason: 'agent_error',
-      });
-
-      const state = makeState();
-      state.config = {
-        qa: {
-          commands: [{ name: 'test', cmd: 'npm test' }],
-        },
-      } as any;
-
-      // Should not throw -- the try/catch in executeProposals absorbs it
-      await expect(executeProposals(state, [makeProposal()])).resolves.toBeDefined();
     });
   });
 

@@ -24,8 +24,6 @@ import { estimateTokens } from './types.js';
 import { detectOscillation } from './oscillation.js';
 import { detectRepetition } from './repetition.js';
 import { detectQaPingPong, detectCommandFailure, extractFilesFromDiff, getFileEditWarnings } from './failure-patterns.js';
-import { DEFAULT_SPINDLE_CONFIG, createSpindleState } from './types.js';
-import { formatSpindleResult } from './format.js';
 import { metric } from '../metrics.js';
 
 /**
@@ -76,7 +74,7 @@ export function checkSpindleLoop(
       state.fileEditCounts[f] = (state.fileEditCounts[f] ?? 0) + 1;
     }
     // Cap file_edit_counts keys to prevent unbounded growth
-    const MAX_FILE_EDIT_KEYS = 50;
+    const MAX_FILE_EDIT_KEYS = 200;
     const editKeys = Object.keys(state.fileEditCounts);
     if (editKeys.length > MAX_FILE_EDIT_KEYS) {
       const sorted = Object.entries(state.fileEditCounts)

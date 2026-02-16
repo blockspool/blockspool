@@ -38,7 +38,7 @@ function tastePath(projectRoot: string): string {
 export function buildTasteProfile(
   sectorState: SectorState,
   learnings: Learning[],
-  formulaStats: Record<string, FormulaStats>,
+  _formulaStats: Record<string, FormulaStats>,
 ): TasteProfile {
   // Aggregate category success/failure across all sectors
   const catTotals: Record<string, { success: number; failure: number }> = {};

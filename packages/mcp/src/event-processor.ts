@@ -9,14 +9,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { DatabaseAdapter } from '@blockspool/core';
 import type { Project } from '@blockspool/core';
-import { repos } from '@blockspool/core';
+import { repos, SCOUT_DEFAULTS } from '@blockspool/core';
 import { RunManager } from './run-manager.js';
 import type { EventType, CommitPlan } from './types.js';
 import { filterAndCreateTickets } from './proposals.js';
 import type { RawProposal } from './proposals.js';
 import { deriveScopePolicy, validatePlanScope } from './scope-policy.js';
-import { recordOutput, recordDiff, recordCommandFailure, recordPlanHash } from './spindle.js';
-import { addLearning, confirmLearning, extractTags } from './learnings.js';
+import { recordDiff, recordCommandFailure, recordPlanHash } from './spindle.js';
+import { addLearning, confirmLearning, extractTags, type StructuredKnowledge } from './learnings.js';
 import { recordDedupEntry } from './dedup-memory.js';
 import { recordQualitySignal } from './run-state-bridge.js';
 import { recordQaCommandResult } from './qa-stats.js';
@@ -26,6 +26,7 @@ import {
   recordScanResult as recordScanResultCore,
 } from '@blockspool/core/sectors/shared';
 import type { SectorState } from '@blockspool/core/sectors/shared';
+import { isStreamJsonOutput, analyzeTrace } from '@blockspool/core/trace/shared';
 
 // ---------------------------------------------------------------------------
 // Helpers — shared sector & dedup recording
@@ -87,6 +88,29 @@ async function recordTicketDedup(
   }
 }
 
+/**
+ * Extract a normalized error signature from raw error output.
+ * Captures the first recognizable error pattern (TypeError, SyntaxError, assertion, etc.)
+ * and truncates to 120 chars for storage.
+ */
+function extractErrorSignature(errorOutput: string): string | undefined {
+  if (!errorOutput) return undefined;
+  // Match common error patterns
+  const patterns = [
+    /(?:TypeError|ReferenceError|SyntaxError|RangeError|Error):\s*[^\n]{1,100}/,
+    /AssertionError:\s*[^\n]{1,100}/i,
+    /FAIL(?:ED)?[:\s]+[^\n]{1,80}/i,
+    /error\[E\d+\]:\s*[^\n]{1,80}/i,  // Rust errors
+    /panic:\s*[^\n]{1,80}/,             // Go panics
+    /Exception[:\s]+[^\n]{1,80}/i,      // Java/Python exceptions
+  ];
+  for (const p of patterns) {
+    const match = errorOutput.match(p);
+    if (match) return match[0].slice(0, 120);
+  }
+  return undefined;
+}
+
 export interface ProcessResult {
   processed: boolean;
   phase_changed: boolean;
@@ -94,7 +118,7 @@ export interface ProcessResult {
   message: string;
 }
 
-const MAX_SCOUT_RETRIES = 2;
+const MAX_SCOUT_RETRIES = SCOUT_DEFAULTS.MAX_SCOUT_RETRIES;
 
 export async function processEvent(
   run: RunManager,
@@ -290,6 +314,10 @@ export async function processEvent(
                 category: 'warning',
                 source: { type: 'review_downgrade', detail: reviewed.review_note },
                 tags: extractTags(match.files ?? match.allowed_paths ?? [], []),
+                structured: {
+                  root_cause: reviewed.review_note ?? `Confidence inflated by ${drop} points`,
+                  applies_to: match.allowed_paths?.[0],
+                },
               });
             }
           }
@@ -407,6 +435,7 @@ export async function processEvent(
         allowedPaths: ticket?.allowedPaths ?? [],
         category: ticket?.category ?? 'refactor',
         maxLinesPerTicket: s.max_lines_per_ticket,
+        learnings: s.cached_learnings,
       });
 
       // Validate plan against scope policy
@@ -419,14 +448,21 @@ export async function processEvent(
 
       if (!scopeResult.valid) {
         s.plan_rejections++;
+        s.last_plan_rejection_reason = scopeResult.reason ?? null;
         run.appendEvent('PLAN_REJECTED', { reason: scopeResult.reason, attempt: s.plan_rejections });
         // Record learning on plan rejection
         if (s.learnings_enabled) {
+          const structured: StructuredKnowledge = {
+            root_cause: scopeResult.reason ?? 'scope violation',
+            pattern_type: 'convention',
+            applies_to: ticket?.allowedPaths?.[0],
+          };
           addLearning(run.rootPath, {
             text: `Plan rejected: ${scopeResult.reason}`.slice(0, 200),
             category: 'gotcha',
             source: { type: 'plan_rejection', detail: scopeResult.reason ?? undefined },
             tags: extractTags(plan.files_to_touch.map(f => f.path), []),
+            structured,
           });
         }
         return {
@@ -529,6 +565,23 @@ export async function processEvent(
         const diff = (payload['diff'] ?? null) as string | null;
         recordDiff(s.spindle, diff ?? (changedFiles.length > 0 ? changedFiles.join('\n') : null));
 
+        // Opportunistic trace analysis: if stdout is in payload, check for stream-json
+        const stdout = payload['stdout'] as string | undefined;
+        if (stdout && isStreamJsonOutput(stdout.split('\n')[0] ?? '')) {
+          try {
+            const traceAnalysis = analyzeTrace(stdout);
+            run.appendEvent('TRACE_ANALYSIS', {
+              ticket_id: s.current_ticket_id,
+              is_stream_json: traceAnalysis.is_stream_json,
+              compaction_count: traceAnalysis.compactions.length,
+              total_tokens: traceAnalysis.total_input_tokens + traceAnalysis.total_output_tokens,
+              tool_count: traceAnalysis.tool_profiles.length,
+            });
+          } catch {
+            // Non-fatal — trace analysis failure should not block execution
+          }
+        }
+
         // Move to QA
         run.setPhase('QA');
         return {
@@ -545,11 +598,16 @@ export async function processEvent(
         // Record learning on ticket failure
         if (s.learnings_enabled) {
           const reason = (payload['reason'] as string) ?? 'Execution failed';
+          const structured: StructuredKnowledge = {
+            root_cause: reason.slice(0, 200),
+            fragile_paths: ticket?.allowedPaths?.filter(p => !p.includes('*')),
+          };
           addLearning(run.rootPath, {
             text: `Ticket failed on ${ticket?.title ?? 'unknown'} — ${reason}`.slice(0, 200),
             category: 'warning',
             source: { type: 'ticket_failure', detail: reason },
             tags: extractTags(ticket?.allowedPaths ?? [], ticket?.verificationCommands ?? []),
+            structured,
           });
         }
         // Record failed ticket in dedup memory + sector failure
@@ -591,7 +649,7 @@ export async function processEvent(
         recordCommandFailure(s.spindle, command, output);
       }
 
-      // Record QA command stats for pottery wheel tracking
+      // Record QA command stats for wheel tracking
       recordQaCommandResult(run.rootPath, command, {
         passed: success,
         durationMs,
@@ -626,19 +684,25 @@ export async function processEvent(
         s.injected_learning_ids = [];
       }
 
-      // Record quality signal for pottery wheel tracking
+      // Record quality signal for wheel tracking
       recordQualitySignal(run.rootPath, 'qa_pass');
 
-      // Record success learning
+      // Record success learning with cochange data from the plan
       if (s.learnings_enabled && s.current_ticket_id) {
         try {
           const ticket = await repos.tickets.getById(db, s.current_ticket_id);
           if (ticket) {
+            // Extract cochange files from the approved plan (files that changed together)
+            const planFiles = s.current_ticket_plan?.files_to_touch?.map(f => f.path) ?? [];
+            const structured: StructuredKnowledge | undefined = planFiles.length > 1
+              ? { cochange_files: planFiles, pattern_type: 'dependency' }
+              : undefined;
             addLearning(run.rootPath, {
               text: `${ticket.category ?? 'refactor'} succeeded: ${ticket.title}`.slice(0, 200),
               category: 'pattern',
               source: { type: 'ticket_success', detail: ticket.category ?? 'refactor' },
               tags: extractTags(ticket.allowedPaths ?? [], ticket.verificationCommands ?? []),
+              structured,
             });
           }
         } catch {
@@ -692,7 +756,7 @@ export async function processEvent(
         return { processed: true, phase_changed: false, message: 'QA failed outside QA phase' };
       }
 
-      // Record quality signal for pottery wheel tracking
+      // Record quality signal for wheel tracking
       recordQualitySignal(run.rootPath, 'qa_fail');
 
       // Record QA failure in spindle (for stall detection — no progress)
@@ -710,18 +774,39 @@ export async function processEvent(
 
       s.qa_retries++;
 
+      // Store failure context for critic block injection on retry
+      {
+        const failedCmds = (payload['failed_commands'] ?? payload['command'] ?? '') as string | string[];
+        const errorOutput = (payload['error'] ?? payload['output'] ?? '') as string;
+        s.last_qa_failure = {
+          failed_commands: Array.isArray(failedCmds) ? failedCmds : failedCmds ? [failedCmds] : [],
+          error_output: errorOutput.slice(0, 500),
+        };
+      }
+
       if (s.qa_retries >= 3) {
         // Fetch ticket once for both learning and dedup
         const ticket = s.current_ticket_id ? await repos.tickets.getById(db, s.current_ticket_id) : null;
         // Record learning on final QA failure
         if (s.learnings_enabled) {
           const failedCmds = (payload['failed_commands'] ?? payload['command'] ?? '') as string;
-          const errorSummary = ((payload['error'] ?? payload['output'] ?? '') as string).slice(0, 100);
+          const errorOutput = (payload['error'] ?? payload['output'] ?? '') as string;
+          const errorSummary = errorOutput.slice(0, 100);
+          const errorSig = extractErrorSignature(errorOutput);
+          const structured: StructuredKnowledge = {
+            pattern_type: 'environment',
+            failure_context: {
+              command: failedCmds || (ticket?.verificationCommands?.[0] ?? ''),
+              error_signature: errorSig ?? errorSummary.slice(0, 120),
+            },
+            fragile_paths: ticket?.allowedPaths?.filter(p => !p.includes('*')),
+          };
           addLearning(run.rootPath, {
             text: `QA fails on ${ticket?.title ?? 'unknown'} — ${errorSummary || failedCmds}`.slice(0, 200),
             category: 'gotcha',
             source: { type: 'qa_failure', detail: failedCmds },
             tags: extractTags(ticket?.allowedPaths ?? [], ticket?.verificationCommands ?? []),
+            structured,
           });
         }
         // Record failed ticket in dedup memory + sector failure

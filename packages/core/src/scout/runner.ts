@@ -12,12 +12,14 @@ export interface RunnerOptions {
   prompt: string;
   /** Working directory */
   cwd: string;
-  /** Timeout in ms */
+  /** Timeout in ms (0 = no timeout) */
   timeoutMs: number;
   /** Model to use */
   model?: string;
   /** Cancellation signal */
   signal?: AbortSignal;
+  /** Callback for raw stdout/stderr streaming */
+  onRawOutput?: (chunk: string) => void;
 }
 
 export interface RunnerResult {
@@ -184,7 +186,7 @@ export class CodexScoutBackend implements ScoutBackend {
   }
 
   async run(options: RunnerOptions): Promise<RunnerResult> {
-    const { prompt, cwd, timeoutMs, model, signal } = options;
+    const { prompt, cwd, timeoutMs, model, signal, onRawOutput } = options;
     const start = Date.now();
 
     if (signal?.aborted) {
@@ -243,7 +245,7 @@ export class CodexScoutBackend implements ScoutBackend {
 
       const env: Record<string, string> = { ...process.env } as Record<string, string>;
       if (this.apiKey) {
-        env.CODEX_API_KEY = this.apiKey;
+        env.OPENAI_API_KEY = this.apiKey;
       }
 
       return await new Promise<RunnerResult>((resolve) => {
@@ -261,20 +263,28 @@ export class CodexScoutBackend implements ScoutBackend {
         let stderr = '';
         let killed = false;
 
-        const timeout = setTimeout(() => {
+        const timeout = timeoutMs > 0 ? setTimeout(() => {
           killed = true;
           proc.kill('SIGTERM');
           setTimeout(() => proc.kill('SIGKILL'), 5000);
-        }, timeoutMs);
+        }, timeoutMs) : null;
 
         const abortHandler = () => { killed = true; proc.kill('SIGTERM'); };
         signal?.addEventListener('abort', abortHandler);
 
-        proc.stdout.on('data', (d) => { stdout += d.toString(); });
-        proc.stderr.on('data', (d) => { stderr += d.toString(); });
+        proc.stdout.on('data', (d) => {
+          const text = d.toString();
+          stdout += text;
+          onRawOutput?.(text);
+        });
+        proc.stderr.on('data', (d) => {
+          const text = d.toString();
+          stderr += text;
+          onRawOutput?.(`[stderr] ${text}`);
+        });
 
         proc.on('close', (code) => {
-          clearTimeout(timeout);
+          if (timeout) clearTimeout(timeout);
           signal?.removeEventListener('abort', abortHandler);
           const durationMs = Date.now() - start;
 
@@ -300,7 +310,7 @@ export class CodexScoutBackend implements ScoutBackend {
         });
 
         proc.on('error', (err) => {
-          clearTimeout(timeout);
+          if (timeout) clearTimeout(timeout);
           signal?.removeEventListener('abort', abortHandler);
           resolve({ success: false, output: '', error: err.message, durationMs: Date.now() - start });
         });
@@ -416,7 +426,7 @@ Return your analysis as a JSON string in the output field of submit_results.`;
 
       const env: Record<string, string> = { ...process.env } as Record<string, string>;
       if (this.apiKey) {
-        env.CODEX_API_KEY = this.apiKey;
+        env.OPENAI_API_KEY = this.apiKey;
       }
 
       const result = await new Promise<{ success: boolean; output: string; error?: string }>((resolve) => {

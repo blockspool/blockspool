@@ -324,8 +324,8 @@ describe('DEFAULT_AUTO_CONFIG', () => {
     expect(DEFAULT_AUTO_CONFIG.allowCategories).toContain('refactor');
   });
 
-  it('excludes test from default allowCategories (opt-in via --tests)', () => {
-    expect(DEFAULT_AUTO_CONFIG.allowCategories).not.toContain('test');
+  it('includes test in default allowCategories', () => {
+    expect(DEFAULT_AUTO_CONFIG.allowCategories).toContain('test');
   });
 
   it('includes security in allowCategories', () => {
@@ -344,19 +344,7 @@ describe('DEFAULT_AUTO_CONFIG', () => {
     expect(DEFAULT_AUTO_CONFIG.maxPrs).toBe(3);
   });
 
-  it('has draftPrs set to true', () => {
-    expect(DEFAULT_AUTO_CONFIG.draftPrs).toBe(true);
-  });
-
-  it('has maxFilesPerTicket of 10', () => {
-    expect(DEFAULT_AUTO_CONFIG.maxFilesPerTicket).toBe(10);
-  });
-
-  it('has maxLinesPerTicket of 300', () => {
-    expect(DEFAULT_AUTO_CONFIG.maxLinesPerTicket).toBe(300);
-  });
-
-  it('has defaultScope of "src"', () => {
-    expect(DEFAULT_AUTO_CONFIG.defaultScope).toBe('src');
+  it('has adversarialReview defaulting to false', () => {
+    expect(DEFAULT_AUTO_CONFIG.adversarialReview).toBe(false);
   });
 });

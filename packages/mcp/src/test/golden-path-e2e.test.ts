@@ -317,7 +317,7 @@ describe('Golden Path E2E', () => {
     expect(run.require().tickets_completed).toBe(1);
 
     // Inject empty scout output → exhaust retries → DONE
-    run.require().scout_retries = 2;
+    run.require().scout_retries = 3;
     await ingestEvent('SCOUT_OUTPUT', { proposals: [] });
     resp = await advance(ctx());
     expect(resp.phase).toBe('DONE');
@@ -369,7 +369,7 @@ describe('Golden Path E2E', () => {
     expect(run.require().tickets_failed).toBe(1);
 
     // Empty scout → exhaust retries → DONE
-    run.require().scout_retries = 2;
+    run.require().scout_retries = 3;
     await ingestEvent('SCOUT_OUTPUT', { proposals: [] });
     resp = await advance(ctx());
     expect(resp.phase).toBe('DONE');

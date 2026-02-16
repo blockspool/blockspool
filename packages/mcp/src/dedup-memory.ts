@@ -15,7 +15,6 @@ import {
   applyDecay,
   recordEntry as coreRecordEntry,
   recordEntries as coreRecordEntries,
-  formatDedupForPrompt,
   DEDUP_DEFAULTS,
 } from '@blockspool/core/dedup/shared';
 

@@ -10,7 +10,7 @@ export const kimi: ProviderConfig = {
   apiKeyEnvVar: 'MOONSHOT_API_KEY',
   altAuth: 'kimi /login',
   guidelinesFile: 'KIMI.md',
-  defaultScoutTimeoutMs: 180_000,
+  defaultScoutTimeoutMs: 0,
   defaultScoutConcurrency: 3,
   defaultBatchTokenBudget: 40_000,
   async createScoutBackend(opts) {

@@ -2,8 +2,6 @@
  * Solo mode utility functions
  */
 
-import chalk from 'chalk';
-import { spawnSync } from 'node:child_process';
 import type { DatabaseAdapter } from '@blockspool/core/db';
 import { tickets } from '@blockspool/core/repos';
 import type { TicketProposal } from '@blockspool/core/scout';

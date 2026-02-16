@@ -25,6 +25,7 @@ export const ARTIFACT_TYPES = [
   'runs',
   'violations',
   'spindle',
+  'traces',
 ] as const;
 
 /**

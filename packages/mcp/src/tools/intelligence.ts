@@ -292,6 +292,67 @@ export function registerIntelligenceTools(server: McpServer, getState: () => Ses
     },
   );
 
+  // ── blockspool_history ───────────────────────────────────────────────────
+  server.tool(
+    'blockspool_history',
+    'View recent session runs with summary stats.',
+    {
+      limit: z.number().optional().describe('Max number of runs to return (default: 10).'),
+    },
+    async (params) => {
+      const state = getState();
+      try {
+        const run = state.run.current;
+        const projectId = run?.project_id ?? state.project.id;
+        const limit = params.limit ?? 10;
+
+        const allRuns = await repos.runs.listByProject(
+          state.db, projectId, { limit },
+        );
+
+        const runs = allRuns.map(r => ({
+          id: r.id,
+          type: r.type,
+          status: r.status,
+          ticketId: r.ticketId,
+          createdAt: r.createdAt.toISOString(),
+          startedAt: r.startedAt?.toISOString() ?? null,
+          completedAt: r.completedAt?.toISOString() ?? null,
+          durationMs: r.completedAt && r.startedAt
+            ? r.completedAt.getTime() - r.startedAt.getTime()
+            : null,
+        }));
+
+        // Summary stats
+        const total = runs.length;
+        const successful = runs.filter(r => r.status === 'success').length;
+        const failed = runs.filter(r => r.status === 'failure').length;
+        const successRate = total > 0 ? Math.round((successful / total) * 100) : 0;
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              total,
+              successful,
+              failed,
+              success_rate_percent: successRate,
+              runs,
+            }, null, 2),
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: (e as Error).message }),
+          }],
+          isError: true,
+        };
+      }
+    },
+  );
+
   // ── blockspool_heal_blocked ───────────────────────────────────────────────
   server.tool(
     'blockspool_heal_blocked',

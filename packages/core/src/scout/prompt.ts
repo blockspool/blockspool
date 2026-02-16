@@ -105,22 +105,34 @@ export function buildScoutPrompt(options: {
     .map(f => `### ${f.path}\n\`\`\`\n${f.content}\n\`\`\``)
     .join('\n\n');
 
-  return `You are a senior software engineer reviewing code for improvement opportunities.
+  return `You are a principal engineer reviewing code. Your job is to find improvements that meaningfully move the codebase forward — not cosmetic changes.
 
-Analyze these files from scope "${scope}" and identify actionable improvements.
+Analyze these files from scope "${scope}" and identify the highest-impact improvements.
 
 ${categoryFilter}
 ${coverageBlock}
-## Categories
+## Categories (ordered by typical impact)
 
-- **refactor**: Code quality, readability, maintainability improvements (DRY violations, dead code, over-engineering, inconsistent patterns)
-- **fix**: Bug fixes, incorrect logic, broken edge cases
-- **cleanup**: Dead code removal, unused imports, bloat reduction
-- **types**: Type safety improvements, missing types, type narrowing
-- **perf**: Performance optimizations, algorithmic improvements
-- **security**: Security vulnerabilities, input validation, auth issues
-- **docs**: Missing/outdated documentation, comments, README updates
-- **test**: Missing tests, edge cases, coverage gaps
+- **security**: Vulnerabilities, SSRF/XSS/injection risks, auth gaps, input validation
+- **fix**: Bugs, incorrect logic, broken edge cases, data loss risks
+- **perf**: Performance issues, N+1 queries, unnecessary allocations, missing indexes
+- **refactor**: Structural issues spanning multiple files, missing abstractions, DRY violations across modules
+- **test**: Missing tests for critical paths, untested error handling, integration gaps
+- **types**: Type safety holes that could cause runtime errors
+- **cleanup**: Dead code removal, unused imports (ONLY if substantial)
+- **docs**: ONLY if documentation is actively misleading or missing for public APIs
+
+## Quality Bar
+
+Proposals must clear a high bar. Do NOT propose:
+- Comment rewording or typo fixes
+- Import reordering or style-only changes
+- Adding docs to internal code
+- Single-line fixes that don't affect behavior
+- Changes that only affect developer experience marginally
+
+Each proposal should make the codebase meaningfully safer, faster, or more correct. Prefer fewer high-impact proposals over many small ones.
+
 
 ## Requirements
 
@@ -129,6 +141,7 @@ ${coverageBlock}
    - Self-contained (completable in one PR)
    - Have at least one verification command
    - Have confidence >= ${minConfidence}
+   - Have impact_score >= 4 (1-10 scale — most proposals should be 5+)
 
 2. Verification commands should be:
    - Runnable without manual setup
@@ -136,7 +149,7 @@ ${coverageBlock}
    - Prefer "npm run build" for non-test categories
    - Prefer "npm test" for test categories
 
-3. Generate at most ${maxProposals} proposals, prioritized by impact.
+3. Generate at most ${maxProposals} proposals, prioritized by impact. Fewer is better if the remaining proposals would be low-impact.
 
 ${protectedNote}${strategicFocus}${recentContext}
 

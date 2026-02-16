@@ -1,16 +1,16 @@
 ---
 name: run
-description: Run BlockSpool — interactive codebase improvement. Scouts, presents a roadmap, executes approved changes. Use `wheel` for unattended continuous execution.
+description: Run BlockSpool — interactive codebase improvement. Scouts, presents a roadmap, executes approved changes. Use `wheel` for unattended wheel execution.
 argument-hint: "[wheel] [hours=N] [formula=name] [cycles=N] [deep] [parallel=N]"
 ---
 
 Start a BlockSpool session. Default mode is **orchestration**: scout → present roadmap → user approves → execute sequentially → done.
-Pass `wheel` for unattended continuous mode with parallel subagents and stop-hook loop.
+Pass `wheel` for unattended wheel mode with parallel subagents and stop-hook loop.
 
 ## Arguments
 
 Parse from `$ARGUMENTS` (all optional, key=value format):
-- **wheel** — Enable continuous autonomous mode (parallel subagents, stop hook, no human approval)
+- **wheel** — Enable wheel mode (parallel subagents, stop hook, no human approval)
 - **hours** — Time budget for multi-cycle runs (e.g. `hours=4`)
 - **formula** — Formula to use (e.g. `security-audit`, `test-coverage`, `cleanup`)
 - **cycles** — Number of scout→execute cycles (default: 1)
@@ -24,7 +24,7 @@ Parse from `$ARGUMENTS` (all optional, key=value format):
 ## Mode Detection
 
 Check `$ARGUMENTS` for the word `wheel`:
-- If **present** → jump to **Wheel Mode** (continuous autonomous)
+- If **present** → jump to **Wheel Mode**
 - If **absent** → follow **Orchestration Mode** (default)
 
 ---
@@ -88,9 +88,9 @@ Which proposals should I implement? (all / 1,3,5 / none)
 
 ---
 
-## Wheel Mode (Continuous Autonomous)
+## Wheel Mode
 
-Activated by passing `wheel` in `$ARGUMENTS`. Unattended parallel execution with stop-hook loop. Matches the CLI's `--wheel` flag for continuous pottery-wheel mode.
+Activated by passing `wheel` in `$ARGUMENTS`. Unattended parallel execution with stop-hook loop. Matches the CLI's `--wheel` flag.
 
 ### Setup
 
@@ -204,3 +204,4 @@ When `parallel` is 1 (or only 1 ticket is ready), advance returns `"PROMPT"` ins
 - In wheel mode, the Stop hook will block premature exit while the session is active.
 - In orchestration mode, no `.blockspool/loop-state.json` exists — the Stop hook is a no-op and the user can exit freely.
 - When the session ends in wheel mode, delete `.blockspool/loop-state.json`.
+- **Trajectory awareness:** If a trajectory is active, the session follows its steps. The advance loop automatically injects trajectory context into scout prompts. You can check trajectory status with `/blockspool:trajectory list` or `/blockspool:status`.

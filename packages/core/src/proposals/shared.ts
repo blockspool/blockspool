@@ -91,16 +91,20 @@ export const REQUIRED_FIELDS: (keyof ValidatedProposal)[] = [
 export function validateProposalSchema(raw: RawProposal): string | null {
   const missing: string[] = [];
 
+  // Hard-required: no sensible default possible
   if (!raw.category || typeof raw.category !== 'string') missing.push('category');
   if (!raw.title || typeof raw.title !== 'string') missing.push('title');
   if (!raw.description || typeof raw.description !== 'string') missing.push('description');
   if (!Array.isArray(raw.allowed_paths)) missing.push('allowed_paths');
-  if (!Array.isArray(raw.files)) missing.push('files');
   if (typeof raw.confidence !== 'number') missing.push('confidence');
-  if (!Array.isArray(raw.verification_commands)) missing.push('verification_commands');
   if (!raw.risk || typeof raw.risk !== 'string') missing.push('risk');
-  if (typeof raw.touched_files_estimate !== 'number') missing.push('touched_files_estimate');
-  if (!raw.rollback_note || typeof raw.rollback_note !== 'string') missing.push('rollback_note');
+
+  // Soft-required: normalizeProposal provides safe defaults for these.
+  // We still validate type when present, but missing is not fatal.
+  if (raw.files !== null && raw.files !== undefined && !Array.isArray(raw.files)) missing.push('files');
+  if (raw.verification_commands !== null && raw.verification_commands !== undefined && !Array.isArray(raw.verification_commands)) missing.push('verification_commands');
+  if (raw.touched_files_estimate !== null && raw.touched_files_estimate !== undefined && typeof raw.touched_files_estimate !== 'number') missing.push('touched_files_estimate');
+  if (raw.rollback_note !== null && raw.rollback_note !== undefined && typeof raw.rollback_note !== 'string') missing.push('rollback_note');
 
   return missing.length > 0 ? missing.join(', ') : null;
 }
@@ -123,8 +127,8 @@ export function normalizeProposal(raw: RawProposal): ValidatedProposal {
     rationale: raw.rationale ?? '',
     estimated_complexity: raw.estimated_complexity ?? 'moderate',
     risk: raw.risk!,
-    touched_files_estimate: raw.touched_files_estimate!,
-    rollback_note: raw.rollback_note!,
+    touched_files_estimate: raw.touched_files_estimate ?? (raw.allowed_paths?.length ?? 1),
+    rollback_note: raw.rollback_note ?? 'git revert',
   };
 }
 

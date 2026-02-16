@@ -339,7 +339,7 @@ blockspool --deep                      # Architectural review
 
 The `docs-audit` formula cross-references your markdown files (README, CONTRIBUTING, docs/) against the actual codebase to find stale, inaccurate, or outdated documentation.
 
-**Automatic docs-audit:** BlockSpool automatically runs a docs-audit every 3 cycles, tracked across sessions in `.blockspool/run-state.json`. Whether you run one cycle at a time or in continuous mode, the counter persists — so your 1st, 2nd runs are normal, and the 3rd triggers a docs check.
+**Automatic docs-audit:** BlockSpool automatically runs a docs-audit every 3 cycles, tracked across sessions in `.blockspool/run-state.json`. Whether you run one cycle at a time or in wheel mode, the counter persists — so your 1st, 2nd runs are normal, and the 3rd triggers a docs check.
 
 ```bash
 # Change the interval (default: 3)
@@ -482,11 +482,11 @@ Optional `.blockspool/config.json`:
 |-------|---------|-------------|
 | `defaultScope` | `"**"` | Glob scope for scanning. CLI also searches `src`, `lib`, `app`, `packages`, etc. |
 | `maxTestRatio` | `0.4` | Max fraction of test proposals per batch. Prevents test-heavy batches; remaining slots go to refactors/perf. |
-| `maxPrs` | `3` | Max PRs per run (20 in continuous mode) |
+| `maxPrs` | `3` | Max PRs per run (unlimited in wheel mode) |
 | `draftPrs` | `true` | Create draft PRs |
 | `docsAudit` | `true` | Set `false` to disable auto docs-audit |
 | `docsAuditInterval` | `3` | Auto docs-audit every N cycles |
-| `pullEveryNCycles` | `5` | Pull from origin every N cycles in continuous mode (0 = disabled) |
+| `pullEveryNCycles` | `5` | Pull from origin every N cycles in wheel mode (0 = disabled) |
 | `pullPolicy` | `"halt"` | On pull divergence: `"halt"` stops the session, `"warn"` logs and continues |
 | `guidelinesRefreshCycles` | `10` | Re-read guidelines file every N cycles during long runs (0 = disabled) |
 | `autoCreateGuidelines` | `true` | Auto-create baseline AGENTS.md/CLAUDE.md if none exists (set `false` to disable) |
@@ -495,7 +495,7 @@ Optional `.blockspool/config.json`:
 | `pluginParallel` | `2` | Number of parallel tickets in plugin mode (max: 5). Set to 1 for sequential. |
 | `batchTokenBudget` | auto | Token budget per scout batch. Default: 20k (Codex), 10k (Claude). Higher = fewer batches, faster scouting. |
 | `scoutTimeoutMs` | auto | Timeout per scout batch in ms. Default: 300000 (Codex), 120000 (Claude). |
-| `maxFilesPerCycle` | `60` | Maximum files scanned per scout cycle. Increase for large repos with `--continuous`. |
+| `maxFilesPerCycle` | `60` | Maximum files scanned per scout cycle. Increase for large repos with `--wheel`. |
 
 ---
 

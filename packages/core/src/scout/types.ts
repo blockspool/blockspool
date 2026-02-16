@@ -66,6 +66,8 @@ export interface ScoutOptions {
   signal?: AbortSignal;
   /** Progress callback */
   onProgress?: (progress: ScoutProgress) => void;
+  /** Raw output streaming callback (per-batch stdout/stderr) */
+  onRawOutput?: (batchIndex: number, chunk: string) => void;
   /** Recently completed ticket titles to avoid duplicates */
   recentlyCompletedTitles?: string[];
   /** Model to use (default: opus) */

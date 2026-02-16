@@ -138,7 +138,7 @@ function walkDir(
   options: ScanOptions,
   files: ScannedFile[]
 ): void {
-  const maxFileSize = options.maxFileSize ?? 100 * 1024; // 100KB
+  const maxFileSize = options.maxFileSize ?? 500 * 1024; // 500KB
   const maxFiles = options.maxFiles ?? 500;
 
   if (files.length >= maxFiles) {

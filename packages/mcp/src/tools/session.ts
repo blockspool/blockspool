@@ -43,6 +43,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
       learnings_budget: z.number().optional().describe('Max chars for learnings injected into prompts (default: 2000).'),
       learnings_decay_rate: z.number().optional().describe('Weight decay per session load (default: 3).'),
       direct: z.boolean().optional().describe('Direct mode: edit in place without worktrees/branches (default: true for simple solo use). Auto-disabled when create_prs=true or parallel>1.'),
+      cross_verify: z.boolean().optional().describe('Cross-verify: use a separate verifier agent for QA instead of self-verification (default: false).'),
     },
     async (params) => {
       const state = getState();
@@ -71,6 +72,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
         learnings_budget: params.learnings_budget,
         learnings_decay_rate: params.learnings_decay_rate,
         direct: params.direct,
+        cross_verify: params.cross_verify,
       };
 
       let formulaInfo: { name: string; description: string } | undefined;

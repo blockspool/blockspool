@@ -13,6 +13,8 @@ import { registerQaCommands } from './solo-qa.js';
 import { registerAutoCommands } from './solo-auto.js';
 import { registerNudgeCommands } from './solo-nudge.js';
 import { registerAnalyticsCommands } from './solo-analytics.js';
+import { registerDaemonCommands } from './solo-daemon.js';
+import { registerTrajectoryCommands } from './solo-trajectory.js';
 
 // Re-export types from extracted modules
 export type { FailureReason, CompletionOutcome, RunTicketResult } from '../lib/solo-ticket-types.js';
@@ -36,6 +38,9 @@ Examples:
   blockspool solo qa              Run QA commands (lint, test, etc.)
   blockspool solo status          Show local state and active tickets
   blockspool solo nudge "..."     Steer a running auto session with a hint
+  blockspool solo daemon start    Start background daemon for continuous improvement
+  blockspool solo daemon stop     Stop the running daemon
+  blockspool solo daemon status   Show daemon status and stats
   blockspool solo tui             Launch interactive terminal UI
   blockspool solo reset           Clear all local state
   blockspool solo export          Export state for debugging
@@ -48,3 +53,5 @@ registerQaCommands(soloCommand);
 registerAutoCommands(soloCommand);
 registerNudgeCommands(soloCommand);
 registerAnalyticsCommands(soloCommand);
+registerDaemonCommands(soloCommand);
+registerTrajectoryCommands(soloCommand);

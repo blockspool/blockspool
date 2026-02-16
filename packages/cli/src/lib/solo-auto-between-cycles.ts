@@ -2,22 +2,29 @@
  * Pre-cycle and post-cycle maintenance for auto mode.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import chalk from 'chalk';
 import { spawnSync } from 'node:child_process';
 import type { AutoSessionState } from './solo-auto-state.js';
-import { readRunState, writeRunState, recordCycle, isDocsAuditDue, recordDocsAudit, pushRecentDiff, recordQualitySignal, getQualityRate } from './run-state.js';
-import { getSessionPhase, formatElapsed } from './solo-auto-utils.js';
+import { readRunState, writeRunState, recordCycle, recordDocsAudit, getQualityRate } from './run-state.js';
+import { getSessionPhase } from './solo-auto-utils.js';
 import {
   checkPrStatuses,
   fetchPrReviewComments,
+  deleteTicketBranch,
+  deleteRemoteBranch,
 } from './solo-git.js';
 import { loadGuidelines } from './guidelines.js';
-import { addLearning, loadLearnings, consolidateLearnings } from './learnings.js';
+import { addLearning, loadLearnings, consolidateLearnings, extractTags } from './learnings.js';
+import { captureQaBaseline } from './solo-ticket.js';
+import { normalizeQaConfig } from './solo-utils.js';
+import { getBlockspoolDir } from './solo-config.js';
 import { removePrEntries } from './file-cooldown.js';
 import { recordFormulaMergeOutcome } from './run-state.js';
 import {
   recordMergeOutcome, saveSectors, refreshSectors,
-  computeCoverage, suggestScopeAdjustment, getSectorCategoryAffinity,
+  suggestScopeAdjustment,
 } from './sectors.js';
 import { loadDedupMemory } from './dedup-memory.js';
 import { calibrateConfidence } from './qa-stats.js';
@@ -30,7 +37,17 @@ import {
   formatConvergenceOneLiner, type CycleSummary,
 } from './cycle-context.js';
 import { buildTasteProfile, saveTasteProfile } from './taste-profile.js';
+import {
+  runMeasurement, measureGoals, pickGoalByGap,
+  recordGoalMeasurement,
+} from './goals.js';
 import { sleep } from './dedup.js';
+import { saveTrajectoryState } from './trajectory.js';
+import {
+  getNextStep as getTrajectoryNextStep,
+  trajectoryComplete,
+  trajectoryStuck,
+} from '@blockspool/core/trajectory/shared';
 
 // ── Pre-cycle maintenance ───────────────────────────────────────────────────
 
@@ -41,7 +58,7 @@ export interface PreCycleResult {
 export async function runPreCycleMaintenance(state: AutoSessionState): Promise<PreCycleResult> {
   state.cycleCount++;
   state.cycleOutcomes = [];
-  const scope = ''; // scope is computed in scout phase; pre-cycle doesn't need it
+  // scope is computed in scout phase; pre-cycle doesn't need it
 
   // Session phase computation
   const totalBudgetMs = state.totalMinutes ? state.totalMinutes * 60 * 1000 : undefined;
@@ -92,7 +109,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
   }
 
   // Backpressure from open PRs (skip in direct mode)
-  if (state.isContinuous && state.pendingPrUrls.length > 0 && state.deliveryMode !== 'direct') {
+  if (state.runMode === 'wheel' && state.pendingPrUrls.length > 0 && state.deliveryMode !== 'direct') {
     const openRatio = state.pendingPrUrls.length / state.maxPrs;
     if (openRatio > 0.7) {
       console.log(chalk.yellow(`  Backpressure: ${state.pendingPrUrls.length}/${state.maxPrs} PRs open — waiting for reviews...`));
@@ -130,7 +147,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
   }
 
   // Periodic pull
-  if (state.pullInterval > 0 && state.isContinuous) {
+  if (state.pullInterval > 0 && state.runMode === 'wheel') {
     state.cyclesSinceLastPull++;
     if (state.cyclesSinceLastPull >= state.pullInterval) {
       state.cyclesSinceLastPull = 0;
@@ -161,7 +178,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
               console.log();
               console.log(chalk.bold('Resolution:'));
               console.log(`  1. Resolve the divergence (rebase, merge, or reset)`);
-              console.log(`  2. Re-run: blockspool --hours ... --continuous`);
+              console.log(`  2. Re-run: blockspool --wheel`);
               console.log();
               console.log(chalk.gray(`  To keep going despite divergence, set pullPolicy: "warn" in config.`));
 
@@ -184,7 +201,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
   }
 
   // Periodic PR status poll (every 5 cycles)
-  if (state.isContinuous && state.cycleCount > 1 && state.cycleCount % 5 === 0 && state.pendingPrUrls.length > 0) {
+  if (state.runMode === 'wheel' && state.cycleCount > 1 && state.cycleCount % 5 === 0 && state.pendingPrUrls.length > 0) {
     try {
       const prStatuses = await checkPrStatuses(state.repoRoot, state.pendingPrUrls);
       for (const pr of prStatuses) {
@@ -202,6 +219,11 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
               source: { type: 'ticket_success', detail: 'pr_merged' },
               tags: [],
             });
+          }
+          // Clean up merged branch (local + remote)
+          if (pr.branch) {
+            await deleteTicketBranch(state.repoRoot, pr.branch).catch(() => {});
+            await deleteRemoteBranch(state.repoRoot, pr.branch).catch(() => {});
           }
         } else if (pr.state === 'closed') {
           state.totalClosedPrs++;
@@ -293,6 +315,60 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     writeRunState(state.repoRoot, rs);
   }
 
+  // Baseline healing check: re-run failing commands to detect improvements
+  const completedThisCycle = state.cycleOutcomes.filter(o => o.status === 'completed').length;
+  if (completedThisCycle > 0 && state.config?.qa?.commands?.length) {
+    try {
+      const blPath = path.join(getBlockspoolDir(state.repoRoot), 'qa-baseline.json');
+      if (fs.existsSync(blPath)) {
+        const blData = JSON.parse(fs.readFileSync(blPath, 'utf8'));
+        const previouslyFailing: string[] = blData.failures ?? [];
+        if (previouslyFailing.length > 0 && previouslyFailing.length <= 5) {
+          // Only re-check the previously failing commands (not all)
+          const qaConfig = normalizeQaConfig(state.config);
+          const failingCmds = qaConfig.commands.filter(c => previouslyFailing.includes(c.name));
+          if (failingCmds.length > 0) {
+            const checkConfig = { ...state.config, qa: { ...state.config.qa, commands: failingCmds } };
+            const recheck = await captureQaBaseline(state.repoRoot, checkConfig, () => {}, state.repoRoot);
+            const healed: string[] = [];
+            const stillFailing: string[] = [];
+            for (const [name, result] of recheck) {
+              if (result.passed) {
+                healed.push(name);
+              } else {
+                stillFailing.push(name);
+              }
+            }
+            if (healed.length > 0) {
+              console.log(chalk.green(`  Baseline healed: ${healed.join(', ')} now passing`));
+              if (state.autoConf.learningsEnabled) {
+                addLearning(state.repoRoot, {
+                  text: `Baseline healed in ${scope}: ${healed.join(', ')} now pass after cycle ${state.cycleCount}`.slice(0, 200),
+                  category: 'pattern',
+                  source: { type: 'baseline_healed' as any, detail: healed.join(', ') },
+                  tags: extractTags([scope], []),
+                });
+              }
+              // Update qa-baseline.json with only still-failing commands
+              const updatedDetails: Record<string, any> = {};
+              for (const name of stillFailing) {
+                updatedDetails[name] = (blData.details ?? {})[name] ?? { cmd: name, output: '' };
+                // Refresh output from recheck
+                const recheckResult = recheck.get(name);
+                if (recheckResult?.output) updatedDetails[name].output = recheckResult.output;
+              }
+              fs.writeFileSync(blPath, JSON.stringify({
+                failures: stillFailing,
+                details: updatedDetails,
+                timestamp: Date.now(),
+              }));
+            }
+          }
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
+
   // Meta-learning extraction (aggregate pattern detection)
   let metaInsightsAdded = 0;
   if (state.autoConf.learningsEnabled && state.cycleCount >= 3) {
@@ -317,11 +393,14 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     const qualityRate = getQualityRate(state.repoRoot);
     const qualityPct = Math.round(qualityRate * 100);
     const { loadQaStats: loadQa } = await import('./qa-stats.js');
-    const qaStore = loadQa(state.repoRoot);
-    const disabledCount = qaStore.disabledCommands.length;
+    loadQa(state.repoRoot);
+    const baselineFailing = state.qaBaseline
+      ? [...state.qaBaseline.values()].filter(v => !v).length
+      : 0;
     const confValue = state.effectiveMinConfidence;
     const insightsStr = metaInsightsAdded > 0 ? ` | insights +${metaInsightsAdded}` : '';
-    console.log(chalk.gray(`  Wheel: quality ${qualityPct}% | confidence ${confValue} | disabled ${disabledCount}${insightsStr}`));
+    const baselineStr = baselineFailing > 0 ? ` | baseline failing ${baselineFailing}` : '';
+    console.log(chalk.gray(`  Wheel: quality ${qualityPct}% | confidence ${confValue}${baselineStr}${insightsStr}`));
   }
 
   // Convergence metrics
@@ -413,12 +492,147 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
   }
 
   // Reload dedup memory
-  if (state.isContinuous) {
+  if (state.runMode === 'wheel') {
     state.dedupMemory = loadDedupMemory(state.repoRoot);
   }
 
+  // Goal re-measurement
+  if (state.activeGoal?.measure && state.activeGoalMeasurement) {
+    const { value, error } = runMeasurement(state.activeGoal.measure.cmd, state.repoRoot);
+    if (value !== null) {
+      const prev = state.activeGoalMeasurement.current;
+      const delta = prev !== null ? value - prev : 0;
+      const deltaSign = delta > 0 ? '+' : '';
+      const arrow = state.activeGoal.measure.direction === 'up'
+        ? (delta > 0 ? chalk.green('↑') : delta < 0 ? chalk.yellow('↓') : '→')
+        : (delta < 0 ? chalk.green('↓') : delta > 0 ? chalk.yellow('↑') : '→');
+      console.log(chalk.cyan(`  🎯 ${state.activeGoal.name}: ${value} ${arrow} (${deltaSign}${delta.toFixed(1)}) target: ${state.activeGoal.measure.target}`));
+
+      // Check if goal is now met
+      const { target, direction } = state.activeGoal.measure;
+      const met = direction === 'up' ? value >= target : value <= target;
+
+      // Record measurement
+      const measurement = { ...state.activeGoalMeasurement, current: value, measuredAt: Date.now(), met };
+      recordGoalMeasurement(state.repoRoot, measurement);
+
+      if (met) {
+        console.log(chalk.green(`  ✓ Goal "${state.activeGoal.name}" met!`));
+
+        // Re-evaluate all goals and pivot to next
+        const allMeasurements = measureGoals(state.goals, state.repoRoot);
+        for (const m of allMeasurements) {
+          recordGoalMeasurement(state.repoRoot, m);
+        }
+        const next = pickGoalByGap(allMeasurements);
+        if (next) {
+          state.activeGoal = state.goals.find(g => g.name === next.goalName) ?? null;
+          state.activeGoalMeasurement = next;
+          console.log(chalk.cyan(`  → Pivoting to: ${next.goalName} (gap: ${next.gapPercent}%)`));
+        } else {
+          const allMet = allMeasurements.every(m => m.met);
+          if (allMet) {
+            console.log(chalk.green(`  ✓ All goals met!`));
+          }
+          state.activeGoal = null;
+          state.activeGoalMeasurement = null;
+        }
+      } else {
+        // Update current value for next cycle's prompt
+        state.activeGoalMeasurement.current = value;
+        // Recalculate gap
+        if (direction === 'up' && target !== 0) {
+          state.activeGoalMeasurement.gapPercent = Math.round(((target - value) / target) * 1000) / 10;
+        } else if (direction === 'down') {
+          state.activeGoalMeasurement.gapPercent = target === 0
+            ? (value > 0 ? 100 : 0)
+            : Math.round(((value - target) / value) * 1000) / 10;
+        }
+      }
+    } else {
+      console.log(chalk.yellow(`  ⚠ Goal "${state.activeGoal.name}" re-measurement failed${error ? `: ${error}` : ''}`));
+    }
+  }
+
+  // Trajectory step progression
+  if (state.activeTrajectory && state.activeTrajectoryState && state.currentTrajectoryStep) {
+    const step = state.currentTrajectoryStep;
+    const stepState = state.activeTrajectoryState.stepStates[step.id];
+
+    if (stepState) {
+      // Run step verification commands
+      let allPassed = true;
+      if (step.verification_commands.length > 0) {
+        allPassed = step.verification_commands.every(cmd => {
+          const result = spawnSync('sh', ['-c', cmd], { cwd: state.repoRoot, timeout: 30000 });
+          return result.status === 0;
+        });
+      }
+
+      // Optional measurement check
+      let measureMet = true;
+      if (step.measure) {
+        const { value } = runMeasurement(step.measure.cmd, state.repoRoot);
+        if (value !== null) {
+          measureMet = step.measure.direction === 'up'
+            ? value >= step.measure.target
+            : value <= step.measure.target;
+          stepState.measurement = { value, timestamp: Date.now() };
+        }
+      }
+
+      if (allPassed && measureMet && step.verification_commands.length > 0) {
+        // Step completed — advance
+        stepState.status = 'completed';
+        stepState.completedAt = Date.now();
+        console.log(chalk.green(`  Trajectory step "${step.title}" completed`));
+
+        // Pick next step
+        const next = getTrajectoryNextStep(state.activeTrajectory, state.activeTrajectoryState.stepStates);
+        state.currentTrajectoryStep = next;
+        if (next) {
+          state.activeTrajectoryState.currentStepId = next.id;
+          state.activeTrajectoryState.stepStates[next.id].status = 'active';
+          console.log(chalk.cyan(`  -> Next step: ${next.title}`));
+        } else if (trajectoryComplete(state.activeTrajectory, state.activeTrajectoryState.stepStates)) {
+          console.log(chalk.green(`  Trajectory "${state.activeTrajectory.name}" complete!`));
+          // Save final state before clearing (so completed status persists on disk)
+          saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
+          state.activeTrajectory = null;
+          state.activeTrajectoryState = null;
+          state.currentTrajectoryStep = null;
+        }
+      } else {
+        // Step not yet complete — increment attempt counter
+        stepState.cyclesAttempted++;
+        stepState.lastAttemptedCycle = state.cycleCount;
+
+        // Check for stuck
+        const stuckId = trajectoryStuck(state.activeTrajectoryState.stepStates);
+        if (stuckId) {
+          console.log(chalk.yellow(`  Trajectory step "${step.title}" stuck after ${stepState.cyclesAttempted} cycles`));
+          stepState.status = 'failed';
+          stepState.failureReason = 'max retries exceeded';
+
+          // Try to advance to next step
+          const next = getTrajectoryNextStep(state.activeTrajectory, state.activeTrajectoryState.stepStates);
+          state.currentTrajectoryStep = next;
+          if (next) {
+            state.activeTrajectoryState.currentStepId = next.id;
+            state.activeTrajectoryState.stepStates[next.id].status = 'active';
+            console.log(chalk.cyan(`  -> Skipping to next step: ${next.title}`));
+          }
+        }
+      }
+
+      if (state.activeTrajectoryState) {
+        saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
+      }
+    }
+  }
+
   // Pause between cycles
-  if (state.isContinuous && !state.shutdownRequested) {
+  if (state.runMode === 'wheel' && !state.shutdownRequested) {
     console.log(chalk.gray('Pausing before next cycle...'));
     await sleep(5000);
   }

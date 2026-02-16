@@ -118,7 +118,6 @@ export function registerQaCommands(solo: Command): void {
 
       const logger = createLogger({ verbose: options.verbose, quiet: isJsonMode });
 
-      // eslint-disable-next-line no-undef
       const controller = new AbortController();
       process.on('SIGINT', () => {
         if (!isJsonMode) {

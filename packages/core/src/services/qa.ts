@@ -8,7 +8,7 @@
 import * as path from 'node:path';
 
 import type { DatabaseAdapter } from '../db/adapter.js';
-import type { ExecRunner, ExecResult, ExecOutput } from '../exec/types.js';
+import type { ExecRunner, ExecResult } from '../exec/types.js';
 
 import * as runs from '../repos/runs.js';
 import * as runSteps from '../repos/run_steps.js';

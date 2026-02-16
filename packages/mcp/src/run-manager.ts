@@ -10,7 +10,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { prefixedId } from '@blockspool/core';
+import { prefixedId, SESSION_DEFAULTS, SCOUT_DEFAULTS } from '@blockspool/core';
 import type {
   RunState,
   RunEvent,
@@ -22,7 +22,6 @@ import type {
 } from './types.js';
 import { checkSpindle } from './spindle.js';
 import { detectProjectMetadata } from './project-metadata.js';
-import type { ProjectMetadata } from './project-metadata.js';
 import { buildCodebaseIndex } from './codebase-index.js';
 import { loadLearnings } from './learnings.js';
 
@@ -30,27 +29,7 @@ import { loadLearnings } from './learnings.js';
 // Defaults
 // ---------------------------------------------------------------------------
 
-const DEFAULT_STEP_BUDGET = 200;
-const DEFAULT_TICKET_STEP_BUDGET = 12;
-const DEFAULT_MAX_LINES_PER_TICKET = 500;
-const DEFAULT_MAX_TOOL_CALLS_PER_TICKET = 50;
-const DEFAULT_MAX_PRS = 5;
-const DEFAULT_MIN_CONFIDENCE = 55;
-const DEFAULT_MIN_IMPACT_SCORE = 3;
-const DEFAULT_MAX_PROPOSALS_PER_SCOUT = 5;
-const DEFAULT_SCOPE = '**';
-const DEFAULT_CATEGORIES = ['refactor', 'docs', 'perf', 'security', 'fix', 'cleanup', 'types'];
-const DEFAULT_SCOUT_EXCLUDE_DIRS = [
-  'node_modules',
-  'dist',
-  'build',
-  '.next',
-  'coverage',
-  'assets',
-  'public/static',
-  'vendor',
-  '.git',
-];
+// All defaults imported from @blockspool/core — see config/defaults.ts
 
 function emptySpindle(): SpindleState {
   return {
@@ -105,12 +84,12 @@ export class RunManager {
 
     // PR limit only matters when creating PRs
     const effectiveMaxPrs = createPrs
-      ? (config.max_prs ?? (isContinuous ? 999 : DEFAULT_MAX_PRS))
+      ? (config.max_prs ?? (isContinuous ? 999 : SESSION_DEFAULTS.MAX_PRS))
       : 0;
 
     // In hours/cycles mode, disable per-ticket step budget — session is time-bounded
     const effectiveTicketStepBudget = config.ticket_step_budget
-      ?? (isContinuous ? 9999 : DEFAULT_TICKET_STEP_BUDGET);
+      ?? (isContinuous ? 9999 : SESSION_DEFAULTS.TICKET_STEP_BUDGET);
 
     this.state = {
       run_id: runId,
@@ -121,13 +100,13 @@ export class RunManager {
       phase_entry_step: 0,
 
       step_count: 0,
-      step_budget: config.step_budget ?? DEFAULT_STEP_BUDGET,
+      step_budget: config.step_budget ?? SESSION_DEFAULTS.STEP_BUDGET,
       ticket_step_count: 0,
       ticket_step_budget: effectiveTicketStepBudget,
       total_lines_changed: 0,
-      max_lines_per_ticket: DEFAULT_MAX_LINES_PER_TICKET,
+      max_lines_per_ticket: SESSION_DEFAULTS.MAX_LINES_PER_TICKET,
       total_tool_calls: 0,
-      max_tool_calls_per_ticket: DEFAULT_MAX_TOOL_CALLS_PER_TICKET,
+      max_tool_calls_per_ticket: SESSION_DEFAULTS.MAX_TOOL_CALLS_PER_TICKET,
 
       tickets_completed: 0,
       tickets_failed: 0,
@@ -143,21 +122,23 @@ export class RunManager {
       plan_rejections: 0,
       qa_retries: 0,
       scout_retries: 0,
+      last_qa_failure: null,
+      last_plan_rejection_reason: null,
 
       started_at: now.toISOString(),
       expires_at: expiresAt,
 
-      scope: config.scope ?? DEFAULT_SCOPE,
+      scope: config.scope ?? SCOUT_DEFAULTS.SCOPE,
       formula: config.formula ?? null,
-      categories: config.categories ?? DEFAULT_CATEGORIES,
-      min_confidence: config.min_confidence ?? DEFAULT_MIN_CONFIDENCE,
-      max_proposals_per_scout: config.max_proposals ?? DEFAULT_MAX_PROPOSALS_PER_SCOUT,
-      min_impact_score: config.min_impact_score ?? DEFAULT_MIN_IMPACT_SCORE,
+      categories: config.categories ?? [...SCOUT_DEFAULTS.CATEGORIES],
+      min_confidence: config.min_confidence ?? SCOUT_DEFAULTS.MIN_CONFIDENCE,
+      max_proposals_per_scout: config.max_proposals ?? SCOUT_DEFAULTS.MAX_PROPOSALS_PER_SCOUT,
+      min_impact_score: config.min_impact_score ?? SCOUT_DEFAULTS.MIN_IMPACT_SCORE,
       create_prs: createPrs,
       draft,
       eco: config.eco ?? false,
       hints: [],
-      scout_exclude_dirs: config.scout_exclude_dirs ?? DEFAULT_SCOUT_EXCLUDE_DIRS,
+      scout_exclude_dirs: config.scout_exclude_dirs ?? [...SCOUT_DEFAULTS.EXCLUDE_DIRS],
 
       parallel: Math.min(Math.max(config.parallel ?? 2, 1), 5),
       ticket_workers: {},
@@ -186,6 +167,14 @@ export class RunManager {
       // Direct mode: edit in place without worktrees. Default true for simpler solo use.
       // Auto-disabled when creating PRs or using parallel > 1 (needs isolation).
       direct: config.direct ?? (!createPrs && (config.parallel ?? 2) <= 1),
+
+      // Cross-verify: use separate verifier agent for QA (opt-in)
+      cross_verify: config.cross_verify ?? false,
+
+      // Trajectory planning
+      active_trajectory: null,
+      trajectory_step_id: null,
+      trajectory_step_title: null,
     };
 
     // Detect project metadata (test runner, framework, etc.)
@@ -332,6 +321,8 @@ export class RunManager {
     s.current_ticket_plan = null;
     s.plan_rejections = 0;
     s.qa_retries = 0;
+    s.last_qa_failure = null;
+    s.last_plan_rejection_reason = null;
     this.persistState();
     this.appendEvent('TICKET_ASSIGNED', { ticket_id: ticketId });
   }
@@ -405,7 +396,7 @@ export class RunManager {
   // -----------------------------------------------------------------------
 
   /** Initialize a ticket worker entry */
-  initTicketWorker(ticketId: string, ticket: { title: string }): void {
+  initTicketWorker(ticketId: string, _ticket: { title: string }): void {
     const s = this.require();
     s.ticket_workers[ticketId] = {
       phase: 'PLAN',
@@ -415,6 +406,7 @@ export class RunManager {
       qa_retries: 0,
       step_count: 0,
       spindle: emptySpindle(),
+      last_qa_failure: null,
     };
     this.persistState();
     this.appendEvent('TICKET_ASSIGNED', { ticket_id: ticketId, parallel: true });

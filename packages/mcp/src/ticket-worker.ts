@@ -6,23 +6,29 @@
  */
 
 import type { DatabaseAdapter } from '@blockspool/core';
-import { repos } from '@blockspool/core';
+import { repos, EXECUTION_DEFAULTS } from '@blockspool/core';
 import type { Project } from '@blockspool/core';
 import { RunManager } from './run-manager.js';
 import type {
   AdvanceConstraints,
   CommitPlan,
   EventType,
-  TicketWorkerState,
 } from './types.js';
 import { deriveScopePolicy, validatePlanScope, serializeScopePolicy } from './scope-policy.js';
-import { checkSpindle, recordOutput, recordDiff, recordCommandFailure, recordPlanHash } from './spindle.js';
+import { getRegistry } from './tool-registry.js';
+import { checkSpindle, recordDiff, recordCommandFailure, recordPlanHash } from './spindle.js';
 import { loadGuidelines, formatGuidelinesForPrompt } from './guidelines.js';
+import {
+  computeRetryRisk,
+  scoreStrategies,
+  buildCriticBlock,
+} from '@blockspool/core/critic/shared';
+import type { Learning } from '@blockspool/core/learnings/shared';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const MAX_PLAN_REJECTIONS = 3;
-const MAX_QA_RETRIES = 3;
+const MAX_QA_RETRIES = EXECUTION_DEFAULTS.MAX_QA_RETRIES;
 
 export interface TicketWorkerContext {
   run: RunManager;
@@ -80,8 +86,8 @@ export async function advanceTicketWorker(
     };
   }
 
-  // Spindle check (EXECUTE/QA phases)
-  if (worker.phase === 'EXECUTE' || worker.phase === 'QA') {
+  // Spindle check (EXECUTE/QA/CROSS_QA phases)
+  if (worker.phase === 'EXECUTE' || worker.phase === 'QA' || worker.phase === 'CROSS_QA') {
     const spindleResult = checkSpindle(worker.spindle);
     if (spindleResult.shouldAbort) {
       await repos.tickets.updateStatus(db, ticketId, 'blocked');
@@ -122,10 +128,13 @@ export async function advanceTicketWorker(
     };
   }
 
+  const worktreePath = `.blockspool/worktrees/${ticketId}`;
   const policy = deriveScopePolicy({
     allowedPaths: ticket.allowedPaths ?? [],
     category: ticket.category ?? 'refactor',
     maxLinesPerTicket: s.max_lines_per_ticket,
+    worktreeRoot: s.direct ? undefined : worktreePath,
+    learnings: s.cached_learnings,
   });
 
   const constraints: AdvanceConstraints = {
@@ -136,13 +145,14 @@ export async function advanceTicketWorker(
     max_lines: policy.max_lines,
     required_commands: ticket.verificationCommands ?? [],
     plan_required: policy.plan_required,
-    auto_approve_patterns: [],
+    auto_approve_patterns: getRegistry(ctx.project.rootPath).getAutoApprovePatterns({
+      phase: worker.phase === 'QA' || worker.phase === 'CROSS_QA' ? 'QA' : worker.phase as 'PLAN' | 'EXECUTE' | 'PR',
+      category: ticket.category ?? null,
+    }),
   };
 
   // Write per-ticket scope policy
   writeScopePolicy(ctx.project.rootPath, ticketId, policy);
-
-  const worktreePath = `.blockspool/worktrees/${ticketId}`;
 
   switch (worker.phase) {
     case 'PLAN': {
@@ -186,7 +196,23 @@ export async function advanceTicketWorker(
       const guidelines = loadGuidelines(ctx.project.rootPath);
       const guidelinesBlock = guidelines ? formatGuidelinesForPrompt(guidelines) + '\n\n' : '';
 
-      const prompt = guidelinesBlock + buildTicketExecutePrompt(ticket, worker.plan, worktreePath);
+      // Build critic block for QA retries
+      let criticBlock = '';
+      if (worker.qa_retries > 0 && worker.last_qa_failure) {
+        const cachedLearnings: Learning[] = run.require().cached_learnings ?? [];
+        const failureContext = {
+          failed_commands: worker.last_qa_failure.failed_commands,
+          error_output: worker.last_qa_failure.error_output,
+          attempt: worker.qa_retries + 1,
+          max_attempts: MAX_QA_RETRIES,
+        };
+        const risk = computeRetryRisk(ticket.allowedPaths ?? [], ticket.verificationCommands ?? [], cachedLearnings, failureContext);
+        const strategies = scoreStrategies(ticket.allowedPaths ?? [], failureContext, cachedLearnings);
+        criticBlock = buildCriticBlock(failureContext, risk, strategies, cachedLearnings);
+        if (criticBlock) criticBlock += '\n\n';
+      }
+
+      const prompt = guidelinesBlock + criticBlock + buildTicketExecutePrompt(ticket, worker.plan, worktreePath);
       return {
         action: 'PROMPT',
         phase: 'EXECUTE',
@@ -219,6 +245,31 @@ export async function advanceTicketWorker(
         constraints,
         ticket_id: ticketId,
         reason: `Running QA for: ${ticket.title} (attempt ${worker.qa_retries + 1}/${MAX_QA_RETRIES})`,
+      };
+    }
+
+    case 'CROSS_QA': {
+      if (worker.qa_retries >= MAX_QA_RETRIES) {
+        await repos.tickets.updateStatus(db, ticketId, 'blocked');
+        run.failTicketWorker(ticketId, `Cross-verify QA failed ${MAX_QA_RETRIES} times`);
+        return {
+          action: 'FAILED',
+          phase: 'FAILED',
+          prompt: null,
+          constraints: null,
+          ticket_id: ticketId,
+          reason: `Cross-verify QA failed ${MAX_QA_RETRIES} times`,
+        };
+      }
+
+      const prompt = buildCrossQaPrompt(ticket, worktreePath);
+      return {
+        action: 'PROMPT',
+        phase: 'CROSS_QA',
+        prompt,
+        constraints,
+        ticket_id: ticketId,
+        reason: `Cross-verifying: ${ticket.title} (attempt ${worker.qa_retries + 1}/${MAX_QA_RETRIES})`,
       };
     }
 
@@ -289,10 +340,13 @@ export async function ingestTicketEvent(
       };
 
       const ticket = await repos.tickets.getById(db, ticketId);
+      const worktreeRoot = run.require().direct ? undefined : `.blockspool/worktrees/${ticketId}`;
       const policy = deriveScopePolicy({
         allowedPaths: ticket?.allowedPaths ?? [],
         category: ticket?.category ?? 'refactor',
         maxLinesPerTicket: run.require().max_lines_per_ticket,
+        worktreeRoot,
+        learnings: run.require().cached_learnings,
       });
 
       const scopeResult = validatePlanScope(plan.files_to_touch, plan.estimated_lines, plan.risk_level, policy);
@@ -338,8 +392,9 @@ export async function ingestTicketEvent(
           const diff = (payload['diff'] ?? null) as string | null;
           const changedFiles = (payload['changed_files'] ?? []) as string[];
           recordDiff(worker.spindle, diff ?? (changedFiles.length > 0 ? changedFiles.join('\n') : null));
-          run.updateTicketWorker(ticketId, { phase: 'QA', spindle: worker.spindle });
-          return { processed: true, message: 'Moving to QA' };
+          const nextPhase = run.require().cross_verify ? 'CROSS_QA' : 'QA';
+          run.updateTicketWorker(ticketId, { phase: nextPhase, spindle: worker.spindle });
+          return { processed: true, message: run.require().cross_verify ? 'Moving to CROSS_QA (independent verification)' : 'Moving to QA' };
         }
         // Inline prompt completed without PR — mark complete
         run.completeTicketWorker(ticketId);
@@ -363,8 +418,8 @@ export async function ingestTicketEvent(
     }
 
     case 'QA_PASSED': {
-      if (worker.phase !== 'QA') {
-        return { processed: true, message: 'QA passed outside QA phase' };
+      if (worker.phase !== 'QA' && worker.phase !== 'CROSS_QA') {
+        return { processed: true, message: 'QA passed outside QA/CROSS_QA phase' };
       }
       await repos.tickets.updateStatus(db, ticketId, 'done');
 
@@ -379,18 +434,28 @@ export async function ingestTicketEvent(
     }
 
     case 'QA_FAILED': {
-      if (worker.phase !== 'QA') {
-        return { processed: true, message: 'QA failed outside QA phase' };
+      if (worker.phase !== 'QA' && worker.phase !== 'CROSS_QA') {
+        return { processed: true, message: 'QA failed outside QA/CROSS_QA phase' };
       }
       recordDiff(worker.spindle, null);
       worker.qa_retries++;
+      // Store failure context for critic block injection on retry
+      {
+        const failedCmds = (payload['failed_commands'] ?? payload['command'] ?? '') as string | string[];
+        const errorOutput = (payload['error'] ?? payload['output'] ?? '') as string;
+        worker.last_qa_failure = {
+          failed_commands: Array.isArray(failedCmds) ? failedCmds : failedCmds ? [failedCmds] : [],
+          error_output: errorOutput.slice(0, 500),
+        };
+      }
       if (worker.qa_retries >= MAX_QA_RETRIES) {
         await repos.tickets.updateStatus(db, ticketId, 'blocked');
         run.failTicketWorker(ticketId, `QA failed ${worker.qa_retries} times`);
         return { processed: true, message: `QA failed ${worker.qa_retries} times, giving up` };
       }
+      // On CROSS_QA failure, send back to EXECUTE (implementer re-tries), not CROSS_QA
       run.updateTicketWorker(ticketId, { phase: 'EXECUTE', qa_retries: worker.qa_retries, spindle: worker.spindle });
-      return { processed: true, message: `QA failed (attempt ${worker.qa_retries}/${MAX_QA_RETRIES}), retrying` };
+      return { processed: true, message: `QA failed (attempt ${worker.qa_retries}/${MAX_QA_RETRIES}), retrying from EXECUTE` };
     }
 
     case 'PR_CREATED': {
@@ -524,6 +589,40 @@ function buildTicketQaPrompt(
     'Run the following verification commands and report results:',
     '',
     ...ticket.verificationCommands.map(c => `\`\`\`bash\ncd ${worktreePath} && ${c}\n\`\`\``),
+    '',
+    'For each command, call `blockspool_ticket_event` with type `QA_COMMAND_RESULT` and:',
+    '`{ "command": "...", "success": true/false, "output": "stdout+stderr" }`',
+    '',
+    'After all commands, call `blockspool_ticket_event` with type `QA_PASSED` if all pass, or `QA_FAILED` with failure details.',
+  ].join('\n');
+}
+
+function buildCrossQaPrompt(
+  ticket: { title: string; verificationCommands: string[] },
+  worktreePath: string,
+): string {
+  return [
+    `# Independent Cross-Verification: ${ticket.title}`,
+    '',
+    '## IMPORTANT — You are an INDEPENDENT VERIFIER',
+    '',
+    'You are verifying work done by a DIFFERENT agent. Do NOT trust any claims of success.',
+    'You must run ALL verification commands yourself and report results honestly.',
+    'If something is broken, report it — even if the implementing agent claimed it works.',
+    '',
+    `**Working directory:** \`${worktreePath}\``,
+    'Run all commands from within the worktree.',
+    '',
+    '## Verification Commands',
+    '',
+    ...ticket.verificationCommands.map(c => `\`\`\`bash\ncd ${worktreePath} && ${c}\n\`\`\``),
+    '',
+    '## Steps',
+    '',
+    '1. Read the changed files to understand what was modified',
+    '2. Run ALL verification commands listed above',
+    '3. Check for any obvious issues the implementer may have missed',
+    '4. Report results honestly',
     '',
     'For each command, call `blockspool_ticket_event` with type `QA_COMMAND_RESULT` and:',
     '`{ "command": "...", "success": true/false, "output": "stdout+stderr" }`',

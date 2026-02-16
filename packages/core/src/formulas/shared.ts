@@ -27,6 +27,11 @@ export interface Formula {
   exclude?: string[];
   useRoadmap?: boolean;
   tags?: string[];
+  measure?: {
+    cmd: string;              // shell command that outputs a number
+    target: number;           // target value
+    direction: 'up' | 'down'; // 'up' = higher is better, 'down' = lower is better
+  };
 }
 
 // ---------------------------------------------------------------------------

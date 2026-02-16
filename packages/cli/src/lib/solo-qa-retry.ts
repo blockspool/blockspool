@@ -147,8 +147,6 @@ export async function runQaRetryWithTestFix(ctx: QaRetryContext): Promise<QaRetr
       // Re-run QA
       const { createExecRunner } = await import('../lib/exec.js');
       const { createLogger } = await import('../lib/logger.js');
-      const { normalizeQaConfig } = await import('./solo-utils.js');
-      const { projects } = await import('@blockspool/core/repos');
       const exec = createExecRunner({
         defaultMaxLogBytes: qaConfig.artifacts.maxLogBytes,
         defaultTailBytes: qaConfig.artifacts.tailBytes,

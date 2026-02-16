@@ -6,8 +6,8 @@
 
 import { nanoid } from '../utils/id.js';
 import { buildScoutPrompt } from './prompt.js';
-import { runClaude, parseClaudeOutput, ClaudeScoutBackend, type ScoutBackend } from './runner.js';
-import { scanFiles, batchFiles, batchFilesByTokens, batchFilesByModule, type ScannedFile } from './scanner.js';
+import { parseClaudeOutput, ClaudeScoutBackend, type ScoutBackend } from './runner.js';
+import { scanFiles, batchFilesByTokens, batchFilesByModule } from './scanner.js';
 import type {
   ScoutOptions,
   ScoutResult,
@@ -25,44 +25,9 @@ export { McpBatchServer } from './mcp-batch-server.js';
 export { scanFiles, batchFiles, batchFilesByTokens, batchFilesByModule, estimateTokens, type ScannedFile, type ModuleGroup } from './scanner.js';
 
 /**
- * Default verification commands by category
+ * Default verification commands — used only when the scout returns none.
  */
-const DEFAULT_VERIFICATION_COMMANDS: Record<ProposalCategory, string[]> = {
-  refactor: ['npm run build'],
-  docs: ['npm run build'],
-  test: ['npm run build', 'npm test'],
-  perf: ['npm run build'],
-  security: ['npm run build'],
-  fix: ['npm run build', 'npm test'],
-  cleanup: ['npm run build'],
-  types: ['npm run build'],
-};
-
-/**
- * Sanitize verification commands to prevent predictable failures
- */
-function sanitizeVerificationCommands(
-  commands: string[],
-  category: ProposalCategory
-): string[] {
-  const sanitized = commands.filter(cmd => {
-    const lower = cmd.toLowerCase();
-    // Remove fragile commands
-    if (lower.includes('grep ') || lower.includes('wc ')) return false;
-    // Remove file-specific test commands (often fail)
-    if (lower.includes('npm test --') || lower.includes('npm test -- ')) return false;
-    // Remove npm test for non-test categories (wastes time)
-    if (category !== 'test' && lower.includes('npm test')) return false;
-    return true;
-  });
-
-  // Ensure at least the default commands
-  if (sanitized.length === 0) {
-    return DEFAULT_VERIFICATION_COMMANDS[category];
-  }
-
-  return sanitized;
-}
+const DEFAULT_VERIFICATION_COMMANDS: string[] = ['npm run build'];
 
 /**
  * Expand allowed paths for test proposals to include test file locations
@@ -219,11 +184,10 @@ function normalizeProposal(
       proposal.acceptance_criteria = ['Implementation verified by tests'];
     }
 
-    // Sanitize verification commands
-    proposal.verification_commands = sanitizeVerificationCommands(
-      proposal.verification_commands,
-      proposal.category
-    );
+    // Ensure at least default verification commands
+    if (proposal.verification_commands.length === 0) {
+      proposal.verification_commands = [...DEFAULT_VERIFICATION_COMMANDS];
+    }
 
     // Ensure allowed_paths
     if (proposal.allowed_paths.length === 0 && proposal.files.length > 0) {
@@ -362,7 +326,7 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
     const batches = options.moduleGroups?.length
       ? batchFilesByModule(files, options.moduleGroups, budget)
       : batchFilesByTokens(files, budget);
-    const maxBatches = Math.min(batches.length, 20); // Cap at 20 batches
+    const maxBatches = Math.min(batches.length, 50); // Cap at 50 batches
 
     // Track last-seen sector reclassification across batches
     let lastSectorReclassification: { production?: boolean; confidence?: string } | undefined;
@@ -412,7 +376,7 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
         scope,
         types,
         excludeTypes,
-        maxProposals: Math.min(5, maxProposals),
+        maxProposals: Math.min(10, maxProposals),
         minConfidence,
         recentlyCompletedTitles,
         customPrompt,
@@ -434,7 +398,10 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
         totalBatches: maxBatches,
       });
 
-      const allOptions = allPrompts.map(prompt => ({ prompt, cwd: projectPath, timeoutMs, model, signal }));
+      const allOptions = allPrompts.map((prompt, i) => ({
+        prompt, cwd: projectPath, timeoutMs, model, signal,
+        onRawOutput: options.onRawOutput ? (chunk: string) => options.onRawOutput!(i, chunk) : undefined,
+      }));
       const results = await scoutBackend.runAll(allOptions);
       for (let i = 0; i < results.length; i++) {
         processBatchResult(results[i], i);
@@ -494,6 +461,7 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
             timeoutMs,
             model,
             signal,
+            onRawOutput: options.onRawOutput ? (chunk: string) => options.onRawOutput!(i, chunk) : undefined,
           });
 
           // JS is single-threaded between awaits — safe to mutate proposals

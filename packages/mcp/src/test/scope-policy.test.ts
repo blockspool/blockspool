@@ -16,9 +16,14 @@ import {
   deriveScopePolicy,
   validatePlanScope,
   isFileAllowed,
+  isFileInWorktree,
   containsCredentials,
   serializeScopePolicy,
+  getCategoryToolPolicy,
+  isCategoryFileAllowed,
 } from '../scope-policy.js';
+import { ingestTicketEvent } from '../ticket-worker.js';
+import type { TicketWorkerContext } from '../ticket-worker.js';
 
 let db: DatabaseAdapter;
 let project: Project;
@@ -507,5 +512,472 @@ describe('advance — docs category bypasses plan', () => {
 
     expect(resp.phase).toBe('PLAN');
     expect(resp.constraints.plan_required).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 1: Category Tool Policies
+// ---------------------------------------------------------------------------
+
+describe('getCategoryToolPolicy', () => {
+  it('returns restricted patterns for docs category', () => {
+    const policy = getCategoryToolPolicy('docs');
+    expect(policy).not.toBeNull();
+    expect(policy!.auto_approve_patterns).toContain('Read(*)');
+    expect(policy!.auto_approve_patterns).toContain('Edit(*.md)');
+    expect(policy!.auto_approve_patterns).not.toContain('Edit(*)');
+    expect(policy!.constraint_note).toContain('docs');
+  });
+
+  it('returns restricted patterns for test category', () => {
+    const policy = getCategoryToolPolicy('test');
+    expect(policy).not.toBeNull();
+    expect(policy!.auto_approve_patterns).toContain('Edit(*.test.*)');
+    expect(policy!.auto_approve_patterns).toContain('Edit(*.spec.*)');
+    expect(policy!.auto_approve_patterns).not.toContain('Edit(*)');
+    expect(policy!.constraint_note).toContain('test');
+  });
+
+  it('returns restricted patterns for security category', () => {
+    const policy = getCategoryToolPolicy('security');
+    expect(policy).not.toBeNull();
+    expect(policy!.auto_approve_patterns).toContain('Edit(*)');
+    expect(policy!.constraint_note).toContain('security');
+    expect(policy!.constraint_note).toContain('npm install');
+  });
+
+  it('returns null for refactor category (no restrictions)', () => {
+    const policy = getCategoryToolPolicy('refactor');
+    expect(policy).toBeNull();
+  });
+
+  it('returns null for null category', () => {
+    const policy = getCategoryToolPolicy(null);
+    expect(policy).toBeNull();
+  });
+
+  it('returns null for unknown category', () => {
+    const policy = getCategoryToolPolicy('unknown-cat');
+    expect(policy).toBeNull();
+  });
+});
+
+describe('advance — category tool policies in auto_approve_patterns', () => {
+  it('uses docs auto_approve_patterns for docs ticket', async () => {
+    startRun({ categories: ['docs', 'refactor'] });
+
+    await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Update README',
+      description: 'Add docs',
+      status: 'ready',
+      priority: 60,
+      category: 'docs',
+      allowedPaths: ['docs/**', '*.md'],
+      verificationCommands: [],
+    });
+
+    const resp = await advance({ run, db, project });
+    // docs skips plan → goes to EXECUTE
+    expect(resp.phase).toBe('EXECUTE');
+    expect(resp.constraints.auto_approve_patterns).toContain('Edit(*.md)');
+    expect(resp.constraints.auto_approve_patterns).not.toContain('Edit(*)');
+  });
+
+  it('uses default EXECUTE_AUTO_APPROVE for refactor ticket', async () => {
+    startRun();
+
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Refactor foo',
+      description: 'Cleanup',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: ['npm test'],
+    });
+
+    const s = run.require();
+    s.phase = 'EXECUTE';
+    s.current_ticket_id = ticket.id;
+    s.plan_approved = true;
+
+    const resp = await advance({ run, db, project });
+    expect(resp.phase).toBe('EXECUTE');
+    expect(resp.constraints.auto_approve_patterns).toContain('Edit(*)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2: Worktree Isolation Enforcement
+// ---------------------------------------------------------------------------
+
+describe('isFileInWorktree', () => {
+  it('accepts file inside worktree', () => {
+    expect(isFileInWorktree('.blockspool/worktrees/t1/src/foo.ts', '.blockspool/worktrees/t1')).toBe(true);
+  });
+
+  it('accepts exact worktree root', () => {
+    expect(isFileInWorktree('.blockspool/worktrees/t1', '.blockspool/worktrees/t1')).toBe(true);
+  });
+
+  it('rejects file outside worktree', () => {
+    expect(isFileInWorktree('src/foo.ts', '.blockspool/worktrees/t1')).toBe(false);
+  });
+
+  it('rejects file in different worktree', () => {
+    expect(isFileInWorktree('.blockspool/worktrees/t2/src/foo.ts', '.blockspool/worktrees/t1')).toBe(false);
+  });
+
+  it('rejects path traversal attempts', () => {
+    expect(isFileInWorktree('.blockspool/worktrees/t1/../t2/foo.ts', '.blockspool/worktrees/t1')).toBe(false);
+  });
+
+  it('handles trailing slash on worktree root', () => {
+    expect(isFileInWorktree('.blockspool/worktrees/t1/foo.ts', '.blockspool/worktrees/t1/')).toBe(true);
+  });
+});
+
+describe('isFileAllowed with worktree_root', () => {
+  it('blocks files outside worktree when worktree_root is set', () => {
+    const policy = deriveScopePolicy({
+      allowedPaths: ['src/**'],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+      worktreeRoot: '/tmp/project/.blockspool/worktrees/t1',
+    });
+    // File is in the main tree, not in the worktree — should be blocked
+    expect(isFileAllowed('src/foo.ts', policy)).toBe(false);
+  });
+
+  it('allows files inside worktree when worktree_root is set', () => {
+    const policy = deriveScopePolicy({
+      allowedPaths: [],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+      worktreeRoot: '/tmp/project/.blockspool/worktrees/t1',
+    });
+    // Files use absolute paths in worktree mode, so they match the worktree_root prefix
+    // and are not blocked by the .blockspool/** deny glob (which matches relative paths)
+    expect(isFileAllowed('/tmp/project/.blockspool/worktrees/t1/src/foo.ts', policy)).toBe(true);
+  });
+
+  it('behaves normally when worktree_root is not set (backwards compat)', () => {
+    const policy = deriveScopePolicy({
+      allowedPaths: ['src/**'],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+    });
+    expect(isFileAllowed('src/foo.ts', policy)).toBe(true);
+  });
+});
+
+describe('serializeScopePolicy with worktree_root', () => {
+  it('includes worktree_root when set', () => {
+    const policy = deriveScopePolicy({
+      allowedPaths: ['src/**'],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+      worktreeRoot: '/tmp/project/.blockspool/worktrees/t1',
+    });
+    const serialized = serializeScopePolicy(policy);
+    expect(serialized.worktree_root).toBe('/tmp/project/.blockspool/worktrees/t1');
+  });
+
+  it('omits worktree_root when not set', () => {
+    const policy = deriveScopePolicy({
+      allowedPaths: ['src/**'],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+    });
+    const serialized = serializeScopePolicy(policy);
+    expect(serialized.worktree_root).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3: Cross-Verify
+// ---------------------------------------------------------------------------
+
+describe('cross_verify — ticket worker state transitions', () => {
+  it('TICKET_RESULT transitions to QA when cross_verify is false', async () => {
+    startRun({ cross_verify: false });
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Test ticket',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: ['npm test'],
+    });
+
+    run.initTicketWorker(ticket.id, ticket);
+    run.updateTicketWorker(ticket.id, { phase: 'EXECUTE', plan_approved: true });
+
+    const ctx: TicketWorkerContext = { run, db, project };
+    const result = await ingestTicketEvent(ctx, ticket.id, 'TICKET_RESULT', {
+      status: 'success',
+      changed_files: ['src/foo.ts'],
+    });
+
+    expect(result.processed).toBe(true);
+    expect(result.message).toContain('QA');
+    expect(result.message).not.toContain('CROSS_QA');
+    const worker = run.getTicketWorker(ticket.id);
+    expect(worker?.phase).toBe('QA');
+  });
+
+  it('TICKET_RESULT transitions to CROSS_QA when cross_verify is true', async () => {
+    startRun({ cross_verify: true });
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Cross-verify ticket',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: ['npm test'],
+    });
+
+    run.initTicketWorker(ticket.id, ticket);
+    run.updateTicketWorker(ticket.id, { phase: 'EXECUTE', plan_approved: true });
+
+    const ctx: TicketWorkerContext = { run, db, project };
+    const result = await ingestTicketEvent(ctx, ticket.id, 'TICKET_RESULT', {
+      status: 'success',
+      changed_files: ['src/foo.ts'],
+    });
+
+    expect(result.processed).toBe(true);
+    expect(result.message).toContain('CROSS_QA');
+    const worker = run.getTicketWorker(ticket.id);
+    expect(worker?.phase).toBe('CROSS_QA');
+  });
+
+  it('QA_PASSED in CROSS_QA phase completes ticket', async () => {
+    startRun({ cross_verify: true });
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Cross-verify pass',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: ['npm test'],
+    });
+
+    run.initTicketWorker(ticket.id, ticket);
+    run.updateTicketWorker(ticket.id, { phase: 'CROSS_QA', plan_approved: true });
+
+    const ctx: TicketWorkerContext = { run, db, project };
+    const result = await ingestTicketEvent(ctx, ticket.id, 'QA_PASSED', {});
+
+    expect(result.processed).toBe(true);
+    expect(result.message).toContain('complete');
+    // Worker should be cleaned up (completed)
+    const worker = run.getTicketWorker(ticket.id);
+    expect(worker).toBeNull();
+  });
+
+  it('QA_FAILED in CROSS_QA phase sends back to EXECUTE', async () => {
+    startRun({ cross_verify: true });
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Cross-verify fail',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: ['npm test'],
+    });
+
+    run.initTicketWorker(ticket.id, ticket);
+    run.updateTicketWorker(ticket.id, { phase: 'CROSS_QA', plan_approved: true });
+
+    const ctx: TicketWorkerContext = { run, db, project };
+    const result = await ingestTicketEvent(ctx, ticket.id, 'QA_FAILED', {
+      reason: 'Tests failed',
+    });
+
+    expect(result.processed).toBe(true);
+    expect(result.message).toContain('retrying');
+    const worker = run.getTicketWorker(ticket.id);
+    expect(worker?.phase).toBe('EXECUTE');
+  });
+
+  it('cross_verify defaults to false', () => {
+    startRun();
+    const s = run.require();
+    expect(s.cross_verify).toBe(false);
+  });
+
+  it('cross_verify can be enabled via config', () => {
+    startRun({ cross_verify: true });
+    const s = run.require();
+    expect(s.cross_verify).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isCategoryFileAllowed — enforcement of category file-type restrictions
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Adaptive Trust — deriveScopePolicy with learnings
+// ---------------------------------------------------------------------------
+
+describe('deriveScopePolicy with adaptive trust', () => {
+  it('returns unchanged behavior when no learnings parameter', () => {
+    const policy = deriveScopePolicy({
+      allowedPaths: ['src/**'],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+    });
+    expect(policy.max_files).toBe(10);
+    expect(policy.max_lines).toBe(500);
+    expect(policy.plan_required).toBe(true);
+    expect(policy.risk_assessment).toBeUndefined();
+  });
+
+  it('returns low risk with relaxed limits for empty learnings', () => {
+    const policy = deriveScopePolicy({
+      allowedPaths: ['src/**'],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+      learnings: [],
+    });
+    // Empty learnings array → assessAdaptiveRisk not called (length check)
+    expect(policy.max_files).toBe(10);
+    expect(policy.risk_assessment).toBeUndefined();
+  });
+
+  it('returns low risk with relaxed limits when learnings have no path overlap', () => {
+    const { makeLearning } = (() => {
+      // Local helper for scope-policy tests
+      return {
+        makeLearning: (overrides: Record<string, unknown> = {}) => ({
+          id: 'test-1',
+          text: 'Test learning',
+          category: 'gotcha',
+          source: { type: 'qa_failure' },
+          tags: ['path:lib/other'],
+          weight: 50,
+          created_at: new Date().toISOString(),
+          last_confirmed_at: new Date().toISOString(),
+          access_count: 0,
+          ...overrides,
+        }),
+      };
+    })();
+
+    const policy = deriveScopePolicy({
+      allowedPaths: ['src/**'],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+      learnings: [makeLearning()] as any,
+    });
+    // No path overlap → score 0 → low → max_files 15, maxLines * 1.5
+    expect(policy.risk_assessment?.level).toBe('low');
+    expect(policy.max_files).toBe(15);
+    expect(policy.max_lines).toBe(750);
+  });
+
+  it('tightens limits for elevated risk (multiple failures)', () => {
+    const learnings = Array.from({ length: 4 }, (_, i) => ({
+      id: `fail-${i}`,
+      text: `Failure ${i}`,
+      category: 'gotcha' as const,
+      source: { type: 'qa_failure' as const },
+      tags: ['path:src/config'],
+      weight: 50,
+      created_at: new Date().toISOString(),
+      last_confirmed_at: new Date().toISOString(),
+      access_count: 0,
+    }));
+
+    const policy = deriveScopePolicy({
+      allowedPaths: ['src/config/**'],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+      learnings: learnings as any,
+    });
+    // 4 failures × 10*(50/50) = 40 → elevated
+    expect(policy.risk_assessment?.level).toBe('elevated');
+    expect(policy.max_files).toBe(7);
+    expect(policy.plan_required).toBe(true);
+  });
+
+  it('overrides docs category plan_required=false when risk is high', () => {
+    const learnings = Array.from({ length: 3 }, (_, i) => ({
+      id: `fragile-${i}`,
+      text: `Fragile issue ${i}`,
+      category: 'gotcha' as const,
+      source: { type: 'qa_failure' as const },
+      tags: ['path:docs'],
+      weight: 80,
+      created_at: new Date().toISOString(),
+      last_confirmed_at: new Date().toISOString(),
+      access_count: 0,
+      structured: {
+        fragile_paths: ['docs/api.md'],
+        pattern_type: 'antipattern' as const,
+      },
+    }));
+
+    const policy = deriveScopePolicy({
+      allowedPaths: ['docs/**'],
+      category: 'docs',
+      maxLinesPerTicket: 500,
+      learnings: learnings as any,
+    });
+    // High risk overrides the docs plan_required=false default
+    expect(policy.risk_assessment?.level).toBe('high');
+    expect(policy.plan_required).toBe(true);
+    expect(policy.max_files).toBe(5);
+  });
+});
+
+describe('isCategoryFileAllowed', () => {
+  it('allows any file when category is null', () => {
+    expect(isCategoryFileAllowed('src/foo.ts', null)).toBe(true);
+  });
+
+  it('allows any file for categories without restrictions (fix, refactor, security)', () => {
+    expect(isCategoryFileAllowed('src/foo.ts', 'fix')).toBe(true);
+    expect(isCategoryFileAllowed('src/foo.ts', 'refactor')).toBe(true);
+    expect(isCategoryFileAllowed('src/foo.ts', 'security')).toBe(true);
+  });
+
+  it('docs category allows markdown files', () => {
+    expect(isCategoryFileAllowed('README.md', 'docs')).toBe(true);
+    expect(isCategoryFileAllowed('docs/guide.mdx', 'docs')).toBe(true);
+    expect(isCategoryFileAllowed('CHANGELOG.txt', 'docs')).toBe(true);
+    expect(isCategoryFileAllowed('docs/api.rst', 'docs')).toBe(true);
+  });
+
+  it('docs category rejects source code files', () => {
+    expect(isCategoryFileAllowed('src/foo.ts', 'docs')).toBe(false);
+    expect(isCategoryFileAllowed('lib/bar.js', 'docs')).toBe(false);
+    expect(isCategoryFileAllowed('package.json', 'docs')).toBe(false);
+    expect(isCategoryFileAllowed('tsconfig.json', 'docs')).toBe(false);
+  });
+
+  it('test category allows test files', () => {
+    expect(isCategoryFileAllowed('src/foo.test.ts', 'test')).toBe(true);
+    expect(isCategoryFileAllowed('lib/bar.spec.js', 'test')).toBe(true);
+    expect(isCategoryFileAllowed('__tests__/baz.ts', 'test')).toBe(true);
+    expect(isCategoryFileAllowed('src/__tests__/foo.ts', 'test')).toBe(true);
+  });
+
+  it('test category rejects production source files', () => {
+    expect(isCategoryFileAllowed('src/foo.ts', 'test')).toBe(false);
+    expect(isCategoryFileAllowed('lib/bar.js', 'test')).toBe(false);
+    expect(isCategoryFileAllowed('index.ts', 'test')).toBe(false);
   });
 });

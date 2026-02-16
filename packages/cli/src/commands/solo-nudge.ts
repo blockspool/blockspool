@@ -8,7 +8,7 @@ import { createGitService } from '../lib/git.js';
 import { addHint, readHints, clearHints } from '../lib/solo-hints.js';
 
 export function registerNudgeCommands(solo: Command): void {
-  const nudge = solo
+  solo
     .command('nudge [text...]')
     .description('Add a steering hint for a running auto session')
     .option('--list', 'Show pending hints')

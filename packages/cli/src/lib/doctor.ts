@@ -5,7 +5,7 @@
  * before users hit cryptic errors mid-workflow.
  */
 
-import { execSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -402,7 +402,6 @@ export function formatDoctorReport(report: DoctorReport): string {
   // Group checks by status
   const failed = report.checks.filter(c => c.status === 'fail');
   const warned = report.checks.filter(c => c.status === 'warn');
-  const passed = report.checks.filter(c => c.status === 'pass');
 
   // Show all checks
   for (const check of report.checks) {

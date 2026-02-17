@@ -65,6 +65,7 @@ import {
 
 const MAX_PLAN_REJECTIONS = 3;
 const MAX_QA_RETRIES = EXECUTION_DEFAULTS.MAX_QA_RETRIES;
+const MAX_SPINDLE_RECOVERIES = 3;
 const DEFAULT_LEARNINGS_BUDGET = 2000;
 
 /** Load trajectory state from project root — returns null if missing/invalid. */
@@ -233,9 +234,15 @@ export async function advance(ctx: AdvanceContext): Promise<AdvanceResponse> {
         await repos.tickets.updateStatus(db, s.current_ticket_id, 'blocked');
         run.failTicket(`Spindle abort: ${spindleResult.reason}`);
       }
-      run.setPhase('FAILED_SPINDLE');
-      return stopResponse(run, 'FAILED_SPINDLE',
-        `Spindle loop detected: ${spindleResult.reason} (confidence: ${(spindleResult.confidence * 100).toFixed(0)}%)`);
+      s.spindle_recoveries++;
+      if (s.spindle_recoveries >= MAX_SPINDLE_RECOVERIES) {
+        run.setPhase('FAILED_SPINDLE');
+        return stopResponse(run, 'FAILED_SPINDLE',
+          `Spindle loop detected: ${spindleResult.reason} (confidence: ${(spindleResult.confidence * 100).toFixed(0)}%) — recovery cap reached (${s.spindle_recoveries}/${MAX_SPINDLE_RECOVERIES})`);
+      }
+      run.resetForSpindleRecovery();
+      run.setPhase('NEXT_TICKET');
+      return advance(ctx);
     }
 
     if (spindleResult.shouldBlock) {
@@ -248,9 +255,15 @@ export async function advance(ctx: AdvanceContext): Promise<AdvanceResponse> {
         await repos.tickets.updateStatus(db, s.current_ticket_id, 'blocked');
         run.failTicket(`Spindle block: ${spindleResult.reason}`);
       }
-      run.setPhase('BLOCKED_NEEDS_HUMAN');
-      return stopResponse(run, 'BLOCKED_NEEDS_HUMAN',
-        `Spindle: ${spindleResult.reason}. Needs human intervention.`);
+      s.spindle_recoveries++;
+      if (s.spindle_recoveries >= MAX_SPINDLE_RECOVERIES) {
+        run.setPhase('BLOCKED_NEEDS_HUMAN');
+        return stopResponse(run, 'BLOCKED_NEEDS_HUMAN',
+          `Spindle: ${spindleResult.reason} — recovery cap reached (${s.spindle_recoveries}/${MAX_SPINDLE_RECOVERIES}). Needs human intervention.`);
+      }
+      run.resetForSpindleRecovery();
+      run.setPhase('NEXT_TICKET');
+      return advance(ctx);
     }
   }
 

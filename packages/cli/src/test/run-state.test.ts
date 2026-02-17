@@ -10,6 +10,10 @@ import {
   readRunState,
   writeRunState,
   recordCycle,
+  isDocsAuditDue,
+  recordDocsAudit,
+  recordFormulaResult,
+  recordFormulaMergeOutcome,
   recordQualitySignal,
   getQualityRate,
   recordFormulaTicketOutcome,
@@ -92,6 +96,232 @@ describe('recordCycle', () => {
 
     const state = readRunState(tmpDir);
     expect(state.totalCycles).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isDocsAuditDue
+// ---------------------------------------------------------------------------
+
+describe('isDocsAuditDue', () => {
+  it('returns true when no cycles have run (default interval 3)', () => {
+    // totalCycles=0, lastDocsAuditCycle=0 → gap=0 < 3
+    expect(isDocsAuditDue(tmpDir)).toBe(false);
+  });
+
+  it('returns true when gap reaches default interval', () => {
+    const state = readRunState(tmpDir);
+    state.totalCycles = 3;
+    state.lastDocsAuditCycle = 0;
+    writeRunState(tmpDir, state);
+
+    expect(isDocsAuditDue(tmpDir)).toBe(true);
+  });
+
+  it('returns false when gap is under the interval', () => {
+    const state = readRunState(tmpDir);
+    state.totalCycles = 5;
+    state.lastDocsAuditCycle = 4;
+    writeRunState(tmpDir, state);
+
+    expect(isDocsAuditDue(tmpDir)).toBe(false);
+  });
+
+  it('respects custom interval parameter', () => {
+    const state = readRunState(tmpDir);
+    state.totalCycles = 10;
+    state.lastDocsAuditCycle = 5;
+    writeRunState(tmpDir, state);
+
+    expect(isDocsAuditDue(tmpDir, 5)).toBe(true);
+    expect(isDocsAuditDue(tmpDir, 6)).toBe(false);
+  });
+
+  it('returns true when gap exceeds interval', () => {
+    const state = readRunState(tmpDir);
+    state.totalCycles = 20;
+    state.lastDocsAuditCycle = 5;
+    writeRunState(tmpDir, state);
+
+    expect(isDocsAuditDue(tmpDir)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordDocsAudit
+// ---------------------------------------------------------------------------
+
+describe('recordDocsAudit', () => {
+  it('updates lastDocsAuditCycle to current totalCycles', async () => {
+    const state = readRunState(tmpDir);
+    state.totalCycles = 7;
+    writeRunState(tmpDir, state);
+
+    await recordDocsAudit(tmpDir);
+
+    const loaded = readRunState(tmpDir);
+    expect(loaded.lastDocsAuditCycle).toBe(7);
+  });
+
+  it('makes isDocsAuditDue return false after recording', async () => {
+    const state = readRunState(tmpDir);
+    state.totalCycles = 6;
+    state.lastDocsAuditCycle = 0;
+    writeRunState(tmpDir, state);
+
+    expect(isDocsAuditDue(tmpDir)).toBe(true);
+
+    await recordDocsAudit(tmpDir);
+
+    expect(isDocsAuditDue(tmpDir)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordFormulaResult
+// ---------------------------------------------------------------------------
+
+describe('recordFormulaResult', () => {
+  it('creates formula entry and increments cycles and proposalsGenerated', async () => {
+    await recordFormulaResult(tmpDir, 'security-audit', 3);
+
+    const state = readRunState(tmpDir);
+    const stats = state.formulaStats['security-audit'];
+    expect(stats).toBeDefined();
+    expect(stats.cycles).toBe(1);
+    expect(stats.proposalsGenerated).toBe(3);
+    expect(stats.recentCycles).toBe(1);
+    expect(stats.recentProposalsGenerated).toBe(3);
+  });
+
+  it('accumulates across multiple calls', async () => {
+    await recordFormulaResult(tmpDir, 'test-coverage', 2);
+    await recordFormulaResult(tmpDir, 'test-coverage', 5);
+
+    const state = readRunState(tmpDir);
+    const stats = state.formulaStats['test-coverage'];
+    expect(stats.cycles).toBe(2);
+    expect(stats.proposalsGenerated).toBe(7);
+    expect(stats.recentCycles).toBe(2);
+    expect(stats.recentProposalsGenerated).toBe(7);
+  });
+
+  it('resets recent counters at 20-cycle boundary', async () => {
+    // Seed state with totalCycles=19 and a formula with 19 recent cycles
+    const state = readRunState(tmpDir);
+    state.totalCycles = 19;
+    state.formulaStats['cleanup'] = {
+      cycles: 19,
+      proposalsGenerated: 50,
+      ticketsSucceeded: 10,
+      ticketsTotal: 15,
+      recentCycles: 19,
+      recentProposalsGenerated: 50,
+      recentTicketsSucceeded: 10,
+      recentTicketsTotal: 15,
+      lastResetCycle: 0,
+    };
+    writeRunState(tmpDir, state);
+
+    // This call triggers the 20-cycle reset (totalCycles=19 - lastResetCycle=0 >= 20? No, 19 < 20)
+    // Actually need totalCycles - lastResetCycle >= 20. Set totalCycles=20
+    const state2 = readRunState(tmpDir);
+    state2.totalCycles = 20;
+    writeRunState(tmpDir, state2);
+
+    await recordFormulaResult(tmpDir, 'cleanup', 4);
+
+    const loaded = readRunState(tmpDir);
+    const stats = loaded.formulaStats['cleanup'];
+    // Recent counters should be reset: recentCycles=1 (this call), recentProposalsGenerated=4
+    expect(stats.recentCycles).toBe(1);
+    expect(stats.recentProposalsGenerated).toBe(4);
+    // Total counters should still accumulate
+    expect(stats.cycles).toBe(20);
+    expect(stats.proposalsGenerated).toBe(54);
+    // lastResetCycle updated to current totalCycles
+    expect(stats.lastResetCycle).toBe(20);
+  });
+
+  it('does not reset recent counters before 20-cycle boundary', async () => {
+    const state = readRunState(tmpDir);
+    state.totalCycles = 10;
+    state.formulaStats['docs'] = {
+      cycles: 10,
+      proposalsGenerated: 20,
+      ticketsSucceeded: 5,
+      ticketsTotal: 8,
+      recentCycles: 10,
+      recentProposalsGenerated: 20,
+      recentTicketsSucceeded: 5,
+      recentTicketsTotal: 8,
+      lastResetCycle: 0,
+    };
+    writeRunState(tmpDir, state);
+
+    await recordFormulaResult(tmpDir, 'docs', 2);
+
+    const loaded = readRunState(tmpDir);
+    const stats = loaded.formulaStats['docs'];
+    // 10 - 0 = 10 < 20, no reset
+    expect(stats.recentCycles).toBe(11);
+    expect(stats.recentProposalsGenerated).toBe(22);
+  });
+
+  it('tracks multiple formulas independently', async () => {
+    await recordFormulaResult(tmpDir, 'alpha', 1);
+    await recordFormulaResult(tmpDir, 'beta', 3);
+
+    const state = readRunState(tmpDir);
+    expect(state.formulaStats['alpha'].proposalsGenerated).toBe(1);
+    expect(state.formulaStats['beta'].proposalsGenerated).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordFormulaMergeOutcome
+// ---------------------------------------------------------------------------
+
+describe('recordFormulaMergeOutcome', () => {
+  it('increments mergeCount on merge', async () => {
+    await recordFormulaMergeOutcome(tmpDir, 'security-audit', true);
+
+    const state = readRunState(tmpDir);
+    const stats = state.formulaStats['security-audit'];
+    expect(stats).toBeDefined();
+    expect(stats.mergeCount).toBe(1);
+    expect(stats.closedCount).toBe(0);
+  });
+
+  it('increments closedCount on close', async () => {
+    await recordFormulaMergeOutcome(tmpDir, 'test-coverage', false);
+
+    const state = readRunState(tmpDir);
+    const stats = state.formulaStats['test-coverage'];
+    expect(stats).toBeDefined();
+    expect(stats.mergeCount).toBe(0);
+    expect(stats.closedCount).toBe(1);
+  });
+
+  it('accumulates across multiple calls', async () => {
+    await recordFormulaMergeOutcome(tmpDir, 'cleanup', true);
+    await recordFormulaMergeOutcome(tmpDir, 'cleanup', true);
+    await recordFormulaMergeOutcome(tmpDir, 'cleanup', false);
+
+    const state = readRunState(tmpDir);
+    const stats = state.formulaStats['cleanup'];
+    expect(stats.mergeCount).toBe(2);
+    expect(stats.closedCount).toBe(1);
+  });
+
+  it('creates formula entry if it does not exist', async () => {
+    await recordFormulaMergeOutcome(tmpDir, 'new-formula', true);
+
+    const state = readRunState(tmpDir);
+    const stats = state.formulaStats['new-formula'];
+    expect(stats).toBeDefined();
+    expect(stats.cycles).toBe(0);
+    expect(stats.mergeCount).toBe(1);
   });
 });
 

@@ -14,6 +14,8 @@ import {
   getCommandSuccessRate,
   autoTuneQaConfig,
   calibrateConfidence,
+  resetQaStatsForSession,
+  buildBaselineHealthBlock,
   type QaStatsStore,
   type QaCommandStats,
 } from '../lib/qa-stats.js';
@@ -426,5 +428,205 @@ describe('calibrateConfidence', () => {
 
     const store = readStatsRaw();
     expect(store.lastCalibratedQualityRate).toBeCloseTo(0.3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resetQaStatsForSession
+// ---------------------------------------------------------------------------
+
+describe('resetQaStatsForSession', () => {
+  it('is a no-op when no stats file exists', () => {
+    resetQaStatsForSession(tmpDir);
+    // Should not create the file
+    expect(fs.existsSync(statsFile())).toBe(false);
+  });
+
+  it('is a no-op when stats file has no commands', () => {
+    writeStatsRaw({
+      commands: {},
+      lastUpdated: 100,
+      disabledCommands: [],
+      lastCalibratedQualityRate: null,
+    });
+
+    resetQaStatsForSession(tmpDir);
+    const store = readStatsRaw();
+    expect(store.commands).toEqual({});
+  });
+
+  it('zeroes consecutive counters while preserving other fields', () => {
+    writeStatsRaw({
+      commands: {
+        lint: makeStats({
+          name: 'lint',
+          totalRuns: 20,
+          successes: 15,
+          failures: 5,
+          consecutiveFailures: 3,
+          consecutiveTimeouts: 2,
+          recentBaselineResults: [true, false, true],
+        }),
+      },
+      lastUpdated: 100,
+      disabledCommands: [],
+      lastCalibratedQualityRate: 0.8,
+    });
+
+    resetQaStatsForSession(tmpDir);
+    const store = readStatsRaw();
+
+    expect(store.commands.lint.consecutiveFailures).toBe(0);
+    expect(store.commands.lint.consecutiveTimeouts).toBe(0);
+    // Preserved fields
+    expect(store.commands.lint.totalRuns).toBe(20);
+    expect(store.commands.lint.successes).toBe(15);
+    expect(store.commands.lint.failures).toBe(5);
+    expect(store.commands.lint.recentBaselineResults).toEqual([true, false, true]);
+  });
+
+  it('resets all commands when multiple exist', () => {
+    writeStatsRaw({
+      commands: {
+        lint: makeStats({ name: 'lint', consecutiveFailures: 5, consecutiveTimeouts: 3 }),
+        test: makeStats({ name: 'test', consecutiveFailures: 2, consecutiveTimeouts: 1 }),
+      },
+      lastUpdated: 100,
+      disabledCommands: [],
+      lastCalibratedQualityRate: null,
+    });
+
+    resetQaStatsForSession(tmpDir);
+    const store = readStatsRaw();
+
+    expect(store.commands.lint.consecutiveFailures).toBe(0);
+    expect(store.commands.lint.consecutiveTimeouts).toBe(0);
+    expect(store.commands.test.consecutiveFailures).toBe(0);
+    expect(store.commands.test.consecutiveTimeouts).toBe(0);
+  });
+
+  it('clears disabledCommands array', () => {
+    writeStatsRaw({
+      commands: {
+        test: makeStats({ name: 'test', consecutiveFailures: 1 }),
+      },
+      lastUpdated: 100,
+      disabledCommands: [
+        { name: 'build', reason: 'chronic failure', disabledAt: 1000 },
+        { name: 'lint', reason: 'timeout', disabledAt: 2000 },
+      ],
+      lastCalibratedQualityRate: null,
+    });
+
+    resetQaStatsForSession(tmpDir);
+    const store = readStatsRaw();
+    expect(store.disabledCommands).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBaselineHealthBlock
+// ---------------------------------------------------------------------------
+
+describe('buildBaselineHealthBlock', () => {
+  function writeBaseline(data: Record<string, unknown>): void {
+    const dir = path.join(tmpDir, '.blockspool');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'qa-baseline.json'), JSON.stringify(data));
+  }
+
+  it('returns empty string when no baseline file exists', () => {
+    expect(buildBaselineHealthBlock(tmpDir)).toBe('');
+  });
+
+  it('returns empty string when baseline has no failures', () => {
+    writeBaseline({ failures: [], details: {} });
+    expect(buildBaselineHealthBlock(tmpDir)).toBe('');
+  });
+
+  it('returns empty string for corrupt baseline JSON', () => {
+    const dir = path.join(tmpDir, '.blockspool');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'qa-baseline.json'), 'not json');
+    expect(buildBaselineHealthBlock(tmpDir)).toBe('');
+  });
+
+  it('includes baseline-health tags and header', () => {
+    writeBaseline({
+      failures: ['typecheck'],
+      details: { typecheck: { cmd: 'npx tsc --noEmit', output: 'error TS2345' } },
+    });
+
+    const block = buildBaselineHealthBlock(tmpDir);
+    expect(block).toContain('<baseline-health>');
+    expect(block).toContain('</baseline-health>');
+    expect(block).toContain('QA Baseline Failures');
+  });
+
+  it('formats failure with command and output', () => {
+    writeBaseline({
+      failures: ['lint'],
+      details: { lint: { cmd: 'npm run lint', output: 'src/foo.ts:10 error\nsrc/bar.ts:20 warning' } },
+    });
+
+    const block = buildBaselineHealthBlock(tmpDir);
+    expect(block).toContain('### lint');
+    expect(block).toContain('Command: `npm run lint`');
+    expect(block).toContain('src/foo.ts:10 error');
+    expect(block).toContain('src/bar.ts:20 warning');
+  });
+
+  it('handles failure with no details', () => {
+    writeBaseline({ failures: ['test'], details: {} });
+
+    const block = buildBaselineHealthBlock(tmpDir);
+    expect(block).toContain('### test');
+    // Should not crash
+    expect(block).toContain('<baseline-health>');
+  });
+
+  it('filters output lines by scope prefix', () => {
+    writeBaseline({
+      failures: ['typecheck'],
+      details: {
+        typecheck: {
+          cmd: 'npx tsc',
+          output: 'src/api/routes.ts:5 error\nsrc/lib/utils.ts:10 error\npackages/cli/foo.ts:3 error',
+        },
+      },
+    });
+
+    const block = buildBaselineHealthBlock(tmpDir, 'src/api/**');
+    expect(block).toContain('src/api/routes.ts:5 error');
+    // Other lines should be filtered out since scope-matching lines exist
+    expect(block).not.toContain('src/lib/utils.ts');
+    expect(block).not.toContain('packages/cli/foo.ts');
+  });
+
+  it('shows all lines when scope does not match any output', () => {
+    writeBaseline({
+      failures: ['lint'],
+      details: {
+        lint: { cmd: 'eslint', output: 'src/foo.ts:1 error\nsrc/bar.ts:2 warning' },
+      },
+    });
+
+    const block = buildBaselineHealthBlock(tmpDir, 'packages/cli/**');
+    // No lines match 'packages/cli' so all lines are kept
+    expect(block).toContain('src/foo.ts:1 error');
+    expect(block).toContain('src/bar.ts:2 warning');
+  });
+
+  it('caps output at 30 lines', () => {
+    const longOutput = Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n');
+    writeBaseline({
+      failures: ['lint'],
+      details: { lint: { cmd: 'eslint', output: longOutput } },
+    });
+
+    const block = buildBaselineHealthBlock(tmpDir);
+    expect(block).toContain('more lines');
+    // Should not contain all 50 lines
+    expect(block).not.toContain('line 49');
   });
 });

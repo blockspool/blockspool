@@ -145,6 +145,7 @@ export interface RunState {
 
   // Spindle
   spindle: SpindleState;
+  spindle_recoveries: number;
 
   // Intent tracking
   recent_intent_hashes: string[];

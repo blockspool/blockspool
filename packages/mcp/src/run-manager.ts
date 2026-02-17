@@ -149,6 +149,7 @@ export class RunManager {
       files_total: 0,
 
       spindle: emptySpindle(),
+      spindle_recoveries: 0,
       recent_intent_hashes: [],
       scouted_dirs: [],
       deferred_proposals: [],
@@ -353,6 +354,21 @@ export class RunManager {
     s.ticket_step_count = 0;
     this.persistState();
     this.appendEvent('TICKET_FAILED', { ticket_id: ticketId, reason });
+  }
+
+  /** Reset spindle and ticket state for recovery after a spindle abort */
+  resetForSpindleRecovery(): void {
+    const s = this.require();
+    s.spindle = emptySpindle();
+    s.current_ticket_id = null;
+    s.current_ticket_plan = null;
+    s.plan_approved = false;
+    s.plan_rejections = 0;
+    s.qa_retries = 0;
+    s.ticket_step_count = 0;
+    s.last_qa_failure = null;
+    s.last_plan_rejection_reason = null;
+    this.persistState();
   }
 
   /** Add a hint */

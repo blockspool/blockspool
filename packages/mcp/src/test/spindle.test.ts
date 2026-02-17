@@ -259,7 +259,7 @@ afterEach(async () => {
 });
 
 describe('advance — spindle integration', () => {
-  it('aborts EXECUTE phase when stalling detected', async () => {
+  it('recovers from first spindle stall instead of terminating', async () => {
     run.create(project.id, { step_budget: 50 });
 
     const ticket = await repos.tickets.create(db, {
@@ -281,12 +281,13 @@ describe('advance — spindle integration', () => {
 
     const resp = await advance({ run, db, project });
 
-    expect(resp.next_action).toBe('STOP');
-    expect(resp.phase).toBe('FAILED_SPINDLE');
-    expect(resp.reason).toContain('stalling');
+    // Recovery: ticket failed, session continues (not FAILED_SPINDLE)
+    expect(resp.phase).not.toBe('FAILED_SPINDLE');
+    expect(s.spindle_recoveries).toBe(1);
+    expect(s.tickets_failed).toBeGreaterThanOrEqual(1);
   });
 
-  it('aborts EXECUTE phase on oscillation', async () => {
+  it('recovers from first oscillation instead of terminating', async () => {
     run.create(project.id, { step_budget: 50 });
 
     const ticket = await repos.tickets.create(db, {
@@ -308,12 +309,12 @@ describe('advance — spindle integration', () => {
 
     const resp = await advance({ run, db, project });
 
-    expect(resp.next_action).toBe('STOP');
-    expect(resp.phase).toBe('FAILED_SPINDLE');
-    expect(resp.reason).toContain('oscillation');
+    // Recovery: session continues (not FAILED_SPINDLE)
+    expect(resp.phase).not.toBe('FAILED_SPINDLE');
+    expect(s.spindle_recoveries).toBe(1);
   });
 
-  it('blocks on repeated command failures', async () => {
+  it('recovers from first command failure block instead of terminating', async () => {
     run.create(project.id, { step_budget: 50 });
 
     const ticket = await repos.tickets.create(db, {
@@ -335,9 +336,98 @@ describe('advance — spindle integration', () => {
 
     const resp = await advance({ run, db, project });
 
+    // Recovery: session continues (not BLOCKED_NEEDS_HUMAN)
+    expect(resp.phase).not.toBe('BLOCKED_NEEDS_HUMAN');
+    expect(s.spindle_recoveries).toBe(1);
+  });
+
+  it('terminates after 3 spindle recoveries (shouldAbort)', async () => {
+    run.create(project.id, { step_budget: 50 });
+
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Recovery cap test',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: [],
+    });
+
+    const s = run.require();
+    s.phase = 'EXECUTE';
+    s.current_ticket_id = ticket.id;
+    s.plan_approved = true;
+    s.spindle_recoveries = 2; // Already recovered twice
+    s.spindle.iterations_since_change = 5;
+
+    const resp = await advance({ run, db, project });
+
+    expect(resp.next_action).toBe('STOP');
+    expect(resp.phase).toBe('FAILED_SPINDLE');
+    expect(resp.reason).toContain('recovery cap reached');
+    expect(s.spindle_recoveries).toBe(3);
+  });
+
+  it('terminates after 3 spindle recoveries (shouldBlock)', async () => {
+    run.create(project.id, { step_budget: 50 });
+
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Block recovery cap test',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: [],
+    });
+
+    const s = run.require();
+    s.phase = 'EXECUTE';
+    s.current_ticket_id = ticket.id;
+    s.plan_approved = true;
+    s.spindle_recoveries = 2; // Already recovered twice
+    s.spindle.failing_command_signatures = ['sig_a', 'sig_a', 'sig_a'];
+
+    const resp = await advance({ run, db, project });
+
     expect(resp.next_action).toBe('STOP');
     expect(resp.phase).toBe('BLOCKED_NEEDS_HUMAN');
-    expect(resp.reason).toContain('command_failure');
+    expect(resp.reason).toContain('recovery cap reached');
+    expect(s.spindle_recoveries).toBe(3);
+  });
+
+  it('resets spindle state on recovery', async () => {
+    run.create(project.id, { step_budget: 50 });
+
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Reset state test',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: [],
+    });
+
+    const s = run.require();
+    s.phase = 'EXECUTE';
+    s.current_ticket_id = ticket.id;
+    s.plan_approved = true;
+    s.spindle.iterations_since_change = 5;
+    s.spindle.output_hashes = ['aaa', 'bbb'];
+    s.spindle.diff_hashes = ['ccc'];
+
+    await advance({ run, db, project });
+
+    // After recovery, spindle should be reset
+    expect(s.spindle.iterations_since_change).toBe(0);
+    expect(s.spindle.output_hashes).toEqual([]);
+    expect(s.spindle.diff_hashes).toEqual([]);
+    expect(s.current_ticket_id).toBeNull();
   });
 
   it('does not trigger spindle in SCOUT phase', async () => {

@@ -7,6 +7,7 @@ import {
   recordDedupEntry,
   recordDedupEntries,
   formatDedupForPrompt,
+  getEnabledProposals,
   type DedupEntry,
 } from '../lib/dedup-memory.js';
 
@@ -190,5 +191,216 @@ describe('formatDedupForPrompt', () => {
     const lineCount = text.split('\n').filter(l => l.startsWith('- ')).length;
     expect(lineCount).toBeLessThan(100);
     expect(lineCount).toBeGreaterThan(0);
+  });
+
+  it('shows scope_violation status for entries with that failureReason', () => {
+    const entry: DedupEntry = {
+      ...makeEntry('Out of scope fix', 50, false),
+      failureReason: 'scope_violation',
+    };
+    const text = formatDedupForPrompt([entry]);
+    expect(text).toContain('scope issue — may work with broader scope');
+  });
+
+  it('shows no_changes status for entries with that failureReason', () => {
+    const entry: DedupEntry = {
+      ...makeEntry('Already applied', 50, false),
+      failureReason: 'no_changes',
+    };
+    const text = formatDedupForPrompt([entry]);
+    expect(text).toContain('no changes produced');
+  });
+
+  it('shows generic attempted status for other failureReasons', () => {
+    const entry: DedupEntry = {
+      ...makeEntry('Broken agent', 50, false),
+      failureReason: 'agent_error',
+    };
+    const text = formatDedupForPrompt([entry]);
+    expect(text).toContain('attempted — failed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordDedupEntry — failureReason and relatedTitles
+// ---------------------------------------------------------------------------
+
+describe('recordDedupEntry — extended fields', () => {
+  it('stores failureReason on new entry', () => {
+    recordDedupEntry(tmpDir, 'Scope issue fix', false, 'scope_violation');
+    const entries = readRaw();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].failureReason).toBe('scope_violation');
+  });
+
+  it('stores relatedTitles on new entry', () => {
+    recordDedupEntry(tmpDir, 'Refactor auth', true, undefined, ['Add auth tests', 'Fix auth bug']);
+    const entries = readRaw();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].relatedTitles).toEqual(['Add auth tests', 'Fix auth bug']);
+  });
+
+  it('updates failureReason on re-encounter', () => {
+    recordDedupEntry(tmpDir, 'Flaky fix', false, 'agent_error');
+    recordDedupEntry(tmpDir, 'flaky fix', false, 'qa_failed');
+    const entries = readRaw();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].failureReason).toBe('qa_failed');
+  });
+
+  it('updates relatedTitles on re-encounter', () => {
+    recordDedupEntry(tmpDir, 'Main task', true, undefined, ['Related A']);
+    recordDedupEntry(tmpDir, 'main task', true, undefined, ['Related B', 'Related C']);
+    const entries = readRaw();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].relatedTitles).toEqual(['Related B', 'Related C']);
+  });
+
+  it('preserves existing failureReason when re-encounter has no failureReason', () => {
+    recordDedupEntry(tmpDir, 'Has reason', false, 'spindle_abort');
+    recordDedupEntry(tmpDir, 'has reason', false);
+    const entries = readRaw();
+    expect(entries[0].failureReason).toBe('spindle_abort');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getEnabledProposals
+// ---------------------------------------------------------------------------
+
+describe('getEnabledProposals', () => {
+  function seedEntries(entries: DedupEntry[]): void {
+    const fp = path.join(tmpDir, '.blockspool', 'dedup-memory.json');
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, JSON.stringify(entries), 'utf8');
+  }
+
+  it('returns empty array when no entries exist', () => {
+    expect(getEnabledProposals(tmpDir)).toEqual([]);
+  });
+
+  it('returns related titles from recently completed entries', () => {
+    seedEntries([{
+      title: 'Refactor auth',
+      weight: 80,
+      created_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString(),
+      hit_count: 1,
+      completed: true,
+      relatedTitles: ['Add auth tests', 'Fix auth validation'],
+    }]);
+
+    const result = getEnabledProposals(tmpDir);
+    expect(result).toContain('Add auth tests');
+    expect(result).toContain('Fix auth validation');
+  });
+
+  it('excludes entries older than 48 hours', () => {
+    const staleDate = new Date(Date.now() - 49 * 60 * 60 * 1000).toISOString();
+    seedEntries([{
+      title: 'Old task',
+      weight: 80,
+      created_at: staleDate,
+      last_seen_at: staleDate,
+      hit_count: 1,
+      completed: true,
+      relatedTitles: ['Should not appear'],
+    }]);
+
+    expect(getEnabledProposals(tmpDir)).toEqual([]);
+  });
+
+  it('includes entries within 48 hours', () => {
+    const freshDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    seedEntries([{
+      title: 'Recent task',
+      weight: 80,
+      created_at: freshDate,
+      last_seen_at: freshDate,
+      hit_count: 1,
+      completed: true,
+      relatedTitles: ['Follow-up task'],
+    }]);
+
+    expect(getEnabledProposals(tmpDir)).toEqual(['Follow-up task']);
+  });
+
+  it('excludes related titles that are themselves completed', () => {
+    seedEntries([
+      {
+        title: 'Main task',
+        weight: 80,
+        created_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString(),
+        hit_count: 1,
+        completed: true,
+        relatedTitles: ['Already done', 'Not done yet'],
+      },
+      {
+        title: 'Already done',
+        weight: 80,
+        created_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString(),
+        hit_count: 1,
+        completed: true,
+      },
+    ]);
+
+    const result = getEnabledProposals(tmpDir);
+    expect(result).toEqual(['Not done yet']);
+  });
+
+  it('deduplicates returned titles', () => {
+    const now = new Date().toISOString();
+    seedEntries([
+      {
+        title: 'Task A',
+        weight: 80,
+        created_at: now,
+        last_seen_at: now,
+        hit_count: 1,
+        completed: true,
+        relatedTitles: ['Shared follow-up'],
+      },
+      {
+        title: 'Task B',
+        weight: 80,
+        created_at: now,
+        last_seen_at: now,
+        hit_count: 1,
+        completed: true,
+        relatedTitles: ['Shared follow-up'],
+      },
+    ]);
+
+    const result = getEnabledProposals(tmpDir);
+    expect(result).toEqual(['Shared follow-up']);
+  });
+
+  it('skips non-completed entries even if they have relatedTitles', () => {
+    seedEntries([{
+      title: 'Incomplete task',
+      weight: 60,
+      created_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString(),
+      hit_count: 1,
+      completed: false,
+      relatedTitles: ['Should not appear'],
+    }]);
+
+    expect(getEnabledProposals(tmpDir)).toEqual([]);
+  });
+
+  it('skips completed entries without relatedTitles', () => {
+    seedEntries([{
+      title: 'No relations',
+      weight: 80,
+      created_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString(),
+      hit_count: 1,
+      completed: true,
+    }]);
+
+    expect(getEnabledProposals(tmpDir)).toEqual([]);
   });
 });

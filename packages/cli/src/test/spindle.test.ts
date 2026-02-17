@@ -17,6 +17,7 @@ import {
   type SpindleConfig,
   type SpindleState,
 } from '../lib/spindle/index.js';
+import { findRepeatedPhrases } from '../lib/spindle/similarity.js';
 
 describe('estimateTokens', () => {
   it('estimates tokens from text length', () => {
@@ -642,5 +643,129 @@ describe('formatSpindleResult new reasons', () => {
       diagnostics: {},
     });
     expect(result).toBe('No spindle loop detected');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findRepeatedPhrases
+// ---------------------------------------------------------------------------
+
+describe('findRepeatedPhrases', () => {
+  it('finds identical long sentences across texts', () => {
+    const phrase = 'The quick brown fox jumps over the lazy dog near the river';
+    const a = `Start. ${phrase}. End of first.`;
+    const b = `Begin. ${phrase}. End of second.`;
+    const result = findRepeatedPhrases(a, b);
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it('returns empty for completely different texts', () => {
+    const a = 'Alpha bravo charlie delta echo foxtrot golf hotel india.';
+    const b = 'One two three four five six seven eight nine ten eleven.';
+    const result = findRepeatedPhrases(a, b);
+    expect(result).toEqual([]);
+  });
+
+  it('filters out short fragments (< 20 chars)', () => {
+    // All fragments after splitting on .!?\n will be < 20 chars
+    const a = 'Short. Tiny. Small.';
+    const b = 'Short. Tiny. Small.';
+    const result = findRepeatedPhrases(a, b);
+    expect(result).toEqual([]);
+  });
+
+  it('respects maxResults parameter', () => {
+    // Build texts with many repeated long sentences
+    const sentences = Array.from({ length: 10 }, (_, i) =>
+      `This is a sufficiently long repeated sentence number ${i} with padding words`
+    );
+    const text = sentences.join('. ');
+    const result = findRepeatedPhrases(text, text, 2);
+    expect(result.length).toBeLessThanOrEqual(2);
+  });
+
+  it('handles empty strings', () => {
+    expect(findRepeatedPhrases('', '')).toEqual([]);
+    expect(findRepeatedPhrases('Some long enough text for fragment processing.', '')).toEqual([]);
+    expect(findRepeatedPhrases('', 'Some long enough text for fragment processing.')).toEqual([]);
+  });
+
+  it('truncates matched phrases to 60 chars plus ellipsis', () => {
+    const longPhrase = 'a]'.repeat(1) + 'This is a very long repeated phrase that should definitely exceed the sixty character truncation limit applied by the function';
+    const a = `${longPhrase}. Done.`;
+    const b = `${longPhrase}. Finished.`;
+    const result = findRepeatedPhrases(a, b);
+    if (result.length > 0) {
+      expect(result[0].endsWith('...')).toBe(true);
+      // 60 chars + '...' = 63 max
+      expect(result[0].length).toBeLessThanOrEqual(63);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectRepetition
+// ---------------------------------------------------------------------------
+
+describe('detectRepetition', () => {
+  const baseConfig: SpindleConfig = {
+    ...DEFAULT_SPINDLE_CONFIG,
+    similarityThreshold: 0.8,
+    maxSimilarOutputs: 3,
+  };
+
+  it('detects highly similar consecutive outputs', () => {
+    const outputs = [
+      'I will now read the file src/utils.ts and check for errors in the parsing logic',
+      'I will now read the file src/utils.ts and check for errors in the parsing logic',
+    ];
+    const latest = 'I will now read the file src/utils.ts and check for errors in the parsing logic';
+    const result = detectRepetition(outputs, latest, baseConfig);
+    expect(result.detected).toBe(true);
+    expect(result.confidence).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('does not detect with completely different outputs', () => {
+    const outputs = [
+      'Reading the database configuration file to understand the schema',
+      'Now running the test suite to validate the migration worked',
+    ];
+    const latest = 'The API endpoint returns a 404 error when accessing the user profile';
+    const result = detectRepetition(outputs, latest, baseConfig);
+    expect(result.detected).toBe(false);
+    expect(result.patterns).toEqual([]);
+  });
+
+  it('detects stuck phrases when repeated across outputs', () => {
+    const outputs = [
+      'Let me try a different approach to fix this issue with the parser',
+      'Let me try another way to resolve the compilation problem here',
+    ];
+    const latest = 'Let me try once more to get this working correctly now';
+    const result = detectRepetition(outputs, latest, baseConfig);
+    expect(result.detected).toBe(true);
+    expect(result.patterns.some(p => p.includes('let me try'))).toBe(true);
+  });
+
+  it('requires at least 2 prior occurrences for stuck phrase detection', () => {
+    const outputs = [
+      'Let me try to fix this issue',
+    ];
+    const latest = 'Let me try another approach here';
+    const result = detectRepetition(outputs, latest, baseConfig);
+    // Only 1 prior occurrence — not enough for stuck phrase
+    expect(result.patterns.filter(p => p.includes('let me try'))).toHaveLength(0);
+  });
+
+  it('deduplicates patterns and limits to 5', () => {
+    // Create outputs that will generate many pattern matches
+    const repeated = 'I apologize for the confusion and let me try again with a better approach';
+    const outputs = [repeated, repeated, repeated];
+    const latest = repeated;
+    const result = detectRepetition(outputs, latest, baseConfig);
+    expect(result.patterns.length).toBeLessThanOrEqual(5);
+    // Check dedup: no duplicate entries
+    const unique = new Set(result.patterns);
+    expect(unique.size).toBe(result.patterns.length);
   });
 });

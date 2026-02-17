@@ -368,15 +368,16 @@ describe('DirectClient — spindle detection', () => {
       resp = await client.advance();
     }
 
-    // Force spindle stalling state
+    // Force spindle stalling state — set recoveries to 2 so next abort hits the cap
     const state = client.getState();
     state.spindle.iterations_since_change = 5;
+    state.spindle_recoveries = 2;
 
-    // Advance should detect spindle and abort
+    // Advance should detect spindle and terminate (recovery cap reached)
     resp = await client.advance();
     expect(resp.next_action).toBe('STOP');
     expect(resp.phase).toBe('FAILED_SPINDLE');
-    expect(resp.reason).toContain('stalling');
+    expect(resp.reason).toContain('recovery cap reached');
 
     client.endSession();
     await client.close();

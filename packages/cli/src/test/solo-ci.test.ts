@@ -5,6 +5,8 @@ import {
   testToSourceFile,
   extractFileFromStackLine,
   generateCIFixDescription,
+  extractFailureScope,
+  generateSpindleRecommendations,
 } from '../lib/solo-ci.js';
 import type { ParsedFailure, CIStatus } from '../lib/solo-ci.js';
 
@@ -192,5 +194,186 @@ describe('generateCIFixDescription', () => {
     const desc = generateCIFixDescription(failure, scope, ciStatus);
     expect(desc).toContain('## Expected Outcome');
     expect(desc).toContain('The failing test/check should pass');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractFailureScope
+// ---------------------------------------------------------------------------
+
+describe('extractFailureScope', () => {
+  it('includes the failure file itself', () => {
+    const failure: ParsedFailure = {
+      type: 'test',
+      framework: 'jest',
+      message: 'test failed',
+      file: 'src/auth.test.ts',
+    };
+    const scope = extractFailureScope(failure);
+    expect(scope).toContain('src/auth.test.ts');
+  });
+
+  it('includes source file mapped from test file', () => {
+    const failure: ParsedFailure = {
+      type: 'test',
+      framework: 'jest',
+      message: 'test failed',
+      file: 'src/utils.test.ts',
+    };
+    const scope = extractFailureScope(failure);
+    expect(scope).toContain('src/utils.test.ts');
+    expect(scope).toContain('src/utils.ts');
+  });
+
+  it('includes files from stack trace', () => {
+    const failure: ParsedFailure = {
+      type: 'test',
+      framework: 'jest',
+      message: 'boom',
+      file: 'src/a.test.ts',
+      stackTrace: ['at fn (src/b.ts:10:5)', 'at run (src/c.ts:20:3)'],
+    };
+    const scope = extractFailureScope(failure);
+    expect(scope).toContain('src/b.ts');
+    expect(scope).toContain('src/c.ts');
+  });
+
+  it('excludes node_modules from stack trace files', () => {
+    const failure: ParsedFailure = {
+      type: 'test',
+      framework: 'jest',
+      message: 'boom',
+      file: 'src/a.test.ts',
+      stackTrace: [
+        'at fn (src/b.ts:10:5)',
+        'at run (node_modules/lib/index.js:5:1)',
+      ],
+    };
+    const scope = extractFailureScope(failure);
+    expect(scope).toContain('src/b.ts');
+    expect(scope.some(f => f.includes('node_modules'))).toBe(false);
+  });
+
+  it('deduplicates files', () => {
+    const failure: ParsedFailure = {
+      type: 'test',
+      framework: 'jest',
+      message: 'boom',
+      file: 'src/a.test.ts',
+      stackTrace: ['at fn (src/a.test.ts:10:5)'],
+    };
+    const scope = extractFailureScope(failure);
+    const count = scope.filter(f => f === 'src/a.test.ts').length;
+    expect(count).toBe(1);
+  });
+
+  it('returns empty array when no file and no stack trace', () => {
+    const failure: ParsedFailure = {
+      type: 'build',
+      message: 'Build failed',
+    };
+    const scope = extractFailureScope(failure);
+    expect(scope).toEqual([]);
+  });
+
+  it('handles failure with file but no stack trace', () => {
+    const failure: ParsedFailure = {
+      type: 'lint',
+      framework: 'eslint',
+      message: 'lint error',
+      file: 'src/app.ts',
+    };
+    const scope = extractFailureScope(failure);
+    expect(scope).toContain('src/app.ts');
+    // Non-test files don't get source mapping
+    expect(scope).toHaveLength(1);
+  });
+
+  it('handles Python test file mapping', () => {
+    const failure: ParsedFailure = {
+      type: 'test',
+      framework: 'pytest',
+      message: 'assertion failed',
+      file: 'test_parser.py',
+    };
+    const scope = extractFailureScope(failure);
+    expect(scope).toContain('test_parser.py');
+    expect(scope).toContain('parser.py');
+  });
+
+  it('handles Go test file mapping', () => {
+    const failure: ParsedFailure = {
+      type: 'test',
+      framework: 'go',
+      message: 'test failed',
+      file: 'handler_test.go',
+    };
+    const scope = extractFailureScope(failure);
+    expect(scope).toContain('handler_test.go');
+    expect(scope).toContain('handler.go');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateSpindleRecommendations
+// ---------------------------------------------------------------------------
+
+describe('generateSpindleRecommendations', () => {
+  const ticket = { allowedPaths: ['src/'], forbiddenPaths: [] };
+  const config = { tokenBudgetAbort: 200000, maxStallIterations: 5, similarityThreshold: 0.85 };
+
+  it('returns recommendations for token_budget trigger', () => {
+    const recs = generateSpindleRecommendations('token_budget', ticket, config);
+    expect(recs.length).toBeGreaterThan(0);
+    expect(recs.some(r => r.includes('token limit'))).toBe(true);
+    expect(recs.some(r => r.includes('200000'))).toBe(true);
+  });
+
+  it('returns recommendations for stalling trigger', () => {
+    const recs = generateSpindleRecommendations('stalling', ticket, config);
+    expect(recs.some(r => r.includes('stuck'))).toBe(true);
+    expect(recs.some(r => r.includes('5'))).toBe(true);
+  });
+
+  it('returns recommendations for oscillation trigger', () => {
+    const recs = generateSpindleRecommendations('oscillation', ticket, config);
+    expect(recs.some(r => r.includes('flip-flopping'))).toBe(true);
+  });
+
+  it('returns recommendations for repetition trigger', () => {
+    const recs = generateSpindleRecommendations('repetition', ticket, config);
+    expect(recs.some(r => r.includes('repeating'))).toBe(true);
+    expect(recs.some(r => r.includes('0.85'))).toBe(true);
+  });
+
+  it('returns recommendations for spinning trigger', () => {
+    const recs = generateSpindleRecommendations('spinning', ticket, config);
+    expect(recs.some(r => r.includes('high activity'))).toBe(true);
+  });
+
+  it('returns recommendations for qa_ping_pong trigger', () => {
+    const recs = generateSpindleRecommendations('qa_ping_pong', ticket, config);
+    expect(recs.some(r => r.includes('alternating'))).toBe(true);
+  });
+
+  it('returns recommendations for command_failure trigger', () => {
+    const recs = generateSpindleRecommendations('command_failure', ticket, config);
+    expect(recs.some(r => r.includes('command keeps failing'))).toBe(true);
+    expect(recs.some(r => r.includes('environmental'))).toBe(true);
+  });
+
+  it('always includes diagnostics and disable recommendations', () => {
+    const triggers = ['token_budget', 'stalling', 'oscillation', 'repetition', 'spinning', 'qa_ping_pong', 'command_failure'] as const;
+    for (const trigger of triggers) {
+      const recs = generateSpindleRecommendations(trigger, ticket, config);
+      expect(recs.some(r => r.includes('diagnostics'))).toBe(true);
+      expect(recs.some(r => r.includes('Disable Spindle'))).toBe(true);
+    }
+  });
+
+  it('includes config values in relevant recommendations', () => {
+    const customConfig = { tokenBudgetAbort: 500000, maxStallIterations: 10, similarityThreshold: 0.95 };
+    const recs = generateSpindleRecommendations('token_budget', ticket, customConfig);
+    expect(recs.some(r => r.includes('500000'))).toBe(true);
   });
 });

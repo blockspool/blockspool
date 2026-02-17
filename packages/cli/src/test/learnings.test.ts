@@ -11,10 +11,14 @@ import {
   addLearning,
   confirmLearning,
   recordAccess,
+  recordApplication,
+  recordOutcome,
+  getLearningEffectiveness,
   consolidateLearnings,
   formatLearningsForPrompt,
   selectRelevant,
   extractTags,
+  LEARNINGS_DEFAULTS,
   type Learning,
 } from '../lib/learnings.js';
 import { buildTicketPrompt } from '../lib/solo-prompt-builder.js';
@@ -354,5 +358,401 @@ describe('config integration', () => {
     expect(DEFAULT_AUTO_CONFIG.learningsEnabled).toBe(true);
     expect(DEFAULT_AUTO_CONFIG.learningsBudget).toBe(2000);
     expect(DEFAULT_AUTO_CONFIG.learningsDecayRate).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordOutcome
+// ---------------------------------------------------------------------------
+
+describe('recordOutcome', () => {
+  it('boosts weight by 2 on success', () => {
+    const learning = makeLearning({ id: 'out-1', weight: 50 });
+    writeLearningsRaw([learning]);
+    recordOutcome(tmpDir, ['out-1'], true);
+    const result = readLearningsRaw();
+    expect(result[0].weight).toBe(52);
+  });
+
+  it('increments success_count on success', () => {
+    const learning = makeLearning({ id: 'out-2', weight: 50, success_count: 3 });
+    writeLearningsRaw([learning]);
+    recordOutcome(tmpDir, ['out-2'], true);
+    const result = readLearningsRaw();
+    expect(result[0].success_count).toBe(4);
+  });
+
+  it('initializes success_count from undefined', () => {
+    const learning = makeLearning({ id: 'out-3', weight: 50 });
+    delete (learning as any).success_count;
+    writeLearningsRaw([learning]);
+    recordOutcome(tmpDir, ['out-3'], true);
+    const result = readLearningsRaw();
+    expect(result[0].success_count).toBe(1);
+  });
+
+  it('decreases weight by 1 on failure', () => {
+    const learning = makeLearning({ id: 'out-4', weight: 50 });
+    writeLearningsRaw([learning]);
+    recordOutcome(tmpDir, ['out-4'], false);
+    const result = readLearningsRaw();
+    expect(result[0].weight).toBe(49);
+  });
+
+  it('clamps weight to MAX_WEIGHT on success', () => {
+    const learning = makeLearning({ id: 'out-5', weight: 99 });
+    writeLearningsRaw([learning]);
+    recordOutcome(tmpDir, ['out-5'], true);
+    const result = readLearningsRaw();
+    expect(result[0].weight).toBe(LEARNINGS_DEFAULTS.MAX_WEIGHT);
+  });
+
+  it('clamps weight to minimum 1 on failure', () => {
+    const learning = makeLearning({ id: 'out-6', weight: 1 });
+    writeLearningsRaw([learning]);
+    recordOutcome(tmpDir, ['out-6'], false);
+    const result = readLearningsRaw();
+    expect(result[0].weight).toBe(1);
+  });
+
+  it('is a no-op for empty ids', () => {
+    const learning = makeLearning({ id: 'out-7', weight: 50 });
+    writeLearningsRaw([learning]);
+    recordOutcome(tmpDir, [], true);
+    const result = readLearningsRaw();
+    expect(result[0].weight).toBe(50);
+  });
+
+  it('only affects matching ids', () => {
+    writeLearningsRaw([
+      makeLearning({ id: 'match', weight: 50 }),
+      makeLearning({ id: 'no-match', weight: 50 }),
+    ]);
+    recordOutcome(tmpDir, ['match'], true);
+    const result = readLearningsRaw();
+    expect(result[0].weight).toBe(52);
+    expect(result[1].weight).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLearningEffectiveness
+// ---------------------------------------------------------------------------
+
+describe('getLearningEffectiveness', () => {
+  it('returns zero stats for empty learnings', () => {
+    // No file written — empty state
+    const result = getLearningEffectiveness(tmpDir);
+    expect(result.total).toBe(0);
+    expect(result.applied).toBe(0);
+    expect(result.successRate).toBe(0);
+    expect(result.topPerformers).toEqual([]);
+  });
+
+  it('returns zero stats when no learnings have been applied', () => {
+    writeLearningsRaw([
+      makeLearning({ id: 'e-1', applied_count: 0, success_count: 0 }),
+      makeLearning({ id: 'e-2' }),
+    ]);
+    const result = getLearningEffectiveness(tmpDir);
+    expect(result.total).toBe(2);
+    expect(result.applied).toBe(0);
+    expect(result.successRate).toBe(0);
+    expect(result.topPerformers).toEqual([]);
+  });
+
+  it('calculates success rate correctly', () => {
+    writeLearningsRaw([
+      makeLearning({ id: 'e-3', applied_count: 4, success_count: 3 }),
+      makeLearning({ id: 'e-4', applied_count: 6, success_count: 3 }),
+    ]);
+    const result = getLearningEffectiveness(tmpDir);
+    expect(result.applied).toBe(10);
+    expect(result.successRate).toBe(0.6); // 6/10
+  });
+
+  it('filters top performers at >=2 applications', () => {
+    writeLearningsRaw([
+      makeLearning({ id: 'e-5', text: 'Applied once', applied_count: 1, success_count: 1 }),
+      makeLearning({ id: 'e-6', text: 'Applied twice', applied_count: 2, success_count: 2 }),
+    ]);
+    const result = getLearningEffectiveness(tmpDir);
+    expect(result.topPerformers).toHaveLength(1);
+    expect(result.topPerformers[0].id).toBe('e-6');
+    expect(result.topPerformers[0].effectiveness).toBe(1);
+  });
+
+  it('sorts top performers by effectiveness descending', () => {
+    writeLearningsRaw([
+      makeLearning({ id: 'lo', text: 'Low eff', applied_count: 4, success_count: 1 }),
+      makeLearning({ id: 'hi', text: 'High eff', applied_count: 4, success_count: 4 }),
+      makeLearning({ id: 'mid', text: 'Mid eff', applied_count: 4, success_count: 2 }),
+    ]);
+    const result = getLearningEffectiveness(tmpDir);
+    expect(result.topPerformers).toHaveLength(3);
+    expect(result.topPerformers[0].id).toBe('hi');
+    expect(result.topPerformers[1].id).toBe('mid');
+    expect(result.topPerformers[2].id).toBe('lo');
+  });
+
+  it('caps top performers at 5', () => {
+    const learnings = Array.from({ length: 8 }, (_, i) =>
+      makeLearning({ id: `perf-${i}`, text: `Learning ${i}`, applied_count: 3, success_count: i }),
+    );
+    writeLearningsRaw(learnings);
+    const result = getLearningEffectiveness(tmpDir);
+    expect(result.topPerformers).toHaveLength(5);
+    // Highest effectiveness first
+    expect(result.topPerformers[0].id).toBe('perf-7');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordApplication
+// ---------------------------------------------------------------------------
+
+describe('recordApplication', () => {
+  it('increments applied_count for matching ids', () => {
+    writeLearningsRaw([
+      makeLearning({ id: 'app-1', applied_count: 0 }),
+      makeLearning({ id: 'app-2', applied_count: 2 }),
+    ]);
+
+    recordApplication(tmpDir, ['app-1']);
+
+    const persisted = readLearningsRaw();
+    expect(persisted.find(l => l.id === 'app-1')!.applied_count).toBe(1);
+    expect(persisted.find(l => l.id === 'app-2')!.applied_count).toBe(2);
+  });
+
+  it('initializes applied_count from undefined', () => {
+    const learning = makeLearning({ id: 'app-3' });
+    delete (learning as any).applied_count;
+    writeLearningsRaw([learning]);
+
+    recordApplication(tmpDir, ['app-3']);
+
+    const persisted = readLearningsRaw();
+    expect(persisted[0].applied_count).toBe(1);
+  });
+
+  it('increments multiple ids in one call', () => {
+    writeLearningsRaw([
+      makeLearning({ id: 'app-4', applied_count: 0 }),
+      makeLearning({ id: 'app-5', applied_count: 5 }),
+    ]);
+
+    recordApplication(tmpDir, ['app-4', 'app-5']);
+
+    const persisted = readLearningsRaw();
+    expect(persisted.find(l => l.id === 'app-4')!.applied_count).toBe(1);
+    expect(persisted.find(l => l.id === 'app-5')!.applied_count).toBe(5 + 1);
+  });
+
+  it('is a no-op for empty ids', () => {
+    writeLearningsRaw([makeLearning({ id: 'app-6', applied_count: 3 })]);
+    recordApplication(tmpDir, []);
+    expect(readLearningsRaw()[0].applied_count).toBe(3);
+  });
+
+  it('ignores ids not present in learnings', () => {
+    writeLearningsRaw([makeLearning({ id: 'app-7', applied_count: 1 })]);
+    recordApplication(tmpDir, ['no-such-id']);
+    expect(readLearningsRaw()[0].applied_count).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// consolidateLearnings
+// ---------------------------------------------------------------------------
+
+describe('consolidateLearnings', () => {
+  it('no-ops when no file exists', () => {
+    // Should not throw
+    consolidateLearnings(tmpDir);
+    expect(readLearningsRaw()).toEqual([]);
+  });
+
+  it('no-ops when learnings count is at or below consolidation threshold', () => {
+    // CONSOLIDATION_THRESHOLD is 50 — write exactly 50
+    const learnings = Array.from({ length: 50 }, (_, i) =>
+      makeLearning({ id: `c-${i}`, text: `Unique learning number ${i} about a distinct topic` }),
+    );
+    writeLearningsRaw(learnings);
+
+    consolidateLearnings(tmpDir);
+
+    // Should remain unchanged (core returns null when <= threshold)
+    expect(readLearningsRaw()).toHaveLength(50);
+  });
+
+  it('merges near-duplicate learnings when above threshold', () => {
+    // Need >50 learnings, with some duplicates sharing same category and source type.
+    // Each padding entry gets a unique category so they can NEVER merge with each other
+    // (coreConsolidate guards: same category required for merge).
+    const learnings: Learning[] = [];
+    // Two entries with identical text → should merge
+    learnings.push(makeLearning({
+      id: 'dup-0',
+      text: 'Always check null before accessing property',
+      category: 'gotcha',
+      source: { type: 'qa_failure' },
+      weight: 30,
+      access_count: 0,
+    }));
+    learnings.push(makeLearning({
+      id: 'dup-1',
+      text: 'Always check null before accessing property',
+      category: 'gotcha',
+      source: { type: 'qa_failure' },
+      weight: 60,
+      access_count: 0,
+    }));
+    // 49 padding entries with unique categories (prevents any cross-merge)
+    for (let i = 0; i < 49; i++) {
+      learnings.push(makeLearning({
+        id: `pad-${i}`,
+        text: `Padding entry number ${i}`,
+        category: `unique-cat-${i}`,
+        source: { type: 'manual' },
+        weight: 40,
+        access_count: 0,
+      }));
+    }
+    writeLearningsRaw(learnings);
+
+    consolidateLearnings(tmpDir);
+
+    const persisted = readLearningsRaw();
+    // The two identical entries should have been merged into one
+    expect(persisted.length).toBeLessThan(51);
+  });
+
+  it('keeps higher weight entry text on merge', () => {
+    const learnings: Learning[] = [];
+    // Two near-identical entries with different weights
+    learnings.push(makeLearning({
+      id: 'merge-lo',
+      text: 'Always validate input parameters before processing',
+      weight: 20,
+      category: 'gotcha',
+      source: { type: 'qa_failure' },
+      access_count: 0,
+    }));
+    learnings.push(makeLearning({
+      id: 'merge-hi',
+      text: 'Always validate input parameters before processing them',
+      weight: 80,
+      category: 'gotcha',
+      source: { type: 'qa_failure' },
+      access_count: 0,
+    }));
+    // Padding with unique categories
+    for (let i = 0; i < 50; i++) {
+      learnings.push(makeLearning({
+        id: `pad-${i}`,
+        text: `Padding entry number ${i}`,
+        category: `unique-cat-${i}`,
+        source: { type: 'manual' },
+        weight: 40,
+        access_count: 0,
+      }));
+    }
+    writeLearningsRaw(learnings);
+
+    consolidateLearnings(tmpDir);
+
+    const persisted = readLearningsRaw();
+    // The merged entry should keep the higher-weight text
+    const merged = persisted.find(l => l.text.includes('Always validate input'));
+    expect(merged).toBeDefined();
+    expect(merged!.weight).toBe(80);
+  });
+
+  it('sums access_count on merge', () => {
+    const learnings: Learning[] = [];
+    learnings.push(makeLearning({
+      id: 'acc-a',
+      text: 'Check return values from async calls',
+      weight: 50,
+      category: 'gotcha',
+      source: { type: 'qa_failure' },
+      access_count: 2,
+    }));
+    learnings.push(makeLearning({
+      id: 'acc-b',
+      text: 'Check return values from async calls carefully',
+      weight: 40,
+      category: 'gotcha',
+      source: { type: 'qa_failure' },
+      access_count: 1,
+    }));
+    // Padding with unique categories
+    for (let i = 0; i < 50; i++) {
+      learnings.push(makeLearning({
+        id: `pad2-${i}`,
+        text: `Padding entry number ${i}`,
+        category: `unique-cat-${i}`,
+        source: { type: 'manual' },
+        weight: 40,
+        access_count: 0,
+      }));
+    }
+    writeLearningsRaw(learnings);
+
+    consolidateLearnings(tmpDir);
+
+    const persisted = readLearningsRaw();
+    const merged = persisted.find(l => l.text.includes('Check return values'));
+    expect(merged).toBeDefined();
+    expect(merged!.access_count).toBe(3); // 2 + 1
+  });
+
+  it('does not merge across different categories', () => {
+    const words = [
+      'alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel',
+      'india', 'juliet', 'kilo', 'lima', 'mike', 'november', 'oscar', 'papa',
+      'quebec', 'romeo', 'sierra', 'tango', 'uniform', 'victor', 'whiskey',
+      'xray', 'yankee', 'zulu', 'fizz', 'buzz', 'quux', 'corge', 'grault',
+      'garply', 'waldo', 'fred', 'plugh', 'thud', 'baz', 'qux', 'norf',
+      'flob', 'zap', 'wham', 'blip', 'zing', 'snap', 'crisp', 'drift',
+      'forge', 'gleam',
+    ];
+    const learnings: Learning[] = [];
+    learnings.push(makeLearning({
+      id: 'cat-a',
+      text: 'Always check null before accessing property',
+      weight: 50,
+      category: 'gotcha',
+      source: { type: 'qa_failure' },
+      access_count: 0,
+    }));
+    learnings.push(makeLearning({
+      id: 'cat-b',
+      text: 'Always check null before accessing property',
+      weight: 50,
+      category: 'pattern',  // Different category
+      source: { type: 'qa_failure' },
+      access_count: 0,
+    }));
+    // Dissimilar padding
+    for (let i = 0; i < 50; i++) {
+      learnings.push(makeLearning({
+        id: `cat-pad-${i}`,
+        text: `${words[i % words.length]} integration requires special ${words[(i + 7) % words.length]} handling`,
+        category: 'warning',
+        source: { type: 'manual' },
+        weight: 40,
+        access_count: 0,
+      }));
+    }
+    writeLearningsRaw(learnings);
+
+    consolidateLearnings(tmpDir);
+
+    const persisted = readLearningsRaw();
+    // Both should still exist separately since they have different categories
+    const matchingNullCheck = persisted.filter(l => l.text.includes('Always check null'));
+    expect(matchingNullCheck.length).toBe(2);
   });
 });

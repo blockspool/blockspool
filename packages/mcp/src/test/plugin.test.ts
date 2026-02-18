@@ -244,11 +244,11 @@ describe('Plugin structure', () => {
       fs.readFileSync(path.join(pluginDir, '.claude-plugin', 'plugin.json'), 'utf8'),
     );
     expect(manifest.name).toBe('promptwheel');
-    expect(manifest.skills).toHaveLength(12);
+    expect(manifest.skills).toHaveLength(13);
   });
 
   it('has all skill directories', () => {
-    for (const skill of ['run', 'status', 'nudge', 'cancel', 'analytics', 'audit', 'heal', 'trajectory', 'formulas', 'history', 'scout', 'guidelines']) {
+    for (const skill of ['run', 'status', 'nudge', 'cancel', 'analytics', 'audit', 'heal', 'trajectory', 'formulas', 'history', 'scout', 'guidelines', 'learnings']) {
       expect(fs.existsSync(path.join(pluginDir, 'skills', skill))).toBe(true);
     }
   });

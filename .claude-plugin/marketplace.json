@@ -31,7 +31,8 @@
         "./skills/formulas",
         "./skills/history",
         "./skills/scout",
-        "./skills/guidelines"
+        "./skills/guidelines",
+        "./skills/learnings"
       ]
     }
   ]

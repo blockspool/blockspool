@@ -79,7 +79,8 @@ function simpleMatch(pattern, str) {
 
   try {
     return new RegExp(regex).test(str);
-  } catch {
+  } catch (err) {
+    process.stderr.write(`[promptwheel] simpleMatch: bad regex for pattern "${pattern}": ${err}\n`);
     return false;
   }
 }
@@ -197,9 +198,15 @@ if (hookType === 'PreToolUse') {
 
     // Check denied patterns
     for (const patternStr of (policy.denied_patterns ?? [])) {
-      const pattern = new RegExp(patternStr);
-      if (pattern.test(filePath)) {
-        deny(`File ${filePath} matches denied pattern: ${patternStr}`);
+      try {
+        const pattern = new RegExp(patternStr);
+        if (pattern.test(filePath)) {
+          deny(`File ${filePath} matches denied pattern: ${patternStr}`);
+        }
+      } catch (err) {
+        // Bad regex in deny pattern — fail closed (deny the write)
+        process.stderr.write(`[promptwheel] bad denied_pattern regex "${patternStr}": ${err}\n`);
+        deny(`File ${filePath} blocked: invalid denied_pattern regex "${patternStr}"`);
       }
     }
 
@@ -214,9 +221,10 @@ if (hookType === 'PreToolUse') {
 
     // All checks passed
     process.exit(0);
-  } catch {
-    // Parse error — allow to avoid blocking legitimate work
-    process.exit(0);
+  } catch (err) {
+    // Parse/validation error — fail closed to prevent unauthorized writes
+    process.stderr.write(`[promptwheel] PreToolUse scope check error: ${err}\n`);
+    deny(`PromptWheel scope validation error: ${err}. Fix or remove .promptwheel/scope-policy.json`);
   }
 }
 

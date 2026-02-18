@@ -223,10 +223,12 @@ describe('PreToolUse hook', () => {
     expect(result.reason).toContain('denied pattern');
   });
 
-  it('allows on invalid stdin', () => {
+  it('denies on invalid stdin (fail closed)', () => {
     const { exitCode, stdout } = runHook('PreToolUse', 'not json');
     expect(exitCode).toBe(0);
-    expect(stdout).toBe('');
+    const result = JSON.parse(stdout);
+    expect(result.decision).toBe('deny');
+    expect(result.reason).toContain('scope validation error');
   });
 });
 

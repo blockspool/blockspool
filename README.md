@@ -325,6 +325,6 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>PromptWheel v0.6.0</b><br>
+  <b>PromptWheel v0.6.1</b><br>
   <i>Set it. Forget it. Merge the PRs.</i>
 </p>

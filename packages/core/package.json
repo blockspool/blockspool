@@ -1,6 +1,6 @@
 {
   "name": "@promptwheel/core",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Core business logic and database adapter interface for PromptWheel",
   "author": "PromptWheel",
   "homepage": "https://promptwheel.com",

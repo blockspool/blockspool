@@ -29,7 +29,7 @@ export async function finalizeSession(state: AutoSessionState): Promise<number> 
   try {
     exitCode = await finalizeSafe(state);
   } finally {
-    // Always release resources, even if finalization logic throws
+    // Always release resources — destroy calls are idempotent
     state.interactiveConsole?.stop();
     try { state.displayAdapter.destroy(); } catch { /* best-effort */ }
     try { await state.adapter.close(); } catch { /* best-effort */ }
@@ -213,6 +213,10 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
   } catch {
     // Non-fatal
   }
+
+  // Destroy TUI before printing summary so output goes to the normal terminal
+  state.interactiveConsole?.stop();
+  try { state.displayAdapter.destroy(); } catch { /* best-effort */ }
 
   // Summary
   const summaryCtx: SessionSummaryContext = {

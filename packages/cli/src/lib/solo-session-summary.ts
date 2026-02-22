@@ -248,6 +248,19 @@ export function displayFinalSummary(ctx: SessionSummaryContext): void {
     console.log(chalk.gray(`  Drill: ${ds.trajectoriesGenerated} trajectory(s), ${ds.stepsCompleted}/${ds.stepsTotal} steps completed (${ds.completionRate}%), ${ds.stepsFailed} failed`));
   }
 
+  // Ticket outcomes
+  if (ctx.allTicketOutcomes.length > 0) {
+    console.log();
+    console.log(chalk.bold('Tickets'));
+    for (const t of ctx.allTicketOutcomes) {
+      const icon = t.status === 'completed' ? chalk.green('✓')
+        : t.status === 'no_changes' ? chalk.gray('·')
+        : chalk.red('✗');
+      const cat = t.category ? chalk.gray(`[${t.category}]`) : '';
+      console.log(`  ${icon} ${cat} ${t.title}`);
+    }
+  }
+
   if (ctx.allPrUrls.length > 0) {
     console.log(chalk.green(`\n✓ ${ctx.allPrUrls.length} PR(s) created:`));
     for (const url of ctx.allPrUrls) {

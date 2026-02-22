@@ -912,7 +912,7 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
   if (options.daemon) {
     displayAdapter = new LogDisplayAdapter();
   } else {
-    const useTui = options.tui !== false && process.stdout.isTTY;
+    const useTui = options.tui !== false && !options.dryRun && process.stdout.isTTY;
     displayAdapter = new SpinnerDisplayAdapter();
     if (useTui) {
       const { TuiDisplayAdapter } = await import('./display-adapter-tui.js');

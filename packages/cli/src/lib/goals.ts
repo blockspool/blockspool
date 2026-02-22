@@ -152,17 +152,21 @@ export function measureGoals(goals: Formula[], repoRoot: string): GoalMeasuremen
           met = true;
         } else if (target !== 0) {
           gapPercent = ((target - value) / target) * 100;
+        } else {
+          // target is 0 and value < 0: gap is 100% (can't be below zero target)
+          gapPercent = 100;
         }
       } else {
         // Lower is better: gap = how far above target
         if (value <= target) {
           gapPercent = 0;
           met = true;
+        } else if (value !== 0) {
+          gapPercent = ((value - target) / value) * 100;
         } else {
-          // For "down" direction, express gap relative to current value
-          gapPercent = target === 0
-            ? (value > 0 ? 100 : 0)
-            : ((value - target) / value) * 100;
+          // value is 0 but > target (target is negative): shouldn't happen, treat as met
+          gapPercent = 0;
+          met = true;
         }
       }
     }
@@ -226,8 +230,19 @@ function goalStatePath(repoRoot: string): string {
 export function readGoalState(repoRoot: string): GoalState {
   const p = goalStatePath(repoRoot);
   try {
+    // Recover from crash: if .tmp exists but main file doesn't, restore it
+    const tmp = p + '.tmp';
+    if (!fs.existsSync(p) && fs.existsSync(tmp)) {
+      try { fs.renameSync(tmp, p); } catch { /* best effort */ }
+    }
     if (fs.existsSync(p)) {
-      return JSON.parse(fs.readFileSync(p, 'utf-8'));
+      const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      // Structural validation
+      if (data && typeof data === 'object' && data.measurements && typeof data.measurements === 'object' && !Array.isArray(data.measurements)) {
+        return data as GoalState;
+      }
+      // Malformed but parseable — start fresh
+      return { measurements: {}, lastUpdated: 0 };
     }
   } catch {
     // Corrupted file — start fresh
@@ -242,7 +257,14 @@ export function writeGoalState(repoRoot: string, state: GoalState): void {
     fs.mkdirSync(dir, { recursive: true });
   }
   state.lastUpdated = Date.now();
-  fs.writeFileSync(p, JSON.stringify(state, null, 2));
+  const tmp = p + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, p);
+  } catch (err) {
+    if (fs.existsSync(tmp)) try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
 }
 
 const MAX_MEASUREMENTS_PER_GOAL = 50;

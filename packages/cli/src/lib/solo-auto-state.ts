@@ -139,9 +139,7 @@ async function resolveOptions(options: AutoModeOptions): Promise<ResolvedOptions
   const totalMinutes = (hoursValue * 60 + minutesValue) || undefined;
 
   const maxCycles = options.cycles ? parseInt(options.cycles, 10) : 999;
-  const explicitSpin = options.spin || options.continuous;
-  const impliedSpin = totalMinutes !== undefined || (options.cycles && maxCycles > 1);
-  const runMode: RunMode = (explicitSpin || impliedSpin) ? 'spin' : 'planning';
+  const runMode: RunMode = options.plan ? 'planning' : 'spin';
   const endTime = totalMinutes ? Date.now() + (totalMinutes * 60 * 1000) : undefined;
 
   const defaultMaxPrs = runMode === 'spin' ? 999 : 3;
@@ -304,6 +302,12 @@ async function initEnvironment(
   }
 
   const autoConf: Record<string, any> = { ...DEFAULT_AUTO_CONFIG, ...config?.auto };
+
+  // Validate drill config — clamp user values to safe ranges
+  if (autoConf.drill) {
+    const { validateDrillConfig } = await import('./solo-config.js');
+    autoConf.drill = validateDrillConfig(autoConf.drill);
+  }
   const adapter = await getAdapter(repoRoot);
 
   return { repoRoot, config, autoConf, cachedQaBaseline, adapter };
@@ -676,6 +680,7 @@ function printSessionHeader(
   cachedQaBaseline: Map<string, boolean> | null,
   getCycleFormula: (cycle: number) => import('./formulas.js').Formula | null,
   getCycleCategories: (formula: import('./formulas.js').Formula | null) => { allow: string[]; block: string[] },
+  drillMode: boolean,
 ) {
   const { runMode, totalMinutes, endTime, userScope, milestoneMode, batchSize, maxPrs, useDraft } = resolved;
 
@@ -685,7 +690,8 @@ function printSessionHeader(
     console.log(chalk.blue(`🧵 PromptWheel Auto v${CLI_VERSION}`));
     console.log();
     if (runMode === 'spin') {
-      console.log(chalk.gray('  Mode: Spin (Ctrl+C to stop gracefully)'));
+      const drillLabel = drillMode ? ' + Drill' : '';
+      console.log(chalk.gray(`  Mode: Spin${drillLabel} (Ctrl+C to stop gracefully)`));
       if (totalMinutes) {
         const endDate = new Date(endTime!);
         const budgetLabel = totalMinutes < 60
@@ -807,6 +813,7 @@ function initInteractiveConsole(state: AutoSessionState) {
     repoRoot: state.repoRoot,
     onQuit: () => {
       state.shutdownRequested = true;
+      if (state.shutdownReason === null) state.shutdownReason = 'user_quit';
     },
     onStatus: () => {
       const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
@@ -857,6 +864,9 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
       process.exit(1);
     }
     shutdownRef.shutdownRequested = true;
+    if ('shutdownReason' in shutdownRef && shutdownRef.shutdownReason === null) {
+      (shutdownRef as any).shutdownReason = 'user_signal';
+    }
     if (shutdownRef.currentlyProcessing) {
       console.log(chalk.yellow('\nShutdown requested. Finishing current ticket then finalizing...'));
     } else {
@@ -892,7 +902,8 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
   const directBranch = options.directBranch ?? autoConf.directBranch ?? 'promptwheel-direct';
   const directFinalize = options.directFinalize ?? autoConf.directFinalize ?? 'merge';
 
-  printSessionHeader(resolved, deliveryMode, directBranch, directFinalize, autoConf, cachedQaBaseline, tmpGetCycleFormula, tmpGetCycleCategories);
+  const drillMode = options.drill !== false && autoConf.drill?.enabled !== false && resolved.runMode === 'spin';
+  printSessionHeader(resolved, deliveryMode, directBranch, directFinalize, autoConf, cachedQaBaseline, tmpGetCycleFormula, tmpGetCycleCategories, drillMode);
 
   const branches = await initBranches(options, resolved, deliveryMode, directBranch, repoRoot, depsResult.detectedBaseBranch);
 
@@ -907,7 +918,12 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
       const { TuiDisplayAdapter } = await import('./display-adapter-tui.js');
       displayAdapter = new TuiDisplayAdapter({
         repoRoot,
-        onQuit: () => { shutdownRef.shutdownRequested = true; },
+        onQuit: () => {
+          shutdownRef.shutdownRequested = true;
+          if ('shutdownReason' in shutdownRef && (shutdownRef as any).shutdownReason === null) {
+            (shutdownRef as any).shutdownReason = 'user_quit';
+          }
+        },
         onStatus: () => {
           // Will be patched after state is created
         },
@@ -1012,6 +1028,7 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     detectedBaseBranch: depsResult.detectedBaseBranch,
 
     shutdownRequested: shutdownRef.shutdownRequested,
+    shutdownReason: null,
     currentlyProcessing: false,
 
     pullInterval,
@@ -1020,6 +1037,17 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
 
     scoutRetries: 0,
     scoutedDirs: [],
+    drillMode,
+    drillLastGeneratedAtCycle: 0,
+    drillTrajectoriesGenerated: 0,
+    drillLastOutcome: null,
+    drillHistory: [],
+    drillCoveredCategories: new Map(),
+    drillCoveredScopes: new Map(),
+    drillLastSurveyTimestamp: null,
+    drillConsecutiveInsufficient: 0,
+    drillGenerationTelemetry: null,
+    drillLastFreshnessDropRatio: null,
 
     parallelExplicit: resolved.parallelExplicit,
     userScope: resolved.userScope,
@@ -1038,6 +1066,23 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
   // Patch closures that need state reference
   patchStateClosures(state, shutdownRef);
 
+  // Hydrate drill history from disk (cross-session diversity)
+  if (state.drillMode) {
+    const { hydrateDrillState } = await import('./solo-auto-drill.js');
+    hydrateDrillState(state);
+    if (state.drillHistory.length > 0) {
+      console.log(chalk.gray(`  Drill history loaded: ${state.drillHistory.length} previous trajectory(s)`));
+    }
+    // Notify display adapter of initial drill state
+    state.displayAdapter.drillStateChanged({
+      active: true,
+      trajectoryName: state.activeTrajectory?.name,
+      trajectoryProgress: state.activeTrajectory
+        ? `${Object.values(state.activeTrajectoryState?.stepStates ?? {}).filter(s => s.status === 'completed').length}/${state.activeTrajectory.steps.length}`
+        : undefined,
+    });
+  }
+
   // Start interactive console
   initInteractiveConsole(state);
 
@@ -1051,13 +1096,22 @@ export function shouldContinue(state: AutoSessionState): boolean {
 
   // PR limits only apply to PR-based workflows, not direct mode
   if (state.milestoneMode) {
-    if (state.totalMilestonePrs >= state.maxPrs) return false;
+    if (state.totalMilestonePrs >= state.maxPrs) {
+      if (state.shutdownReason === null) state.shutdownReason = 'pr_limit';
+      return false;
+    }
   } else if (state.deliveryMode === 'pr' || state.deliveryMode === 'auto-merge') {
-    if (state.totalPrsCreated >= state.maxPrs) return false;
+    if (state.totalPrsCreated >= state.maxPrs) {
+      if (state.shutdownReason === null) state.shutdownReason = 'pr_limit';
+      return false;
+    }
   }
   // Direct mode: no PR limit, just time/cycles
 
-  if (state.endTime && Date.now() >= state.endTime) return false;
+  if (state.endTime && Date.now() >= state.endTime) {
+    if (state.shutdownReason === null) state.shutdownReason = 'time_limit';
+    return false;
+  }
   if (state.cycleCount >= state.maxCycles && state.runMode !== 'spin') return false;
   return true;
 }

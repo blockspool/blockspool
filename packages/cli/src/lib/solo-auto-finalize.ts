@@ -22,6 +22,7 @@ import { updatePrOutcome } from './pr-outcomes.js';
 import { displayConvergenceSummary, displayWheelHealth, recordSessionHistory, displayFinalSummary, type SessionSummaryContext } from './solo-session-summary.js';
 import { generateSessionReport, writeSessionReport } from './session-report.js';
 import { writeDaemonWakeMetrics, type DaemonWakeMetrics } from './daemon.js';
+import { computeDrillMetrics } from './solo-auto-drill.js';
 
 export async function finalizeSession(state: AutoSessionState): Promise<number> {
   let exitCode = 0;
@@ -159,6 +160,24 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
   // Save final sector state
   if (state.sectorState) saveSectors(state.repoRoot, state.sectorState);
 
+  // Build drill stats from history (needed by both report and summary)
+  let drillStats: SessionSummaryContext['drillStats'];
+  if (state.drillMode && state.drillHistory.length > 0) {
+    const stepsTotal = state.drillHistory.reduce((sum, h) => sum + h.stepsTotal, 0);
+    const stepsCompleted = state.drillHistory.reduce((sum, h) => sum + h.stepsCompleted, 0);
+    const stepsFailed = state.drillHistory.reduce((sum, h) => sum + h.stepsFailed, 0);
+    const metrics = computeDrillMetrics(state.drillHistory);
+    drillStats = {
+      trajectoriesGenerated: state.drillHistory.length,
+      stepsTotal,
+      stepsCompleted,
+      stepsFailed,
+      completionRate: stepsTotal > 0 ? Math.round((stepsCompleted / stepsTotal) * 100) : 0,
+      topCategories: metrics.topCategories.join(', ') || undefined,
+      stalledCategories: metrics.stalledCategories.join(', ') || undefined,
+    };
+  }
+
   // Generate session report (before summary so we can show path in overnight output)
   let reportPath: string | undefined;
   try {
@@ -187,6 +206,7 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
       parallelOption: state.options.parallel,
       completedDirectTickets: state.completedDirectTickets,
       traceAnalyses: state.allTraceAnalyses,
+      drillStats,
     };
     const report = generateSessionReport(reportCtx);
     reportPath = writeSessionReport(state.repoRoot, report);
@@ -208,6 +228,7 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
     milestoneMode: state.milestoneMode,
     isContinuous: state.runMode === 'spin',
     shutdownRequested: state.shutdownRequested,
+    shutdownReason: state.shutdownReason,
     maxPrs: state.maxPrs,
     endTime: state.endTime,
     totalMinutes: state.totalMinutes,
@@ -222,6 +243,7 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
     originalMinConfidence: state.autoConf.minConfidence ?? 20,
     completedDirectTicketCount: state.completedDirectTickets.length,
     reportPath,
+    drillStats,
   };
   displayConvergenceSummary(summaryCtx);
   displayWheelHealth(summaryCtx);

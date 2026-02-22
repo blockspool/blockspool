@@ -100,6 +100,10 @@ export class SpinnerDisplayAdapter implements DisplayAdapter {
     console.log(msg);
   }
 
+  drillStateChanged(_info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void {
+    // No-op for spinner mode
+  }
+
   destroy(): void {
     // Clean up any lingering spinners
     for (const spinner of this.ticketSpinners.values()) {

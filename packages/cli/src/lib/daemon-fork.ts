@@ -62,6 +62,7 @@ export interface ForkOptions {
   interval?: number;
   formula?: string;
   scope?: string;
+  drill?: boolean;
 }
 
 /**
@@ -81,6 +82,7 @@ export function forkDaemon(repoRoot: string, options: ForkOptions): number {
   if (options.interval) args.push('--interval', String(options.interval));
   if (options.formula) args.push('--formula', options.formula);
   if (options.scope) args.push('--scope', options.scope);
+  if (options.drill === false) args.push('--no-drill');
 
   // Find the promptwheel binary — use the same entry point that's running now
   const binPath = process.argv[1];

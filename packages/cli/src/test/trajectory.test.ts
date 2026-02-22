@@ -268,3 +268,66 @@ steps:
     expect(fs.existsSync(trajectoryStateFile())).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// loadTrajectoryState — structural validation
+// ---------------------------------------------------------------------------
+
+describe('loadTrajectoryState structural validation', () => {
+  it('rejects state missing trajectoryName', () => {
+    fs.mkdirSync(path.dirname(trajectoryStateFile()), { recursive: true });
+    fs.writeFileSync(trajectoryStateFile(), JSON.stringify({
+      stepStates: {},
+      currentStepId: null,
+      paused: false,
+      startedAt: 1700000000000,
+    }));
+    expect(loadTrajectoryState(tmpDir)).toBeNull();
+  });
+
+  it('rejects state with null stepStates', () => {
+    fs.mkdirSync(path.dirname(trajectoryStateFile()), { recursive: true });
+    fs.writeFileSync(trajectoryStateFile(), JSON.stringify({
+      trajectoryName: 'test',
+      stepStates: null,
+      currentStepId: null,
+      paused: false,
+      startedAt: 1700000000000,
+    }));
+    expect(loadTrajectoryState(tmpDir)).toBeNull();
+  });
+
+  it('rejects state that is a JSON array instead of object', () => {
+    fs.mkdirSync(path.dirname(trajectoryStateFile()), { recursive: true });
+    fs.writeFileSync(trajectoryStateFile(), '["not", "an", "object"]');
+    expect(loadTrajectoryState(tmpDir)).toBeNull();
+  });
+
+  it('rejects state with numeric trajectoryName', () => {
+    fs.mkdirSync(path.dirname(trajectoryStateFile()), { recursive: true });
+    fs.writeFileSync(trajectoryStateFile(), JSON.stringify({
+      trajectoryName: 42,
+      stepStates: {},
+      currentStepId: null,
+      paused: false,
+      startedAt: 1700000000000,
+    }));
+    expect(loadTrajectoryState(tmpDir)).toBeNull();
+  });
+
+  it('recovers .tmp file when main file is missing', () => {
+    const stateDir = path.dirname(trajectoryStateFile());
+    fs.mkdirSync(stateDir, { recursive: true });
+    const validState = {
+      trajectoryName: 'recovered',
+      stepStates: { 'a': { stepId: 'a', status: 'active', cyclesAttempted: 0, lastAttemptedCycle: 0 } },
+      currentStepId: 'a',
+      paused: false,
+      startedAt: 1700000000000,
+    };
+    fs.writeFileSync(trajectoryStateFile() + '.tmp', JSON.stringify(validState));
+    const result = loadTrajectoryState(tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.trajectoryName).toBe('recovered');
+  });
+});

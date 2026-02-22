@@ -11,6 +11,7 @@ import { registerExecuteTools } from './tools/execute.js';
 import { registerGitTools } from './tools/git.js';
 import { registerIntelligenceTools } from './tools/intelligence.js';
 import { registerTrajectoryTools } from './tools/trajectory.js';
+import { registerDrillTools } from './tools/drill.js';
 
 export interface ServerOptions {
   db: DatabaseAdapter;
@@ -37,7 +38,7 @@ export async function createServer(options: ServerOptions): Promise<{
 
   const server = new McpServer({
     name: 'promptwheel',
-    version: '0.6.1',
+    version: '0.7.0',
   });
 
   // Register tool groups
@@ -48,6 +49,7 @@ export async function createServer(options: ServerOptions): Promise<{
   if (options.trajectoryTools !== false) {
     registerTrajectoryTools(server, getState);
   }
+  registerDrillTools(server, getState);
 
   return { server, state };
 }

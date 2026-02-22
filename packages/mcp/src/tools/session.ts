@@ -288,6 +288,24 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
           error_snippet: s.last_qa_failure.error_output.slice(0, 200),
         } : undefined;
 
+        // Drill mode summary (non-fatal)
+        let drillSummary: { drill_mode: boolean; drill_trajectories: number } | undefined;
+        try {
+          const drillHistoryPath = join(state.projectPath, '.promptwheel', 'drill-history.json');
+          if (existsSync(drillHistoryPath)) {
+            const drillRaw = readFileSync(drillHistoryPath, 'utf-8');
+            if (drillRaw.trim()) {
+              const drillData = JSON.parse(drillRaw);
+              if (drillData && Array.isArray(drillData.entries)) {
+                drillSummary = {
+                  drill_mode: true,
+                  drill_trajectories: drillData.entries.length,
+                };
+              }
+            }
+          }
+        } catch { /* non-fatal */ }
+
         return {
           content: [{
             type: 'text' as const,
@@ -297,6 +315,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
               budget_warnings: warnings.length > 0 ? warnings : undefined,
               last_qa_failure: lastFailure,
               last_plan_rejection: s.last_plan_rejection_reason ?? undefined,
+              ...drillSummary,
             }, null, 2),
           }],
         };

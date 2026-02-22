@@ -143,6 +143,48 @@ export function generateSessionReport(ctx: SessionReportContext): string {
     }
   }
 
+  // Drill / Trajectory section
+  if (ctx.drillStats && ctx.drillStats.trajectoriesGenerated > 0) {
+    const ds = ctx.drillStats;
+    lines.push('## Drill Mode');
+    lines.push('');
+    lines.push('| Metric | Value |');
+    lines.push('|--------|-------|');
+    lines.push(`| Trajectories generated | ${ds.trajectoriesGenerated} |`);
+    lines.push(`| Steps completed | ${ds.stepsCompleted}/${ds.stepsTotal} |`);
+    lines.push(`| Steps failed | ${ds.stepsFailed} |`);
+    lines.push(`| Completion rate | ${ds.completionRate}% |`);
+    if (ds.topCategories) lines.push(`| Top categories | ${ds.topCategories} |`);
+    if (ds.stalledCategories) lines.push(`| Stalled categories | ${ds.stalledCategories} |`);
+    lines.push('');
+  }
+
+  // Drill recommendations
+  if (ctx.drillStats && ctx.drillStats.trajectoriesGenerated > 0) {
+    const ds = ctx.drillStats;
+    const recommendations: string[] = [];
+    if (ds.completionRate < 50) {
+      recommendations.push('Low completion rate — consider reducing trajectory step count (3-4 steps) or simplifying scope per step');
+    }
+    if (ds.stalledCategories) {
+      recommendations.push(`Categories "${ds.stalledCategories}" frequently stall — consider excluding them or adding more specific verification commands`);
+    }
+    if (ds.stepsTotal > 0 && ds.stepsFailed > ds.stepsCompleted) {
+      recommendations.push('More steps failing than completing — raise minConfidence threshold or use simpler formulas');
+    }
+    if (ds.trajectoriesGenerated >= 5 && ds.completionRate > 80) {
+      recommendations.push('High completion rate — consider widening scope or tackling harder categories for more impact');
+    }
+    if (recommendations.length > 0) {
+      lines.push('## Drill Recommendations');
+      lines.push('');
+      for (const r of recommendations) {
+        lines.push(`- ${r}`);
+      }
+      lines.push('');
+    }
+  }
+
   // Health
   lines.push('## Health');
   lines.push('');

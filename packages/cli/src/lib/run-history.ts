@@ -40,6 +40,13 @@ export interface RunHistoryEntry {
     totalOutputTokens: number;
     totalCostUsd: number;
   };
+  drillStats?: {
+    trajectoriesGenerated: number;
+    stepsCompleted: number;
+    stepsFailed: number;
+    stepsTotal: number;
+    completionRate: number;
+  };
 }
 
 export interface TicketOutcome {

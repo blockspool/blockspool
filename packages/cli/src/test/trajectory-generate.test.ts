@@ -1,9 +1,33 @@
 /**
- * Tests for trajectory-generate pure functions: slugify() and validateAndBuild().
+ * Tests for trajectory-generate pure functions: slugify(), validateAndBuild(),
+ * computeSuggestedScope(), sanitizeVerificationCommands().
  */
 
-import { describe, it, expect } from 'vitest';
-import { slugify, validateAndBuild } from '../lib/trajectory-generate.js';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { slugify, validateAndBuild, computeSuggestedScope, sanitizeVerificationCommands, buildGenerateFromProposalsPrompt } from '../lib/trajectory-generate.js';
+import { generateTrajectoryFromProposals } from '../lib/trajectory-generate.js';
+
+// ---------------------------------------------------------------------------
+// Mocks for generateTrajectoryFromProposals tests
+// ---------------------------------------------------------------------------
+
+vi.mock('@promptwheel/core/scout', () => ({
+  runClaude: vi.fn(),
+  parseClaudeOutput: vi.fn(),
+}));
+
+vi.mock('../lib/codebase-index.js', () => ({
+  buildCodebaseIndex: vi.fn(() => ({ modules: [], untested_modules: [], large_files: [], dependency_edges: {} })),
+  formatIndexForPrompt: vi.fn(() => ''),
+}));
+
+vi.mock('../lib/project-metadata/index.js', () => ({
+  detectProjectMetadata: vi.fn(() => ({ languages: [], framework: null, test_runner: null, linter: null })),
+  formatMetadataForPrompt: vi.fn(() => ''),
+}));
 
 // ---------------------------------------------------------------------------
 // slugify
@@ -26,17 +50,16 @@ describe('slugify', () => {
     expect(slugify('---leading-trailing---')).toBe('leading-trailing');
   });
 
-  it('truncates to 60 characters', () => {
+  it('truncates to 80 characters', () => {
     const long = 'a'.repeat(100);
-    expect(slugify(long).length).toBeLessThanOrEqual(60);
-    expect(slugify(long)).toBe('a'.repeat(60));
+    expect(slugify(long).length).toBeLessThanOrEqual(80);
+    expect(slugify(long)).toBe('a'.repeat(80));
   });
 
-  it('truncates at 60 chars from longer slugified input', () => {
-    // 59 a's + space + more text → "aaa...aaa-continuation-text-here" truncated to 60
-    const input = 'a'.repeat(59) + ' continuation text here';
+  it('truncates at 80 chars from longer slugified input', () => {
+    const input = 'a'.repeat(79) + ' continuation text here';
     const result = slugify(input);
-    expect(result.length).toBeLessThanOrEqual(60);
+    expect(result.length).toBeLessThanOrEqual(80);
   });
 
   it('handles empty string', () => {
@@ -264,6 +287,307 @@ describe('validateAndBuild', () => {
     expect(result.steps[0].title).toBe('456');
     expect(result.steps[0].description).toBe(''); // null || '' → ''
     expect(result.steps[0].acceptance_criteria).toEqual(['789']);
-    expect(result.steps[0].verification_commands).toEqual(['true']);
+    expect(result.steps[0].verification_commands).toEqual([]); // 'true' is sanitized out
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeSuggestedScope
+// ---------------------------------------------------------------------------
+
+describe('computeSuggestedScope', () => {
+  it('returns common parent directory for files in same dir', () => {
+    expect(computeSuggestedScope(['src/auth/login.ts', 'src/auth/session.ts']))
+      .toBe('src/auth/**');
+  });
+
+  it('returns deeper common prefix for nested files', () => {
+    expect(computeSuggestedScope(['packages/cli/src/lib/foo.ts', 'packages/cli/src/lib/bar.ts']))
+      .toBe('packages/cli/src/lib/**');
+  });
+
+  it('returns shallow prefix when files span different dirs', () => {
+    expect(computeSuggestedScope(['src/auth/login.ts', 'src/db/connect.ts']))
+      .toBe('src/**');
+  });
+
+  it('returns undefined for empty array', () => {
+    expect(computeSuggestedScope([])).toBeUndefined();
+  });
+
+  it('returns undefined for root-level files with no common dir', () => {
+    expect(computeSuggestedScope(['auth.ts', 'db.ts'])).toBeUndefined();
+  });
+
+  it('returns undefined when files share no common directory', () => {
+    expect(computeSuggestedScope(['src/foo.ts', 'lib/bar.ts'])).toBeUndefined();
+  });
+
+  it('handles single file', () => {
+    expect(computeSuggestedScope(['src/auth/login.ts'])).toBe('src/auth/**');
+  });
+
+  it('handles files at different depths with common prefix', () => {
+    expect(computeSuggestedScope(['src/auth/login.ts', 'src/auth/utils/hash.ts']))
+      .toBe('src/auth/**');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeVerificationCommands
+// ---------------------------------------------------------------------------
+
+describe('sanitizeVerificationCommands', () => {
+  it('keeps valid commands', () => {
+    expect(sanitizeVerificationCommands(['npm test', 'npx vitest run']))
+      .toEqual(['npm test', 'npx vitest run']);
+  });
+
+  it('removes empty commands', () => {
+    expect(sanitizeVerificationCommands(['', '  ', 'npm test']))
+      .toEqual(['npm test']);
+  });
+
+  it('removes pure punctuation/numbers', () => {
+    expect(sanitizeVerificationCommands(['42', '!!!', 'npm test']))
+      .toEqual(['npm test']);
+  });
+
+  it('removes commands with hardcoded line numbers at end', () => {
+    expect(sanitizeVerificationCommands(['grep "foo" src/bar.ts:42', 'npm test']))
+      .toEqual(['npm test']);
+  });
+
+  it('removes commands with --line flag', () => {
+    expect(sanitizeVerificationCommands(['sed --line 15 foo.ts', 'npm test']))
+      .toEqual(['npm test']);
+  });
+
+  it('removes bare "true" and "false"', () => {
+    expect(sanitizeVerificationCommands(['true', 'false', 'npm test']))
+      .toEqual(['npm test']);
+  });
+
+  it('keeps commands with colon in non-line-number context', () => {
+    expect(sanitizeVerificationCommands(['npm run test:unit']))
+      .toEqual(['npm run test:unit']);
+  });
+
+  it('returns empty array when all commands are invalid', () => {
+    expect(sanitizeVerificationCommands(['', '42', 'true']))
+      .toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateAndBuild — verification command sanitization
+// ---------------------------------------------------------------------------
+
+describe('validateAndBuild — sanitization', () => {
+  it('sanitizes verification commands during build', () => {
+    const raw = {
+      name: 'sanitize-test',
+      description: 'Test sanitization',
+      steps: [{
+        id: 'step-1',
+        title: 'Test',
+        description: 'Test',
+        verification_commands: ['npm test', '', 'true', 'grep "foo" bar.ts:42'],
+      }],
+    };
+    const result = validateAndBuild(raw);
+    expect(result.steps[0].verification_commands).toEqual(['npm test']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateTrajectoryFromProposals (mocked LLM)
+// ---------------------------------------------------------------------------
+
+describe('generateTrajectoryFromProposals (mocked LLM)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'traj-gen-'));
+    fs.mkdirSync(path.join(tmpDir, '.promptwheel', 'trajectories'), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const sampleProposals = [
+    {
+      title: 'Add input validation',
+      description: 'Validate user inputs',
+      category: 'security',
+      files: ['src/auth.ts'],
+      allowed_paths: ['src/**'],
+      acceptance_criteria: ['All inputs validated'],
+      verification_commands: ['npm test'],
+      confidence: 80,
+      impact_score: 7,
+      rationale: 'Security improvement',
+      estimated_complexity: 'medium',
+    },
+  ];
+
+  it('generates trajectory from valid LLM response', async () => {
+    const { runClaude, parseClaudeOutput } = await import('@promptwheel/core/scout');
+
+    (runClaude as any).mockResolvedValue({
+      success: true,
+      output: 'mock output',
+    });
+
+    (parseClaudeOutput as any).mockReturnValue({
+      name: 'drill-security-hardening',
+      description: 'Security hardening trajectory',
+      steps: [
+        {
+          id: 'step-1',
+          title: 'Add input validation',
+          description: 'Validate all user inputs',
+          scope: 'src/**',
+          categories: ['security'],
+          acceptance_criteria: ['All inputs validated'],
+          verification_commands: ['npm test'],
+          depends_on: [],
+        },
+      ],
+    });
+
+    const result = await generateTrajectoryFromProposals({
+      proposals: sampleProposals,
+      repoRoot: tmpDir,
+    });
+
+    expect(result.trajectory.name).toMatch(/^drill-security-hardening-\d+$/);
+    expect(result.trajectory.steps).toHaveLength(1);
+    expect(result.filePath).toContain('.promptwheel/trajectories/');
+    expect(fs.existsSync(result.filePath)).toBe(true);
+  });
+
+  it('throws on malformed LLM response (no JSON block)', async () => {
+    const { runClaude, parseClaudeOutput } = await import('@promptwheel/core/scout');
+
+    (runClaude as any).mockResolvedValue({
+      success: true,
+      output: 'no json here, just text',
+    });
+
+    (parseClaudeOutput as any).mockReturnValue(null);
+
+    await expect(
+      generateTrajectoryFromProposals({
+        proposals: sampleProposals,
+        repoRoot: tmpDir,
+      }),
+    ).rejects.toThrow('Trajectory generation failed during response parsing');
+  });
+
+  it('throws on LLM call failure', async () => {
+    const { runClaude } = await import('@promptwheel/core/scout');
+
+    (runClaude as any).mockResolvedValue({
+      success: false,
+      error: 'API timeout',
+    });
+
+    await expect(
+      generateTrajectoryFromProposals({
+        proposals: sampleProposals,
+        repoRoot: tmpDir,
+      }),
+    ).rejects.toThrow('Trajectory generation failed during LLM call');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildGenerateFromProposalsPrompt — dynamic ambition + stratification
+// ---------------------------------------------------------------------------
+
+describe('buildGenerateFromProposalsPrompt — ambition levels', () => {
+  const proposalsBlock = '1. [fix] Fix auth bug (score: 5.0, complexity: medium)\n   Files: src/auth.ts\n   Fix the auth bug';
+  const indexBlock = '';
+  const metaBlock = '';
+
+  it('includes conservative first-step directive', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+      ambitionLevel: 'conservative',
+    });
+    expect(prompt).toContain('First step must be trivially safe');
+    expect(prompt).toContain('touch exactly 1 file');
+    expect(prompt).toContain('Trivial (1 file, guaranteed win)');
+  });
+
+  it('includes ambitious first-step directive', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+      ambitionLevel: 'ambitious',
+    });
+    expect(prompt).toContain('moderate complexity allowed');
+    expect(prompt).toContain('3-5 files');
+    expect(prompt).toContain('Moderate (real problem, self-contained)');
+  });
+
+  it('includes moderate (default) first-step directive', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+      ambitionLevel: 'moderate',
+    });
+    expect(prompt).toContain('First step must be a "gimme"');
+    expect(prompt).toContain('Simple (1-3 files, quick win)');
+  });
+
+  it('defaults to moderate when ambitionLevel is undefined', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {});
+    expect(prompt).toContain('First step must be a "gimme"');
+    expect(prompt).toContain('Simple (1-3 files, quick win)');
+  });
+
+  it('always includes complexity stratification gradient', () => {
+    for (const level of ['conservative', 'moderate', 'ambitious'] as const) {
+      const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+        ambitionLevel: level,
+      });
+      expect(prompt).toContain('Complexity gradient across steps');
+      expect(prompt).toContain('Step 2: Moderate complexity');
+      expect(prompt).toContain('Steps 3+: Full complexity allowed');
+      expect(prompt).toContain('Final step: Consolidation');
+    }
+  });
+
+  it('includes short trajectory guidance in stratification', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+      ambitionLevel: 'moderate',
+    });
+    expect(prompt).toContain('short trajectories (2-3 steps)');
+    expect(prompt).toContain('consolidation role merges');
+  });
+
+  it('does not have separate arc guidance section (merged into causal context)', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {});
+    expect(prompt).not.toContain('## Trajectory Arc Guidance');
+  });
+
+  it('adapts target step count for conservative ambition', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+      ambitionLevel: 'conservative',
+    });
+    expect(prompt).toContain('2-3 steps');
+  });
+
+  it('adapts target step count for ambitious ambition', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+      ambitionLevel: 'ambitious',
+    });
+    expect(prompt).toContain('5-8 steps');
+  });
+
+  it('uses balanced step count for moderate ambition', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+      ambitionLevel: 'moderate',
+    });
+    expect(prompt).toContain('3-5 steps');
   });
 });

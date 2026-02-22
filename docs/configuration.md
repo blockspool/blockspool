@@ -54,7 +54,7 @@ PromptWheel configuration is stored in `.promptwheel/config.json`. All settings 
 | `pluginParallel` | `2` | Number of parallel tickets in plugin mode (max: 5). Set to 1 for sequential. |
 | `batchTokenBudget` | auto | Token budget per scout batch. Default: 20k (Codex), 10k (Claude). Higher = fewer batches, faster scouting. |
 | `scoutTimeoutMs` | auto | Timeout per scout batch in ms. Default: 300000 (Codex), 120000 (Claude). |
-| `maxFilesPerCycle` | `60` | Maximum files scanned per scout cycle. Increase for large repos with `--spin`. |
+| `maxFilesPerCycle` | `60` | Maximum files scanned per scout cycle. Increase for large repos in spin mode. |
 | `learningsEnabled` | `true` | Enable cross-run learning from failures |
 | `learningsBudget` | `2000` | Character budget for learnings in prompts |
 

@@ -142,22 +142,20 @@ describe('buildTasteProfile', () => {
     expect(profile.preferredComplexity).toBe('trivial');
   });
 
-  it('prefers simple when medium-length ticket_success learnings dominate', () => {
-    const medium = 'A moderately long learning text that is between forty and eighty chars long yes';
+  it('prefers simple when learnings have single tags (update/add keywords)', () => {
     const learnings = [
-      makeLearning({ text: medium, source: { type: 'ticket_success' } }),
-      makeLearning({ text: medium, source: { type: 'ticket_success' } }),
+      makeLearning({ text: 'add validation to auth', tags: ['security'], source: { type: 'ticket_success' } }),
+      makeLearning({ text: 'update error messages', tags: ['fix'], source: { type: 'ticket_success' } }),
       makeLearning({ text: 'short', source: { type: 'ticket_success' } }),
     ];
     const profile = buildTasteProfile(makeSectorState([]), learnings, {});
     expect(profile.preferredComplexity).toBe('simple');
   });
 
-  it('prefers moderate when long ticket_success learnings dominate', () => {
-    const long = 'A very long learning text that is definitely over eighty characters long because it describes a complex architectural change in great detail';
+  it('prefers moderate when learnings have multiple tags or refactor keywords', () => {
     const learnings = [
-      makeLearning({ text: long, source: { type: 'ticket_success' } }),
-      makeLearning({ text: long, source: { type: 'ticket_success' } }),
+      makeLearning({ text: 'refactor auth system across modules', tags: ['security', 'refactor', 'types'], source: { type: 'ticket_success' } }),
+      makeLearning({ text: 'restructure database layer', tags: ['refactor', 'perf', 'types'], source: { type: 'ticket_success' } }),
       makeLearning({ text: 'short', source: { type: 'ticket_success' } }),
     ];
     const profile = buildTasteProfile(makeSectorState([]), learnings, {});

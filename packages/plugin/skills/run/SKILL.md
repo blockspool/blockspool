@@ -1,39 +1,40 @@
 ---
 name: run
-description: Run PromptWheel — interactive codebase improvement. Scouts, presents a roadmap, executes approved changes. Use `spin` for unattended spin execution.
-argument-hint: "[spin] [hours=N] [formula=name] [cycles=N] [deep] [parallel=N]"
+description: Run PromptWheel — autonomous codebase improvement. Default is spin+drill (unattended). Use `plan` for human-in-the-loop mode.
+argument-hint: "[plan] [hours=N] [formula=name] [cycles=N] [deep] [parallel=N] [no-drill]"
 ---
 
-Start a PromptWheel session. Default mode is **orchestration**: scout → present roadmap → user approves → execute sequentially → done.
-Pass `spin` for unattended spin mode with parallel subagents and stop-hook loop.
+Start a PromptWheel session. Default mode is **spin+drill**: scout, fix, repeat with auto-generated trajectories and parallel subagents.
+Pass `plan` for human-in-the-loop orchestration mode.
 
 ## Arguments
 
 Parse from `$ARGUMENTS` (all optional, key=value format):
 
 **Common:**
-- **spin** — Enable spin mode (parallel subagents, stop hook, no human approval)
+- **plan** — Enable planning mode (human approval, sequential execution)
 - **formula** — Formula to use (e.g. `security-audit`, `test-coverage`, `cleanup`)
 - **hours** — Time budget for multi-cycle runs (e.g. `hours=4`)
 - **scope** — Directory to scan (auto-detected)
 - **deep** — Enable deep architectural review mode
+- **no-drill** — Disable drill mode (auto-trajectory generation in spin)
 
 **Advanced (rarely needed):**
 - **cycles** — Number of scout→execute cycles (default: 1)
-- **parallel** — Concurrent tickets in spin mode (default 2, max 5). Ignored in orchestration mode.
+- **parallel** — Concurrent tickets in spin mode (default 2, max 5). Ignored in planning mode.
 - **batch_size** — Milestone batching (merge N tickets into one PR)
 - **min_impact_score** — Filter proposals (1-10, default 3)
 - **direct** — Edit in place without worktrees (default: true). Auto-disabled when using PRs or parallel>1.
 
 ## Mode Detection
 
-Check `$ARGUMENTS` for the word `spin`:
-- If **present** → jump to **Spin Mode**
-- If **absent** → follow **Orchestration Mode** (default)
+Check `$ARGUMENTS` for the word `plan`:
+- If **present** → jump to **Orchestration Mode**
+- If **absent** → follow **Spin Mode** (default)
 
 ---
 
-## Orchestration Mode (Default)
+## Orchestration Mode (--plan)
 
 Human-in-the-loop interactive mode. No subagents, no stop hook, no loop-state file. The user approves every step.
 
@@ -92,9 +93,11 @@ Which proposals should I implement? (all / 1,3,5 / none)
 
 ---
 
-## Spin Mode
+## Spin Mode (Default)
 
-Activated by passing `spin` in `$ARGUMENTS`. Unattended parallel execution with stop-hook loop. Matches the CLI's `--spin` flag.
+Unattended parallel execution with stop-hook loop. This is the default mode — activated when `plan` is NOT in `$ARGUMENTS`.
+
+Drill mode is enabled by default in spin — it auto-generates multi-step trajectories from scout proposals. Pass `no-drill` to disable.
 
 ### Setup
 

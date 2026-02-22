@@ -128,6 +128,83 @@ export interface AutoConfig {
    * - 'relaxed': Only direct file overlap + glob overlap (most parallel, riskier)
    */
   conflictSensitivity?: 'strict' | 'normal' | 'relaxed';
+  /**
+   * Drill mode settings — auto-trajectory generation in spin mode.
+   *
+   * When drill mode is active, spin will automatically generate multi-step
+   * trajectories from scout proposals. Each trajectory sequences related
+   * improvements into ordered steps, enabling deep, coherent changes instead
+   * of shallow independent fixes.
+   *
+   * Drill adapts over time: cooldowns, proposal thresholds, and trajectory
+   * scope all adjust based on historical completion rates.
+   */
+  drill?: {
+    /** Enable drill mode in spin (default: true). Set false to disable auto-trajectory generation. */
+    enabled?: boolean;
+    /** Minimum proposals required to generate a trajectory (default: 3). Range: 2-10. Lower values generate more trajectories but may produce shallow ones. */
+    minProposals?: number;
+    /** Maximum proposals fed into the trajectory generation prompt (default: 10). Range: 5-20. Higher values give the LLM more to work with but increase prompt cost. */
+    maxProposals?: number;
+    /** Cooldown cycles after a trajectory completes before re-surveying (default: 0). Set higher to let completed changes settle before generating new work. */
+    cooldownCompleted?: number;
+    /** Cooldown cycles after a trajectory stalls before re-surveying (default: 5). Higher values prevent thrashing on difficult codebases. */
+    cooldownStalled?: number;
+    /** Max drill history entries to persist across sessions (default: 100). Range: 10-1000. Higher values improve diversity tracking but increase disk/memory usage. */
+    historyCap?: number;
+    /** Confidence discount applied during drill survey (default: 15). Higher values cast a wider net but may include weaker proposals. Range: 0-30. */
+    confidenceDiscount?: number;
+    /** Minimum average proposal confidence to trigger trajectory generation (default: 30). Range: 10-80. Lower values generate from weaker proposals. */
+    minAvgConfidence?: number;
+    /** Minimum average proposal impact score to trigger trajectory generation (default: 3). Range: 1-8. Lower values generate from lower-impact proposals. */
+    minAvgImpact?: number;
+    /** Max consecutive 'insufficient' survey results before drill auto-disables (default: 3). Range: 1-10. */
+    maxConsecutiveInsufficient?: number;
+    /** How many recent trajectories inform the next generation (default: 3, range: 1-10) */
+    causalWindow?: number;
+    /** Maximum cycles a single trajectory can consume before being abandoned (default: 15, range: 5-30). Prevents runaway trajectories from consuming the entire session. */
+    maxCyclesPerTrajectory?: number;
+  };
+}
+
+/**
+ * Validate and clamp drill config values to documented ranges.
+ * Prevents invalid user config from causing crashes or silent misbehavior.
+ */
+export function validateDrillConfig(drill: NonNullable<AutoConfig['drill']>): NonNullable<AutoConfig['drill']> {
+  const clamp = (v: unknown, min: number, max: number, fallback: number): number => {
+    const n = typeof v === 'number' ? v : fallback;
+    return Math.max(min, Math.min(max, n));
+  };
+
+  const validated: NonNullable<AutoConfig['drill']> = {
+    enabled: typeof drill.enabled === 'boolean' ? drill.enabled : drill.enabled !== false,
+    minProposals: clamp(drill.minProposals, 2, 10, 3),
+    maxProposals: clamp(drill.maxProposals, 5, 20, 10),
+    cooldownCompleted: clamp(drill.cooldownCompleted, 0, 20, 0),
+    cooldownStalled: clamp(drill.cooldownStalled, 0, 20, 5),
+    historyCap: clamp(drill.historyCap, 10, 1000, 100),
+    confidenceDiscount: clamp(drill.confidenceDiscount, 0, 30, 15),
+    minAvgConfidence: clamp(drill.minAvgConfidence, 10, 80, 30),
+    minAvgImpact: clamp(drill.minAvgImpact, 1, 8, 3),
+    maxConsecutiveInsufficient: clamp(drill.maxConsecutiveInsufficient, 1, 10, 3),
+  };
+
+  // Ensure max > min
+  if (validated.maxProposals! <= validated.minProposals!) {
+    validated.maxProposals = validated.minProposals! + 2;
+  }
+
+  // Validate causal window
+  validated.causalWindow = clamp(drill.causalWindow, 1, 10, 3);
+  validated.maxCyclesPerTrajectory = clamp(drill.maxCyclesPerTrajectory, 5, 30, 15);
+
+  // Validate sigmoid parameters — prevent division by zero and degenerate curves
+  validated.sigmoidK = clamp(drill.sigmoidK, 1, 20, 6);
+  validated.sigmoidCenter = clamp(drill.sigmoidCenter, 0, 1, 0.5);
+  validated.stalenessLogBase = clamp(drill.stalenessLogBase, 2, 100, 11);
+
+  return validated;
 }
 
 /**
@@ -151,6 +228,13 @@ export const DEFAULT_AUTO_CONFIG: AutoConfig = {
   learningsBudget: 2000,
   learningsDecayRate: 3,
   conflictSensitivity: 'relaxed',
+  drill: {
+    enabled: true,
+    minProposals: 3,
+    maxProposals: 10,
+    cooldownCompleted: 0,
+    cooldownStalled: 5,
+  },
 };
 
 /**

@@ -345,12 +345,12 @@ describe('computeConvergenceMetrics', () => {
     expect(result.mergeRate).toBeCloseTo(5 / 6);
   });
 
-  it('returns NaN merge rate when no merge/close data', () => {
+  it('returns zero merge rate when no merge/close data', () => {
     const state = makeSectorState([
       { path: 'a/', fileCount: 10, production: true },
     ]);
     const result = computeConvergenceMetrics(state, 0, []);
-    expect(isNaN(result.mergeRate)).toBe(true);
+    expect(result.mergeRate).toBe(0);
   });
 
   it('computes velocity from session context', () => {

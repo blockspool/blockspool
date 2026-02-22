@@ -29,7 +29,7 @@ npm install -g @promptwheel/cli
 cd your-project
 promptwheel init
 
-# Quick cycle while you grab coffee
+# Quick spin while you grab coffee
 promptwheel
 
 # Afternoon run while you step away
@@ -38,8 +38,8 @@ promptwheel --hours 2
 # Overnight with milestones
 promptwheel --hours 8 --batch-size 30
 
-# Continuous until you stop it
-promptwheel --spin
+# Human-in-the-loop planning mode
+promptwheel --plan
 ```
 
 Also works with [Codex](docs/authentication.md) (`--codex`), [Kimi](docs/authentication.md) (`--kimi`), and [local models](docs/authentication.md) (`--local`).
@@ -101,6 +101,21 @@ steps:
 
 Each session focuses on the current step, advancing through the DAG as acceptance criteria are met. Steps can have dependencies, scoped paths, and verification commands.
 
+### Drill Mode (Auto-Trajectories)
+
+In spin mode, PromptWheel automatically generates multi-step trajectories from scout proposals. Each trajectory sequences related improvements into ordered steps.
+
+```bash
+promptwheel                               # Spin with drill (default)
+promptwheel --no-drill                    # Spin without drill
+promptwheel solo nudge --drill-pause      # Pause drill during a session
+```
+
+Configure in `.promptwheel/config.json`:
+```json
+{ "auto": { "drill": { "enabled": true, "cooldownStalled": 5, "minProposals": 3 } } }
+```
+
 ---
 
 ## Formulas
@@ -150,8 +165,9 @@ Scout ──> Filter ──> Execute (parallel) ──> QA ──> PR
 ## Plugin (Claude Code)
 
 ```
-/promptwheel:run                         Single cycle
-/promptwheel:run spin hours=4            Timed continuous run
+/promptwheel:run                         Spin+drill (default)
+/promptwheel:run plan                    Planning mode (approve first)
+/promptwheel:run hours=4                 Timed spin
 /promptwheel:run formula=security-audit  Focused formula
 /promptwheel:run deep                    Architectural review
 /promptwheel:trajectory activate <name>  Start a trajectory
@@ -167,9 +183,9 @@ See [Plugin Reference](docs/plugin.md) for all 14 slash commands.
 ## Commands
 
 ```bash
-promptwheel                     # Single cycle (scout, execute, PR)
-promptwheel --hours 4           # Time-based run
-promptwheel --spin              # Continuous until Ctrl+C
+promptwheel                     # Spin+drill (default)
+promptwheel --hours 4           # Timed spin
+promptwheel --plan              # Planning mode (scout, approve, execute)
 promptwheel --formula <name>    # Use a specific formula
 promptwheel --deep              # Architectural review
 promptwheel --dry-run           # Scout only, no execution
@@ -222,5 +238,5 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>PromptWheel v0.6.1</b>
+  <b>PromptWheel v0.7.0</b>
 </p>

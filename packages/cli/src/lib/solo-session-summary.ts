@@ -24,6 +24,7 @@ export interface SessionSummaryContext {
   milestoneMode: boolean;
   isContinuous: boolean;
   shutdownRequested: boolean;
+  shutdownReason?: 'user_signal' | 'user_quit' | 'convergence' | 'low_yield' | 'branch_diverged' | 'time_limit' | 'pr_limit' | 'completed' | null;
   maxPrs: number;
   endTime: number | null | undefined;
   totalMinutes: number | undefined;
@@ -38,6 +39,16 @@ export interface SessionSummaryContext {
   originalMinConfidence?: number;
   completedDirectTicketCount?: number;
   reportPath?: string;
+  /** Drill mode stats */
+  drillStats?: {
+    trajectoriesGenerated: number;
+    stepsCompleted: number;
+    stepsFailed: number;
+    stepsTotal: number;
+    completionRate: number;
+    topCategories?: string;
+    stalledCategories?: string;
+  };
 }
 
 /**
@@ -56,7 +67,7 @@ export function displayConvergenceSummary(ctx: SessionSummaryContext): void {
   console.log(chalk.gray(`  Avg proposal yield: ${metrics.avgProposalYield.toFixed(1)}/scan`));
   console.log(chalk.gray(`  Learnings density: ${metrics.learningsDensity.toFixed(2)}/file`));
   console.log(chalk.gray(`  Success trend: ${metrics.successRateTrend}`));
-  if (!isNaN(metrics.mergeRate)) console.log(chalk.gray(`  Merge rate: ${Math.round(metrics.mergeRate * 100)}%`));
+  if (metrics.mergeRate > 0) console.log(chalk.gray(`  Merge rate: ${Math.round(metrics.mergeRate * 100)}%`));
   if (metrics.velocity.prsPerHour > 0) console.log(chalk.gray(`  Velocity: ${metrics.velocity.prsPerHour.toFixed(1)} PRs/h`));
   console.log(chalk.gray(`  Suggested action: ${metrics.suggestedAction}`));
 }
@@ -142,10 +153,10 @@ export async function recordSessionHistory(ctx: SessionSummaryContext): Promise<
   try {
     const { appendRunHistory } = await import('./run-history.js');
     const elapsed = Date.now() - ctx.startTime;
-    const stoppedReason = ctx.shutdownRequested ? 'user_shutdown'
-      : ctx.totalPrsCreated >= ctx.maxPrs ? 'pr_limit'
-      : (ctx.endTime && Date.now() >= ctx.endTime) ? 'time_limit'
-      : 'completed';
+    const stoppedReason = ctx.shutdownReason
+      ?? (ctx.endTime && Date.now() >= ctx.endTime ? 'time_limit' : undefined)
+      ?? (ctx.totalPrsCreated >= ctx.maxPrs ? 'pr_limit' : undefined)
+      ?? 'completed';
     // Aggregate phase timing from ticket outcomes
     let totalScoutMs = 0;
     let totalExecuteMs = 0;
@@ -193,6 +204,15 @@ export async function recordSessionHistory(ctx: SessionSummaryContext): Promise<
       ...(hasCostData ? {
         tokenUsage: { totalInputTokens, totalOutputTokens, totalCostUsd },
       } : {}),
+      ...(ctx.drillStats && ctx.drillStats.trajectoriesGenerated > 0 ? {
+        drillStats: {
+          trajectoriesGenerated: ctx.drillStats.trajectoriesGenerated,
+          stepsCompleted: ctx.drillStats.stepsCompleted,
+          stepsFailed: ctx.drillStats.stepsFailed,
+          stepsTotal: ctx.drillStats.stepsTotal,
+          completionRate: ctx.drillStats.completionRate,
+        },
+      } : {}),
     }, ctx.repoRoot || undefined);
   } catch {
     // Non-fatal
@@ -221,6 +241,11 @@ export function displayFinalSummary(ctx: SessionSummaryContext): void {
   if (ctx.milestoneMode) {
     console.log(chalk.gray(`  Milestone PRs: ${ctx.totalMilestonePrs}`));
     console.log(chalk.gray(`  Total tickets merged: ${ctx.totalPrsCreated}`));
+  }
+
+  if (ctx.drillStats && ctx.drillStats.trajectoriesGenerated > 0) {
+    const ds = ctx.drillStats;
+    console.log(chalk.gray(`  Drill: ${ds.trajectoriesGenerated} trajectory(s), ${ds.stepsCompleted}/${ds.stepsTotal} steps completed (${ds.completionRate}%), ${ds.stepsFailed} failed`));
   }
 
   if (ctx.allPrUrls.length > 0) {

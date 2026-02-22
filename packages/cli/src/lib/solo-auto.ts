@@ -31,6 +31,7 @@ import { runScoutPhase } from './solo-auto-scout.js';
 import { filterProposals } from './solo-auto-filter.js';
 import { executeProposals } from './solo-auto-execute.js';
 import { finalizeSession } from './solo-auto-finalize.js';
+import { maybeDrillGenerateTrajectory, tryPreVerifyTrajectoryStep, computeAmbitionLevel } from './solo-auto-drill.js';
 
 /**
  * Run auto work mode - process ready tickets in parallel
@@ -317,8 +318,8 @@ export async function runAutoWorkMode(options: {
 /**
  * Run auto mode - the full "just run it" experience.
  *
- * Defaults to planning mode: scout all → roadmap → approve → execute → done.
- * With --spin (or --hours): spin loop — scout, fix, repeat.
+ * Defaults to spin mode with drill: scout, fix, repeat.
+ * With --plan: planning mode — scout all → roadmap → approve → execute → done.
  *
  * In daemon mode, returns the exit code instead of calling process.exit().
  */
@@ -355,6 +356,79 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
   do {
     const preCycle = await runPreCycleMaintenance(state);
     if (preCycle.shouldSkipCycle) continue;
+
+    // Drill mode: auto-generate trajectory when none is active
+    if (state.drillMode && !state.activeTrajectory) {
+      try {
+        const drillResult = await maybeDrillGenerateTrajectory(state);
+        if (drillResult === 'generated') {
+          state.drillConsecutiveInsufficient = 0;
+          state.displayAdapter.drillStateChanged({
+            active: true,
+            trajectoryName: state.activeTrajectory?.name,
+            trajectoryProgress: state.activeTrajectory
+              ? `${Object.values(state.activeTrajectoryState?.stepStates ?? {}).filter(s => s.status === 'completed').length}/${state.activeTrajectory.steps.length}`
+              : undefined,
+            ambitionLevel: computeAmbitionLevel(state),
+          });
+          continue; // restart loop with trajectory active
+        }
+        if (drillResult === 'insufficient') {
+          // No proposals at all — codebase may be polished
+          state.drillConsecutiveInsufficient++;
+          const MAX_DRILL_INSUFFICIENT = state.autoConf.drill?.maxConsecutiveInsufficient ?? 3;
+          if (state.drillConsecutiveInsufficient >= MAX_DRILL_INSUFFICIENT) {
+            console.log(chalk.yellow(`  Drill: ${state.drillConsecutiveInsufficient} consecutive empty surveys — disabling drill (codebase appears converged)`));
+            state.drillMode = false;
+            state.displayAdapter.drillStateChanged(null);
+          }
+        } else if (drillResult === 'low_quality') {
+          // Proposals exist but are too weak — don't count toward full disable
+          // (lowering confidence or waiting for better proposals may help)
+          state.drillConsecutiveInsufficient++;
+          const MAX = state.autoConf.drill?.maxConsecutiveInsufficient ?? 3;
+          if (state.drillConsecutiveInsufficient >= MAX + 2) {
+            // More patient: needs 2 extra rounds of low quality before disabling
+            console.log(chalk.yellow(`  Drill: proposals consistently too weak — disabling drill (try lowering minAvgConfidence/minAvgImpact)`));
+            state.drillMode = false;
+            state.displayAdapter.drillStateChanged(null);
+          }
+        } else if (drillResult === 'stale') {
+          // Proposals dropped by freshness filter — don't count toward disable
+          // (external changes will eventually un-stale, so just wait)
+          if (state.drillConsecutiveInsufficient > 0) {
+            state.drillConsecutiveInsufficient--; // recover toward 0
+          }
+        }
+        // 'cooldown', 'failed', 'insufficient', 'low_quality', 'stale' → fall through to normal cycle
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(chalk.yellow(`  Drill: error during trajectory generation — ${msg}`));
+        // Fall through to normal cycle instead of crashing
+      }
+    }
+
+    // Pre-verify: if trajectory step already passes, advance without an LLM call
+    // Bounded to prevent infinite loop if all steps pre-verify at once
+    if (state.activeTrajectory) {
+      try {
+        let preVerifyAdvances = 0;
+        const maxPreVerify = state.activeTrajectory.steps.length;
+        while (preVerifyAdvances < maxPreVerify && tryPreVerifyTrajectoryStep(state)) {
+          preVerifyAdvances++;
+        }
+        if (preVerifyAdvances > 0) {
+          console.log(chalk.gray(`  Drill: pre-verified ${preVerifyAdvances} step(s) (verification commands already pass)`));
+          if (!state.activeTrajectory) {
+            continue; // trajectory completed via pre-verification — restart loop
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(chalk.yellow(`  Drill: pre-verification error — ${msg}`));
+        // Fall through to normal cycle instead of crashing
+      }
+    }
 
     const scoutResult = await runScoutPhase(state);
     if (scoutResult.shouldBreak) break;

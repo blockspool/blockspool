@@ -160,11 +160,14 @@ PromptWheel will:
 
 ## Auto Mode
 
-For hands-off operation, use auto:
+For hands-off operation, just run `promptwheel` — spin+drill is the default:
 
 ```bash
-# Run in spin mode, fixing issues as they're found
-promptwheel --spin
+# Spin mode with drill (default)
+promptwheel
+
+# Planning mode (human approval)
+promptwheel --plan
 
 # Just fix CI failures
 promptwheel solo auto ci

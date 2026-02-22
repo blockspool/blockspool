@@ -8,9 +8,9 @@ PromptWheel is a coding tool that scouts your codebase for improvements, execute
 
 ```bash
 promptwheel init                               # Initialize SQLite database
-promptwheel                                     # Scout + fix + PR (single cycle)
+promptwheel                                     # Spin+drill (default) — run until Ctrl+C
 promptwheel --hours 8 --batch-size 30           # Long run with milestone PRs
-promptwheel --spin                              # Spin mode — run until stopped (Ctrl+C)
+promptwheel --plan                              # Planning mode — scout, approve, execute
 promptwheel nudge "focus on auth"               # Steer a running session
 ```
 
@@ -100,7 +100,7 @@ npm run lint
 
 | Term | Definition |
 |------|------------|
-| **Auto** | The main execution mode. Planning (default): scout → roadmap → approve → execute. Spin (`--spin`): scout, fix, repeat. |
+| **Auto** | The main execution mode. Spin+drill (default): scout, fix, repeat with auto-trajectories. Planning (`--plan`): scout → roadmap → approve → execute. |
 | **Scout** | The discovery phase. Scans code to find improvement opportunities. |
 | **Ticket** | A unit of work. Created from a proposal, executed in isolation. |
 | **Proposal** | A candidate improvement found by scouting. Becomes a ticket when approved. |

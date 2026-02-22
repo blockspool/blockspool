@@ -62,7 +62,8 @@ export function registerDaemonCommands(solo: Command): void {
     .option('--interval <minutes>', 'Poll interval in minutes', '30')
     .option('--formula <name>', 'Formula to use (e.g. deep, security-audit)')
     .option('--scope <path>', 'Directory scope')
-    .action(async (options: { interval?: string; formula?: string; scope?: string }) => {
+    .option('--no-drill', 'Disable drill mode (auto-trajectory generation)')
+    .action(async (options: { interval?: string; formula?: string; scope?: string; drill?: boolean }) => {
       const repoRoot = await resolveRepoRoot();
 
       if (isDaemonRunning(repoRoot)) {
@@ -77,6 +78,7 @@ export function registerDaemonCommands(solo: Command): void {
         interval,
         formula: options.formula,
         scope: options.scope,
+        drill: options.drill,
       });
 
       console.log(chalk.green(`Daemon started (pid=${pid})`));
@@ -196,7 +198,8 @@ export function registerDaemonCommands(solo: Command): void {
     .option('--interval <minutes>', 'Poll interval')
     .option('--formula <name>', 'Formula')
     .option('--scope <path>', 'Scope')
-    .action(async (options: { interval?: string; formula?: string; scope?: string }) => {
+    .option('--no-drill', 'Disable drill')
+    .action(async (options: { interval?: string; formula?: string; scope?: string; drill?: boolean }) => {
       const repoRoot = await resolveRepoRoot();
       const baseConfig = loadDaemonConfig(repoRoot);
 
@@ -205,6 +208,7 @@ export function registerDaemonCommands(solo: Command): void {
         ...(options.interval ? { pollIntervalMinutes: parseInt(options.interval, 10) } : {}),
         ...(options.formula ? { formula: options.formula } : {}),
         ...(options.scope ? { scope: options.scope } : {}),
+        ...(options.drill === false ? { drill: false } : {}),
       };
 
       await startDaemon(repoRoot, config);

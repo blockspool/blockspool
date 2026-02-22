@@ -111,6 +111,7 @@ export function computeConvergenceMetrics(
   learningsCount: number,
   recentCycles: CycleSummary[],
   sessionContext?: { elapsedMs: number; prsCreated: number; prsMerged: number; prsClosed: number },
+  drillContext?: { completionRate: number; step1FailureRate: number; consecutiveInsufficient: number; trajectoryCount: number },
 ): ConvergenceMetrics {
   const prodSectors = sectorState.sectors.filter(s => s.production && s.fileCount > 0);
   const polishedCount = prodSectors.filter(s => (s as any).polishedAt > 0).length;
@@ -139,9 +140,15 @@ export function computeConvergenceMetrics(
     else if (first - last > 0.1) successRateTrend = 'declining';
   }
 
-  // Determine suggested action
+  // Determine suggested action — incorporates drill-specific signals when available
   let suggestedAction: ConvergenceMetrics['suggestedAction'] = 'continue';
   if (polishedSectorPct > 80 && avgProposalYield < 0.5) {
+    suggestedAction = 'stop';
+  } else if (drillContext && drillContext.trajectoryCount >= 3 && drillContext.completionRate < 0.2 && drillContext.step1FailureRate > 0.5) {
+    // Drill-specific: most trajectories fail on step 1 → generation quality is poor, stop drilling
+    suggestedAction = 'stop';
+  } else if (drillContext && drillContext.consecutiveInsufficient >= 2) {
+    // Drill-specific: survey keeps finding nothing → codebase is converged
     suggestedAction = 'stop';
   } else if (polishedSectorPct > 60 && successRateTrend === 'declining') {
     suggestedAction = 'widen_scope';
@@ -158,7 +165,7 @@ export function computeConvergenceMetrics(
   }
   const mergeRate = (totalMerged + totalClosed) > 0
     ? totalMerged / (totalMerged + totalClosed)
-    : NaN;
+    : 0;
 
   // Velocity from session context
   const elapsedHours = sessionContext ? sessionContext.elapsedMs / 3_600_000 : 0;
@@ -188,6 +195,6 @@ const TREND_ARROWS: Record<string, string> = {
 export function formatConvergenceOneLiner(m: ConvergenceMetrics): string {
   const arrow = TREND_ARROWS[m.successRateTrend] ?? '→';
   const velStr = m.velocity.prsPerHour > 0 ? `, ${m.velocity.prsPerHour.toFixed(1)} PRs/h` : '';
-  const mergeStr = !isNaN(m.mergeRate) ? `, merge ${Math.round(m.mergeRate * 100)}%` : '';
+  const mergeStr = m.mergeRate > 0 ? `, merge ${Math.round(m.mergeRate * 100)}%` : '';
   return `Convergence: ${m.polishedSectorPct}% polished, yield ${m.avgProposalYield.toFixed(1)}/scan, success ${arrow}${velStr}${mergeStr} — ${m.suggestedAction}`;
 }

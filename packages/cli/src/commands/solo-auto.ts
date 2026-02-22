@@ -23,15 +23,17 @@ Auto-detects backend from environment:
   codex login        → Codex CLI
 
 Examples:
-  promptwheel                    # Scout all, approve roadmap, execute
-  promptwheel --spin             # Spin mode (run until Ctrl+C)
-  promptwheel --spin --hours 4   # Timed spin
+  promptwheel                    # Spin mode with drill (default)
+  promptwheel --hours 4          # Timed spin
+  promptwheel --no-drill         # Spin without auto-trajectory generation
+  promptwheel --plan             # Scout all, approve roadmap, execute
   promptwheel --pr               # Create PRs instead of direct commits
   promptwheel --formula deep     # Architectural review
   promptwheel ci                 # Fix CI failures
 `)
     // Primary options (visible in help)
-    .option('--spin', 'Spin mode — scout, fix, repeat (run until Ctrl+C or --hours expires)')
+    .option('--plan', 'Planning mode — scout, present roadmap, approve, execute')
+    .option('--no-drill', 'Disable drill mode (auto-generates multi-step trajectories in spin)')
     .option('--hours <n>', 'Run for N hours (accepts decimals: 0.5 = 30min)')
     .option('--pr', 'Create pull requests instead of direct commits')
     .option('--scope <path>', 'Directory to focus on')
@@ -57,7 +59,6 @@ Examples:
     // Legacy/deprecated (kept for backwards compat)
     .addOption(new Option('--minutes <n>').hideHelp())
     .addOption(new Option('--cycles <n>').hideHelp())
-    .addOption(new Option('--continuous').hideHelp())
     .addOption(new Option('--max-prs <n>').hideHelp())
     .addOption(new Option('--no-draft').hideHelp())
     .addOption(new Option('--branch <name>').hideHelp())
@@ -82,7 +83,7 @@ Examples:
     .addOption(new Option('--qa-fix').default(true).hideHelp())
     .addOption(new Option('--no-qa-fix').hideHelp())
     .action(async (mode: string | undefined, options: {
-      spin?: boolean;
+      plan?: boolean;
       dryRun?: boolean;
       scope?: string;
       maxPrs?: string;
@@ -94,7 +95,6 @@ Examples:
       minutes?: string;
       hours?: string;
       cycles?: string;
-      continuous?: boolean;
       verbose?: boolean;
       branch?: string;
       parallel?: string;
@@ -129,6 +129,7 @@ Examples:
       individualPrs?: boolean;
       qaFix?: boolean;
       tui?: boolean;
+      drill?: boolean;
     }) => {
       if (options.deep && !options.formula) {
         options.formula = 'deep';
@@ -162,7 +163,7 @@ Examples:
       if (effectiveMode === 'auto') {
         await runAutoMode({
           ...options,
-          spin: options.spin,
+          plan: options.plan,
           pr: options.pr,
           formula: options.formula,
           tui: options.tui,

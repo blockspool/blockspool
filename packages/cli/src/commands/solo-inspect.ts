@@ -348,6 +348,30 @@ export function registerInspectCommands(solo: Command): void {
             const { analyzeErrorLedger: analyzeEL } = await import('../lib/error-ledger.js');
             const { analyzePrOutcomes: analyzePR } = await import('../lib/pr-outcomes.js');
             const { analyzeSpindleIncidents: analyzeSI } = await import('../lib/spindle-incidents.js');
+            // Drill data for JSON
+            let drillJson: Record<string, unknown> | null = null;
+            try {
+              const { loadDrillHistory: loadDH, computeDrillMetrics: computeDM } = await import('../lib/solo-auto-drill.js');
+              const { loadTrajectoryState: loadTS, loadTrajectory: loadTJ } = await import('../lib/trajectory.js');
+              const dh = loadDH(repoRoot);
+              if (dh.entries.length > 0) {
+                const dm = computeDM(dh.entries);
+                const ts = loadTS(repoRoot);
+                drillJson = {
+                  totalTrajectories: dm.totalTrajectories,
+                  completionRate: dm.completionRate,
+                  topCategories: dm.topCategories,
+                  stalledCategories: dm.stalledCategories,
+                  activeTrajectory: ts ? (() => {
+                    const tj = loadTJ(repoRoot, ts.trajectoryName);
+                    const completed = tj ? tj.steps.filter(s => ts.stepStates[s.id]?.status === 'completed').length : 0;
+                    const total = tj ? tj.steps.length : 0;
+                    return { name: ts.trajectoryName, progress: `${completed}/${total}` };
+                  })() : null,
+                };
+              }
+            } catch { /* non-fatal */ }
+
             (output as any).spin = {
               qualityRate: getQR(repoRoot),
               qualitySignals: rs.qualitySignals ?? null,
@@ -365,6 +389,7 @@ export function registerInspectCommands(solo: Command): void {
               errorPatterns: analyzeEL(repoRoot),
               prOutcomes: analyzePR(repoRoot),
               spindleIncidents: analyzeSI(repoRoot),
+              ...(drillJson && { drill: drillJson }),
             };
           } catch {
             // Non-fatal
@@ -557,6 +582,45 @@ export function registerInspectCommands(solo: Command): void {
           // Non-fatal — spin data may not exist yet
         }
 
+        // Drill section
+        try {
+          const { loadDrillHistory, computeDrillMetrics, computeAmbitionLevel } = await import('../lib/solo-auto-drill.js');
+          const { loadTrajectoryState: loadTS, loadTrajectory: loadTJ } = await import('../lib/trajectory.js');
+          const drillData = loadDrillHistory(repoRoot);
+
+          if (drillData.entries.length > 0) {
+            const metrics = computeDrillMetrics(drillData.entries);
+            const completed = drillData.entries.filter(e => e.outcome === 'completed').length;
+            const stalled = drillData.entries.filter(e => e.outcome === 'stalled').length;
+            const pct = Math.round(metrics.completionRate * 100);
+
+            console.log();
+            console.log(`  ${chalk.cyan('Drill:')}`);
+            console.log(`    History: ${metrics.totalTrajectories} trajectories (${completed} completed, ${stalled} stalled) — ${pct}% completion`);
+            const ambition = computeAmbitionLevel({ drillHistory: drillData.entries } as any);
+            console.log(`    Ambition: ${ambition}`);
+            if (metrics.topCategories.length > 0) {
+              console.log(`    Top categories: ${metrics.topCategories.join(', ')}`);
+            }
+            if (metrics.stalledCategories.length > 0) {
+              console.log(`    Stalled categories: ${metrics.stalledCategories.join(', ')}`);
+            }
+
+            const trajState = loadTS(repoRoot);
+            if (trajState) {
+              const traj = loadTJ(repoRoot, trajState.trajectoryName);
+              if (traj) {
+                const doneSteps = traj.steps.filter(s => trajState.stepStates[s.id]?.status === 'completed').length;
+                console.log(`    Active trajectory: ${trajState.trajectoryName} (${doneSteps}/${traj.steps.length} steps)`);
+              } else {
+                console.log(`    Active trajectory: ${trajState.trajectoryName}`);
+              }
+            }
+          }
+        } catch {
+          // Non-fatal — drill data may not exist
+        }
+
       } finally {
         await adapter.close();
       }
@@ -665,6 +729,24 @@ export function registerInspectCommands(solo: Command): void {
             tickets: projectTickets,
             runs: projectRuns,
           });
+        }
+
+        // Add drill history and active trajectory
+        try {
+          const { loadDrillHistory } = await import('../lib/solo-auto-drill.js');
+          const { loadTrajectoryState: loadTS } = await import('../lib/trajectory.js');
+          const drillData = loadDrillHistory(repoRoot);
+          const trajState = loadTS(repoRoot);
+          if (drillData.entries.length > 0 || trajState) {
+            data.drill = {
+              history: drillData.entries,
+              coveredCategories: drillData.coveredCategories,
+              coveredScopes: drillData.coveredScopes,
+              activeTrajectory: trajState ?? null,
+            };
+          }
+        } catch {
+          // Non-fatal — drill data may not exist
         }
 
         fs.writeFileSync(options.output, JSON.stringify(data, null, 2));

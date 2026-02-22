@@ -52,6 +52,9 @@ export interface Learning {
       | 'reviewer_feedback'
       | 'cross_sector_pattern'
       | 'process_insight'
+      | 'baseline_healed'
+      | 'drill_completed'
+      | 'drill_stalled'
       | 'manual';
     detail?: string;
   };

@@ -26,7 +26,8 @@ export const soloCommand = new Command('solo')
 Running 'promptwheel solo' without a subcommand starts auto mode.
 
 Examples:
-  promptwheel solo                 Run auto mode (scout → fix → PR)
+  promptwheel solo                 Spin mode with drill (default)
+  promptwheel solo --plan          Planning mode (scout → approve → execute)
   promptwheel solo --codex         Full Codex mode (no Anthropic key needed)
   promptwheel solo init            Initialize local state in current repo
   promptwheel solo doctor          Check prerequisites and environment health
@@ -38,9 +39,14 @@ Examples:
   promptwheel solo qa              Run QA commands (lint, test, etc.)
   promptwheel solo status          Show local state and active tickets
   promptwheel solo nudge "..."     Steer a running auto session with a hint
+  promptwheel solo nudge --drill-pause   Pause drill during a running session
+  promptwheel solo nudge --drill-resume  Resume paused drill
   promptwheel solo daemon start    Start background daemon for continuous improvement
   promptwheel solo daemon stop     Stop the running daemon
   promptwheel solo daemon status   Show daemon status and stats
+  promptwheel solo trajectory list     List all trajectories and status
+  promptwheel solo trajectory show <n> Show trajectory details
+  promptwheel solo trajectory generate "goal" Generate a trajectory from a goal
   promptwheel solo tui             Launch interactive terminal UI
   promptwheel solo reset           Clear all local state
   promptwheel solo export          Export state for debugging

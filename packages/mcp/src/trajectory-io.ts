@@ -69,9 +69,21 @@ export function loadTrajectory(repoRoot: string, name: string): Trajectory | nul
 /** Load the active trajectory state, or null if none. */
 export function loadTrajectoryState(repoRoot: string): TrajectoryState | null {
   const p = trajectoryStatePath(repoRoot);
+  const tmp = p + '.tmp';
   try {
+    // Recover from crash: if main file missing but .tmp exists, promote it
+    if (!fs.existsSync(p) && fs.existsSync(tmp)) {
+      try { fs.renameSync(tmp, p); } catch { /* best effort */ }
+    }
     if (fs.existsSync(p)) {
-      return JSON.parse(fs.readFileSync(p, 'utf-8'));
+      const raw = fs.readFileSync(p, 'utf-8');
+      if (!raw.trim()) return null;
+      const data = JSON.parse(raw);
+      // Structural validation
+      if (!data || typeof data !== 'object') return null;
+      if (typeof data.trajectoryName !== 'string') return null;
+      if (!data.stepStates || typeof data.stepStates !== 'object' || Array.isArray(data.stepStates)) return null;
+      return data as TrajectoryState;
     }
   } catch (err) {
     console.warn(`[promptwheel] failed to parse trajectory-state.json: ${err instanceof Error ? err.message : String(err)}`);
@@ -87,8 +99,13 @@ export function saveTrajectoryState(repoRoot: string, state: TrajectoryState): v
     fs.mkdirSync(dir, { recursive: true });
   }
   const tmp = p + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, p);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, p);
+  } catch (err) {
+    if (fs.existsSync(tmp)) try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
 }
 
 /** Clear trajectory state (deactivate). */

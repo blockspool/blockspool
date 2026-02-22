@@ -49,6 +49,17 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   const trajectoryScope = state.currentTrajectoryStep?.scope;
   const scope = trajectoryScope ?? preSelectedScope ?? getNextScope(state);
 
+  // Map trajectory scope to a sector so stats stay current
+  if (trajectoryScope && state.sectorState && !state.currentSectorId) {
+    const normalizedScope = trajectoryScope.replace(/\/\*\*$/, '').replace(/\/$/, '');
+    const matchedSector = state.sectorState.sectors.find(s =>
+      normalizedScope.startsWith(s.path) || s.path.startsWith(normalizedScope),
+    );
+    if (matchedSector) {
+      state.currentSectorId = matchedSector.path;
+    }
+  }
+
   // No sectors need scanning — all covered and no changes detected
   if (scope === null) {
     state.displayAdapter.log(chalk.gray('  All sectors scanned, no changes detected. Waiting for new code...'));
@@ -118,6 +129,10 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     : 'Step 1: ';
   state.displayAdapter.scoutStarted(scope, state.cycleCount);
   state.displayAdapter.log(chalk.bold(`${cycleLabel}Scouting ${scope}...`));
+
+  // Apply drill directives before consuming hints
+  const { applyDrillDirectives } = await import('./solo-auto-drill.js');
+  applyDrillDirectives(state);
 
   // Consume pending hints
   const hintBlock = consumePendingHints(state.repoRoot);

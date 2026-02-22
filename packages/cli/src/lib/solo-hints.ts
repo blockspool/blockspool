@@ -10,11 +10,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 
+export type DrillDirective = 'drill:pause' | 'drill:resume' | 'drill:disable';
+
 export interface Hint {
   id: string;
   text: string;
   createdAt: number;
   consumed: boolean;
+  directive?: DrillDirective;
 }
 
 const HINTS_FILE = 'hints.json';
@@ -93,6 +96,23 @@ export function addHint(repoRoot: string, text: string): Hint {
 }
 
 /**
+ * Add a directive hint (for drill control). Returns the created hint.
+ */
+export function addDirective(repoRoot: string, directive: DrillDirective, text?: string): Hint {
+  const hints = readHints(repoRoot);
+  const hint: Hint = {
+    id: generateId(),
+    text: text ?? directive,
+    createdAt: Date.now(),
+    consumed: false,
+    directive,
+  };
+  hints.push(hint);
+  atomicWrite(repoRoot, hints);
+  return hint;
+}
+
+/**
  * Consume all pending (unconsumed) hints.
  * Marks them as consumed and returns a formatted prompt block,
  * or null if there are no pending hints.
@@ -110,6 +130,13 @@ export function consumePendingHints(repoRoot: string): string | null {
 
   const lines = pending.map((h) => `- "${h.text}"`).join('\n');
   return `\n## User Steering Hints\n${lines}`;
+}
+
+/**
+ * Write the full hints array back to disk (e.g. after marking directives consumed).
+ */
+export function writeHints(repoRoot: string, hints: Hint[]): void {
+  atomicWrite(repoRoot, hints);
 }
 
 /**

@@ -447,3 +447,61 @@ describe('recordGoalMeasurement', () => {
     expect(written.measurements['errored'][0].value).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gap calculation edge cases — division by zero protection
+// ---------------------------------------------------------------------------
+
+describe('measureGoals — division by zero protection', () => {
+  beforeEach(() => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+  });
+
+  it('handles direction=up with target=0 (value < 0)', () => {
+    const mockedExec = vi.mocked(execFileSync);
+    mockedExec.mockReturnValue('-5' as any);
+
+    const goals = [makeGoal({ name: 'zero-target-up', measure: { cmd: 'echo -5', target: 0, direction: 'up' as const } })];
+    const results = measureGoals(goals, '/tmp');
+
+    expect(results).toHaveLength(1);
+    expect(results[0].gapPercent).toBe(100);
+    expect(Number.isNaN(results[0].gapPercent)).toBe(false);
+  });
+
+  it('handles direction=up with target=0 and value=0 (met)', () => {
+    const mockedExec = vi.mocked(execFileSync);
+    mockedExec.mockReturnValue('0' as any);
+
+    const goals = [makeGoal({ name: 'zero-both-up', measure: { cmd: 'echo 0', target: 0, direction: 'up' as const } })];
+    const results = measureGoals(goals, '/tmp');
+
+    expect(results).toHaveLength(1);
+    expect(results[0].gapPercent).toBe(0);
+    expect(results[0].met).toBe(true);
+  });
+
+  it('handles direction=down with value=0 and target < 0', () => {
+    const mockedExec = vi.mocked(execFileSync);
+    mockedExec.mockReturnValue('0' as any);
+
+    const goals = [makeGoal({ name: 'zero-value-down', measure: { cmd: 'echo 0', target: -1, direction: 'down' as const } })];
+    const results = measureGoals(goals, '/tmp');
+
+    expect(results).toHaveLength(1);
+    // value=0 <= target=-1 is false, so gap should be computed
+    // but value=0, so we use the fallback
+    expect(Number.isNaN(results[0].gapPercent)).toBe(false);
+  });
+
+  it('handles direction=down with target=0 and value > 0', () => {
+    const mockedExec = vi.mocked(execFileSync);
+    mockedExec.mockReturnValue('10' as any);
+
+    const goals = [makeGoal({ name: 'zero-target-down', measure: { cmd: 'echo 10', target: 0, direction: 'down' as const } })];
+    const results = measureGoals(goals, '/tmp');
+
+    expect(results).toHaveLength(1);
+    expect(Number.isNaN(results[0].gapPercent)).toBe(false);
+  });
+});

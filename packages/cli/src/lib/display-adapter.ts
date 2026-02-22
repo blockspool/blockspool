@@ -46,6 +46,9 @@ export interface DisplayAdapter {
   // Generic output (replaces console.log in pipeline)
   log(msg: string): void;
 
+  // Drill state
+  drillStateChanged(info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void;
+
   // Lifecycle
   destroy(): void;
 }

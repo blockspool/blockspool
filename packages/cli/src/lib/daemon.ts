@@ -36,6 +36,7 @@ export interface DaemonConfig {
   maxLogSizeMB: number;
   formula?: string;
   scope?: string;
+  drill?: boolean;
 }
 
 export interface DaemonState {
@@ -284,6 +285,7 @@ export async function startDaemon(repoRoot: string, config: DaemonConfig): Promi
         cycles: String(config.cyclesPerWake),
         formula: config.formula,
         scope: config.scope,
+        drill: config.drill,
         daemon: true,
         yes: true,
         tui: false,

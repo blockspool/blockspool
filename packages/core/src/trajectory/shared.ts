@@ -22,6 +22,7 @@ export interface TrajectoryStep {
   verification_commands: string[];
   depends_on: string[];           // step IDs that must complete first
   max_retries?: number;            // override default retry limit for this step
+  priority?: number;               // 1-10, higher = more important (default 5)
   measure?: {
     cmd: string;
     target: number;
@@ -45,6 +46,12 @@ export interface StepState {
   completedAt?: number;
   failureReason?: string;
   measurement?: { value: number | null; timestamp: number };
+  /** Last verification command output — helps LLM understand what failed */
+  lastVerificationOutput?: string;
+  /** Count of consecutive verification failures — resets on any pass */
+  consecutiveFailures?: number;
+  /** Total verification failures (never resets) — detects flaky tests */
+  totalFailures?: number;
 }
 
 export interface TrajectoryState {
@@ -61,28 +68,66 @@ export interface TrajectoryState {
 
 const DEFAULT_MAX_RETRIES = 3;
 
-/** Can this step start? All dependencies must be completed. */
+/** Can this step start? All dependencies must be resolved (completed, skipped, or failed). */
 export function stepReady(step: TrajectoryStep, states: Record<string, StepState>): boolean {
   for (const depId of step.depends_on) {
     const dep = states[depId];
-    if (!dep || (dep.status !== 'completed' && dep.status !== 'skipped')) return false;
+    if (!dep || (dep.status !== 'completed' && dep.status !== 'skipped' && dep.status !== 'failed')) return false;
   }
   return true;
 }
 
-/** Pick next step: first ready step in declaration order that is pending or active. */
+/**
+ * Pick next step: highest-priority ready step among pending/active steps.
+ * When priorities are equal, falls back to declaration order.
+ */
 export function getNextStep(trajectory: Trajectory, states: Record<string, StepState>): TrajectoryStep | null {
+  let best: TrajectoryStep | null = null;
+  let bestPriority = -1;
   for (const step of trajectory.steps) {
     const state = states[step.id];
     if (!state) continue;
     if (state.status === 'completed' || state.status === 'skipped' || state.status === 'failed') continue;
-    if (stepReady(step, states)) return step;
+    if (!stepReady(step, states)) continue;
+    const prio = step.priority ?? 5;
+    if (prio > bestPriority) {
+      best = step;
+      bestPriority = prio;
+    }
   }
-  return null;
+  return best;
 }
 
-/** All steps completed or skipped? */
+/**
+ * Get all steps that are ready to execute (dependencies resolved, not in terminal state).
+ * Returns steps sorted by priority (highest first). Enables parallel execution of
+ * independent steps within the same trajectory.
+ */
+export function getReadySteps(trajectory: Trajectory, states: Record<string, StepState>): TrajectoryStep[] {
+  const ready: TrajectoryStep[] = [];
+  for (const step of trajectory.steps) {
+    const state = states[step.id];
+    if (!state) continue;
+    if (state.status === 'completed' || state.status === 'skipped' || state.status === 'failed') continue;
+    if (!stepReady(step, states)) continue;
+    ready.push(step);
+  }
+  // Sort by priority descending (highest first)
+  return ready.sort((a, b) => (b.priority ?? 5) - (a.priority ?? 5));
+}
+
+/** All steps in a terminal state (completed, skipped, or failed)? */
 export function trajectoryComplete(trajectory: Trajectory, states: Record<string, StepState>): boolean {
+  for (const step of trajectory.steps) {
+    const state = states[step.id];
+    if (!state) return false;
+    if (state.status !== 'completed' && state.status !== 'skipped' && state.status !== 'failed') return false;
+  }
+  return true;
+}
+
+/** All non-failed steps completed or skipped? (i.e., every step that could succeed has.) */
+export function trajectoryFullySucceeded(trajectory: Trajectory, states: Record<string, StepState>): boolean {
   for (const step of trajectory.steps) {
     const state = states[step.id];
     if (!state) return false;
@@ -91,11 +136,29 @@ export function trajectoryComplete(trajectory: Trajectory, states: Record<string
   return true;
 }
 
-/** Stuck: current step has failed 3+ cycles with no progress. Returns stuck step ID or null. */
-export function trajectoryStuck(states: Record<string, StepState>, maxRetries: number = DEFAULT_MAX_RETRIES): string | null {
+/**
+ * Check if any active step has exceeded its retry limit or is flaky.
+ * Uses per-step max_retries when steps are provided, otherwise falls back to the global default.
+ * Flaky detection: if totalFailures > 2 * max_retries, the step alternates pass/fail and should be failed.
+ * Returns stuck step ID or null.
+ */
+export function trajectoryStuck(
+  states: Record<string, StepState>,
+  maxRetries: number = DEFAULT_MAX_RETRIES,
+  steps?: TrajectoryStep[],
+): string | null {
+  const stepMap = steps ? new Map(steps.map(s => [s.id, s])) : null;
   for (const [stepId, state] of Object.entries(states)) {
-    if (state.status === 'active' && state.cyclesAttempted >= maxRetries) {
-      return stepId;
+    if (state.status === 'active') {
+      const limit = stepMap?.get(stepId)?.max_retries ?? maxRetries;
+      // Standard stuck: consecutive attempts exhausted
+      if (state.cyclesAttempted >= limit) {
+        return stepId;
+      }
+      // Flaky detection: total failures way exceeds limit even though consecutive resets
+      if (state.totalFailures && state.totalFailures >= limit * 2) {
+        return stepId;
+      }
     }
   }
   return null;
@@ -151,6 +214,16 @@ export function formatTrajectoryForPrompt(
   if (stepState && stepState.cyclesAttempted > 0) {
     const limit = currentStep.max_retries ?? DEFAULT_MAX_RETRIES;
     lines.push(`**Attempts:** ${stepState.cyclesAttempted}/${limit} cycle(s)`);
+    if (stepState.lastVerificationOutput) {
+      lines.push('');
+      lines.push('**Last verification output (fix this):**');
+      lines.push('```');
+      lines.push(stepState.lastVerificationOutput);
+      lines.push('```');
+    }
+    if (stepState.consecutiveFailures && stepState.consecutiveFailures >= 2) {
+      lines.push(`**Warning:** This step has failed ${stepState.consecutiveFailures} consecutive times. Try a different approach.`);
+    }
   }
   lines.push('');
 
@@ -214,19 +287,25 @@ export function parseTrajectoryYaml(content: string): Trajectory {
   function flushStep() {
     flushList();
     flushMeasure();
-    if (currentStep && currentStep.id) {
-      steps.push({
-        id: currentStep.id,
-        title: currentStep.title ?? '',
-        description: currentStep.description ?? '',
-        scope: currentStep.scope,
-        categories: currentStep.categories,
-        acceptance_criteria: currentStep.acceptance_criteria ?? [],
-        verification_commands: currentStep.verification_commands ?? [],
-        depends_on: currentStep.depends_on ?? [],
-        max_retries: currentStep.max_retries,
-        measure: currentStep.measure,
-      });
+    if (currentStep) {
+      if (currentStep.id) {
+        steps.push({
+          id: currentStep.id,
+          title: currentStep.title ?? '',
+          description: currentStep.description ?? '',
+          scope: currentStep.scope,
+          categories: currentStep.categories,
+          acceptance_criteria: currentStep.acceptance_criteria ?? [],
+          verification_commands: currentStep.verification_commands ?? [],
+          depends_on: currentStep.depends_on ?? [],
+          max_retries: currentStep.max_retries,
+          priority: currentStep.priority,
+          measure: currentStep.measure,
+        });
+      } else if (currentStep.title) {
+        // Step has content but no ID — warn instead of silently dropping
+        console.warn(`Warning: trajectory step "${currentStep.title}" dropped — missing id`);
+      }
     }
     currentStep = null;
   }
@@ -249,8 +328,8 @@ export function parseTrajectoryYaml(content: string): Trajectory {
       const match = trimmed.match(/^(\w[\w_-]*)\s*:\s*(.*)/);
       if (match) {
         const [, key, value] = match;
-        if (key === 'name') name = value.trim();
-        else if (key === 'description') description = value.trim();
+        if (key === 'name') name = stripQuotes(value);
+        else if (key === 'description') description = stripQuotes(value);
       }
       continue;
     }
@@ -289,7 +368,7 @@ export function parseTrajectoryYaml(content: string): Trajectory {
 
       // List item
       if (trimmed.startsWith('- ')) {
-        const item = trimmed.slice(2).trim();
+        const item = stripQuotes(trimmed.slice(2));
         if (currentListKey) {
           currentList.push(item);
           continue;
@@ -305,13 +384,13 @@ export function parseTrajectoryYaml(content: string): Trajectory {
 
         switch (key) {
           case 'title':
-            currentStep.title = val;
+            currentStep.title = stripQuotes(val);
             break;
           case 'description':
-            currentStep.description = val;
+            currentStep.description = stripQuotes(val);
             break;
           case 'scope':
-            currentStep.scope = val.replace(/^["']|["']$/g, '');
+            currentStep.scope = stripQuotes(val);
             break;
           case 'categories':
             currentStep.categories = parseSimpleList(val);
@@ -332,6 +411,11 @@ export function parseTrajectoryYaml(content: string): Trajectory {
             if (!isNaN(n) && n > 0) currentStep.max_retries = n;
             break;
           }
+          case 'priority': {
+            const p = parseInt(val, 10);
+            if (!isNaN(p) && p >= 1 && p <= 10) currentStep.priority = p;
+            break;
+          }
           case 'measure':
             inMeasure = true;
             measureObj = {};
@@ -347,6 +431,15 @@ export function parseTrajectoryYaml(content: string): Trajectory {
   flushStep();
 
   return { name, description, steps };
+}
+
+/** Strip surrounding quotes from a YAML value (double or single). */
+function stripQuotes(value: string): string {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  return trimmed;
 }
 
 /** Parse "[a, b, c]" or "a, b, c" → string[]. Also handles YAML inline sequences. */
@@ -411,17 +504,28 @@ export function createInitialStepStates(trajectory: Trajectory): Record<string, 
 // YAML serialization (inverse of parseTrajectoryYaml)
 // ---------------------------------------------------------------------------
 
+/** Quote a YAML string value if it contains characters that would break the hand-rolled parser. */
+function yamlQuote(value: string): string {
+  // Quote if the value contains: colon-space, leading/trailing quotes, #, or starts with special YAML chars
+  if (/[:#]/.test(value) || /^['"[\]{}&*!|>%@`]/.test(value) || value.includes('\n')) {
+    // Use double quotes, escaping internal double quotes and backslashes
+    const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return `"${escaped}"`;
+  }
+  return value;
+}
+
 /** Serialize a Trajectory to YAML that parseTrajectoryYaml can round-trip. */
 export function serializeTrajectoryToYaml(trajectory: Trajectory): string {
   const lines: string[] = [];
-  lines.push(`name: ${trajectory.name}`);
-  lines.push(`description: ${trajectory.description}`);
+  lines.push(`name: ${yamlQuote(trajectory.name)}`);
+  lines.push(`description: ${yamlQuote(trajectory.description)}`);
   lines.push('steps:');
 
   for (const step of trajectory.steps) {
     lines.push(`  - id: ${step.id}`);
-    lines.push(`    title: ${step.title}`);
-    lines.push(`    description: ${step.description}`);
+    lines.push(`    title: ${yamlQuote(step.title)}`);
+    lines.push(`    description: ${yamlQuote(step.description)}`);
     if (step.scope) {
       lines.push(`    scope: "${step.scope}"`);
     }
@@ -430,15 +534,18 @@ export function serializeTrajectoryToYaml(trajectory: Trajectory): string {
     }
     lines.push('    acceptance_criteria:');
     for (const ac of step.acceptance_criteria) {
-      lines.push(`      - ${ac}`);
+      lines.push(`      - ${yamlQuote(ac)}`);
     }
     lines.push('    verification_commands:');
     for (const vc of step.verification_commands) {
-      lines.push(`      - ${vc}`);
+      lines.push(`      - ${yamlQuote(vc)}`);
     }
     lines.push(`    depends_on: [${step.depends_on.join(', ')}]`);
     if (step.max_retries !== undefined) {
       lines.push(`    max_retries: ${step.max_retries}`);
+    }
+    if (step.priority !== undefined) {
+      lines.push(`    priority: ${step.priority}`);
     }
     if (step.measure) {
       lines.push('    measure:');

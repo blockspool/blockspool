@@ -75,6 +75,10 @@ export class LogDisplayAdapter implements DisplayAdapter {
     this.logger(`[${ts()}] ${clean}`);
   }
 
+  drillStateChanged(_info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void {
+    // No-op for log mode
+  }
+
   destroy(): void {
     // No resources to clean up
   }

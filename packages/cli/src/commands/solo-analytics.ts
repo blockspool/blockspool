@@ -284,6 +284,58 @@ function displayCompactAnalytics(
     }
   } catch { /* non-fatal */ }
 
+  // Shutdown Reasons (frequency table across recent sessions)
+  {
+    const reasonCounts: Record<string, number> = {};
+    for (const h of history) {
+      const reason = h.stoppedReason || 'unknown';
+      reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+    }
+    const reasons = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1]);
+    if (reasons.length > 0) {
+      const reasonStr = reasons.map(([r, c]) => `${r}: ${c}`).join(' | ');
+      working.push(`Shutdown reasons: ${reasonStr}`);
+    }
+  }
+
+  // Drill Performance (aggregate across sessions with drill data)
+  {
+    const drillSessions = history.filter((h): h is RunHistoryEntry & { drillStats: NonNullable<RunHistoryEntry['drillStats']> } =>
+      h.drillStats !== undefined && h.drillStats !== null && h.drillStats.trajectoriesGenerated > 0
+    );
+    if (drillSessions.length > 0) {
+      let totalTrajectories = 0;
+      let totalStepsCompleted = 0;
+      let totalStepsFailed = 0;
+      let totalSteps = 0;
+      for (const h of drillSessions) {
+        totalTrajectories += h.drillStats.trajectoriesGenerated;
+        totalStepsCompleted += h.drillStats.stepsCompleted;
+        totalStepsFailed += h.drillStats.stepsFailed;
+        totalSteps += h.drillStats.stepsTotal;
+      }
+      const overallRate = totalSteps > 0 ? Math.round((totalStepsCompleted / totalSteps) * 100) : 0;
+      let drillStr = `Drill: ${totalTrajectories} trajectories across ${drillSessions.length} sessions | ${totalStepsCompleted}/${totalSteps} steps (${overallRate}%) | ${totalStepsFailed} failed`;
+
+      // Completion rate trend: first half vs second half
+      if (drillSessions.length >= 4) {
+        const mid = Math.floor(drillSessions.length / 2);
+        const firstHalf = drillSessions.slice(mid); // older (history is most-recent-first)
+        const secondHalf = drillSessions.slice(0, mid); // newer
+        const firstRate = firstHalf.reduce((s, h) => s + h.drillStats.stepsTotal, 0) > 0
+          ? Math.round(firstHalf.reduce((s, h) => s + h.drillStats.stepsCompleted, 0) / firstHalf.reduce((s, h) => s + h.drillStats.stepsTotal, 0) * 100)
+          : 0;
+        const secondRate = secondHalf.reduce((s, h) => s + h.drillStats.stepsTotal, 0) > 0
+          ? Math.round(secondHalf.reduce((s, h) => s + h.drillStats.stepsCompleted, 0) / secondHalf.reduce((s, h) => s + h.drillStats.stepsTotal, 0) * 100)
+          : 0;
+        const trend = secondRate > firstRate ? 'improving' : secondRate < firstRate ? 'declining' : 'stable';
+        drillStr += ` | trend: ${trend} (${firstRate}%→${secondRate}%)`;
+      }
+
+      working.push(drillStr);
+    }
+  }
+
   // Trajectory Progress
   try {
     const trajState = loadTrajectoryState(repoRoot);

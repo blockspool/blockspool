@@ -47,8 +47,10 @@ import { saveTrajectoryState } from './trajectory.js';
 import {
   getNextStep as getTrajectoryNextStep,
   trajectoryComplete,
+  trajectoryFullySucceeded,
   trajectoryStuck,
 } from '@promptwheel/core/trajectory/shared';
+import { recordDrillTrajectoryOutcome, computeAmbitionLevel } from './solo-auto-drill.js';
 
 // ── Pre-cycle maintenance ───────────────────────────────────────────────────
 
@@ -179,12 +181,13 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
               console.log();
               console.log(chalk.bold('Resolution:'));
               console.log(`  1. Resolve the divergence (rebase, merge, or reset)`);
-              console.log(`  2. Re-run: promptwheel --spin`);
+              console.log(`  2. Re-run: promptwheel`);
               console.log();
               console.log(chalk.gray(`  To keep going despite divergence, set pullPolicy: "warn" in config.`));
 
               // Signal orchestrator to break — finalizeSession handles cleanup
               state.shutdownRequested = true;
+              if (state.shutdownReason === null) state.shutdownReason = 'branch_diverged';
               return { shouldSkipCycle: true };
             } else {
               console.log(chalk.yellow(`  ⚠ Base branch diverged from origin/${state.detectedBaseBranch} — continuing on stale base`));
@@ -348,7 +351,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
                 addLearning(state.repoRoot, {
                   text: `Baseline healed in ${scope}: ${healed.join(', ')} now pass after cycle ${state.cycleCount}`.slice(0, 200),
                   category: 'pattern',
-                  source: { type: 'baseline_healed' as any, detail: healed.join(', ') },
+                  source: { type: 'baseline_healed', detail: healed.join(', ') },
                   tags: extractTags([scope], []),
                 });
               }
@@ -395,6 +398,22 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     }
   }
 
+  // Low-yield cycle detection — primary Nash equilibrium stop signal
+  const completedThisCount = state.cycleOutcomes.filter(o => o.status === 'completed').length;
+  if (completedThisCount === 0 && state.cycleCount >= 2) {
+    state.consecutiveLowYieldCycles++;
+    const MAX_LOW_YIELD_CYCLES = state.drillMode ? 5 : 3;
+    if (state.consecutiveLowYieldCycles >= MAX_LOW_YIELD_CYCLES) {
+      console.log(chalk.yellow(`  ${state.consecutiveLowYieldCycles} consecutive low-yield cycles — diminishing returns, stopping`));
+      state.shutdownRequested = true;
+      if (state.shutdownReason === null) state.shutdownReason = 'low_yield';
+    } else if (state.options.verbose) {
+      console.log(chalk.gray(`  Low-yield cycle (${state.consecutiveLowYieldCycles}/${MAX_LOW_YIELD_CYCLES})`));
+    }
+  } else if (completedThisCount > 0) {
+    state.consecutiveLowYieldCycles = 0;
+  }
+
   // Wheel diagnostics one-liner (always shown, not verbose-gated)
   if (state.cycleCount >= 2) {
     const qualityRate = getQualityRate(state.repoRoot);
@@ -419,11 +438,57 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       prsMerged: state.totalMergedPrs,
       prsClosed: state.totalClosedPrs,
     };
-    const metrics = computeConvergenceMetrics(state.sectorState, state.allLearnings.length, rs.recentCycles ?? [], sessionCtx);
+    // Build drill context for convergence if in drill mode
+    let drillCtx: Parameters<typeof computeConvergenceMetrics>[4] | undefined;
+    if (state.drillMode && state.drillHistory.length >= 2) {
+      const { computeDrillMetrics } = await import('./solo-auto-drill.js');
+      const dm = computeDrillMetrics(state.drillHistory);
+      drillCtx = {
+        completionRate: dm.completionRate,
+        step1FailureRate: dm.step1FailureRate,
+        consecutiveInsufficient: state.drillConsecutiveInsufficient,
+        trajectoryCount: dm.totalTrajectories,
+      };
+    }
+    const metrics = computeConvergenceMetrics(state.sectorState, state.allLearnings.length, rs.recentCycles ?? [], sessionCtx, drillCtx);
     console.log(chalk.gray(`  ${formatConvergenceOneLiner(metrics)}`));
     if (metrics.suggestedAction === 'stop') {
-      console.log(chalk.yellow(`  Convergence suggests stopping — most sectors polished, low yield.`));
-      state.shutdownRequested = true;
+      if (state.activeTrajectory && state.activeTrajectoryState) {
+        // Adaptive threshold: use historical completion rate to decide when to abandon
+        // If we historically complete 80% of trajectories, a low-progress one is likely still worth finishing
+        // If we historically complete 20%, cut losses earlier
+        let abandonThreshold = 50; // default: stop if < 50% complete
+        if (state.drillMode && state.drillHistory.length >= 3) {
+          const { computeDrillMetrics: cdm } = await import('./solo-auto-drill.js');
+          const dm = cdm(state.drillHistory);
+          // Higher historical completion → higher threshold (more patience)
+          // Lower historical completion → lower threshold (cut losses faster)
+          abandonThreshold = Math.round(30 + (dm.weightedCompletionRate * 40)); // range: 30-70%
+        }
+        const totalSteps = state.activeTrajectory.steps.length;
+        const completedSteps = state.activeTrajectory.steps.filter(
+          s => state.activeTrajectoryState!.stepStates[s.id]?.status === 'completed',
+        ).length;
+        const progressPct = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
+        if (progressPct < abandonThreshold) {
+          console.log(chalk.yellow(`  Convergence suggests stopping — trajectory "${state.activeTrajectory.name}" only ${progressPct}% complete, skipping it`));
+          if (state.drillMode) {
+            try { finishDrillTrajectory(state, 'stalled'); }
+            catch (err) { console.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
+          }
+          state.activeTrajectory = null;
+          state.activeTrajectoryState = null;
+          state.currentTrajectoryStep = null;
+          state.shutdownRequested = true;
+          if (state.shutdownReason === null) state.shutdownReason = 'convergence';
+        } else {
+          console.log(chalk.gray(`  Convergence suggests stopping, but trajectory "${state.activeTrajectory.name}" is ${progressPct}% complete — continuing`));
+        }
+      } else {
+        console.log(chalk.yellow(`  Convergence suggests stopping — most sectors polished, low yield.`));
+        state.shutdownRequested = true;
+        if (state.shutdownReason === null) state.shutdownReason = 'convergence';
+      }
     }
   }
 
@@ -431,8 +496,17 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
   if (state.sectorState && state.cycleCount >= 3) {
     const scopeAdj = suggestScopeAdjustment(state.sectorState);
     if (scopeAdj === 'widen') {
-      state.effectiveMinConfidence = state.autoConf.minConfidence ?? 20;
-      if (state.options.verbose) console.log(chalk.gray(`  Scope adjustment: widening (resetting confidence threshold)`));
+      // In drill mode with active trajectory, don't widen — stay focused on trajectory scope
+      if (state.drillMode && state.currentTrajectoryStep?.scope) {
+        if (state.options.verbose) console.log(chalk.gray(`  Scope adjustment: drill mode — staying focused on trajectory scope`));
+      } else {
+        state.effectiveMinConfidence = state.autoConf.minConfidence ?? 20;
+        if (state.options.verbose) console.log(chalk.gray(`  Scope adjustment: widening (resetting confidence threshold)`));
+      }
+    } else if (scopeAdj === 'narrow' && state.drillMode && state.currentTrajectoryStep) {
+      // In drill mode, tighten confidence when trajectory-guided to focus on high-quality proposals
+      state.effectiveMinConfidence += 5;
+      if (state.options.verbose) console.log(chalk.gray(`  Scope adjustment: drill-narrowed (confidence +5)`));
     }
   }
 
@@ -556,17 +630,50 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       } else {
         // Update current value for next cycle's prompt
         state.activeGoalMeasurement.current = value;
-        // Recalculate gap
-        if (direction === 'up' && target !== 0) {
-          state.activeGoalMeasurement.gapPercent = Math.round(((target - value) / target) * 1000) / 10;
+        // Recalculate gap (guarded against division by zero)
+        if (direction === 'up') {
+          if (value >= target) {
+            state.activeGoalMeasurement.gapPercent = 0;
+          } else if (target !== 0) {
+            state.activeGoalMeasurement.gapPercent = Math.round(((target - value) / target) * 1000) / 10;
+          } else {
+            state.activeGoalMeasurement.gapPercent = 100;
+          }
         } else if (direction === 'down') {
-          state.activeGoalMeasurement.gapPercent = target === 0
-            ? (value > 0 ? 100 : 0)
-            : Math.round(((value - target) / value) * 1000) / 10;
+          if (value <= target) {
+            state.activeGoalMeasurement.gapPercent = 0;
+          } else if (value !== 0) {
+            state.activeGoalMeasurement.gapPercent = Math.round(((value - target) / value) * 1000) / 10;
+          } else {
+            state.activeGoalMeasurement.gapPercent = 0;
+          }
         }
       }
     } else {
       console.log(chalk.yellow(`  ⚠ Goal "${state.activeGoal.name}" re-measurement failed${error ? `: ${error}` : ''}`));
+    }
+  }
+
+  // Trajectory cycle budget — abandon if consuming too many cycles.
+  // Scales with step count: more steps get more budget (2-step → base, 8-step → ~2x base).
+  if (state.drillMode && state.activeTrajectory && state.activeTrajectoryState) {
+    const baseMaxCycles = state.autoConf.drill?.maxCyclesPerTrajectory ?? 15;
+    const stepsTotal = state.activeTrajectory.steps.length;
+    const maxCycles = Math.round(baseMaxCycles * Math.min(2.5, Math.max(0.8, 1 + Math.max(0, stepsTotal - 3) / 5)));
+    const totalCyclesUsed = Object.values(state.activeTrajectoryState.stepStates)
+      .reduce((sum, s) => sum + (s.cyclesAttempted ?? 0), 0);
+    if (totalCyclesUsed >= maxCycles) {
+      const completedSteps = state.activeTrajectory.steps.filter(
+        s => state.activeTrajectoryState!.stepStates[s.id]?.status === 'completed',
+      ).length;
+      const pct = Math.round((completedSteps / state.activeTrajectory.steps.length) * 100);
+      console.log(chalk.yellow(`  Drill: trajectory "${state.activeTrajectory.name}" hit cycle budget (${totalCyclesUsed}/${maxCycles} cycles, ${pct}% complete) — abandoning`));
+      saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
+      try { finishDrillTrajectory(state, 'stalled'); }
+      catch (err) { console.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
+      state.activeTrajectory = null;
+      state.activeTrajectoryState = null;
+      state.currentTrajectoryStep = null;
     }
   }
 
@@ -578,6 +685,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     if (stepState) {
       // Run step verification commands
       let allPassed = true;
+      const verificationOutputParts: string[] = [];
       if (step.verification_commands.length > 0) {
         for (const cmd of step.verification_commands) {
           const result = spawnSync('sh', ['-c', cmd], {
@@ -585,13 +693,20 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
             timeout: 30000,
             encoding: 'utf-8',
           });
-          if (result.status !== 0) {
+          if (result.error) {
+            // Timeout or spawn error
+            allPassed = false;
+            const reason = result.error.message?.includes('TIMEOUT') ? 'timeout (30s)' : result.error.message;
+            console.log(chalk.yellow(`    ✗ ${cmd} (${reason})`));
+            verificationOutputParts.push(`$ ${cmd}\n${reason}`);
+          } else if (result.status !== 0) {
             allPassed = false;
             const stderr = (result.stderr || '').trim().slice(0, 500);
             const stdout = (result.stdout || '').trim().slice(0, 200);
             console.log(chalk.yellow(`    ✗ ${cmd} (exit ${result.status})`));
             if (stderr) console.log(chalk.gray(`      ${stderr.split('\n')[0]}`));
             else if (stdout) console.log(chalk.gray(`      ${stdout.split('\n')[0]}`));
+            verificationOutputParts.push(`$ ${cmd} (exit ${result.status})\n${stderr || stdout}`);
           }
         }
       }
@@ -619,26 +734,47 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         // Step completed — advance
         stepState.status = 'completed';
         stepState.completedAt = Date.now();
-        console.log(chalk.green(`  Trajectory step "${step.title}" completed`));
+        stepState.consecutiveFailures = 0;
+        stepState.lastVerificationOutput = undefined;
+        const completedCount = state.activeTrajectory.steps.filter(s => state.activeTrajectoryState!.stepStates[s.id]?.status === 'completed').length;
+        const totalCount = state.activeTrajectory.steps.length;
+        console.log(chalk.green(`  Trajectory step ${completedCount}/${totalCount} "${step.title}" completed`));
 
         // Pick next step
         const next = getTrajectoryNextStep(state.activeTrajectory, state.activeTrajectoryState.stepStates);
         state.currentTrajectoryStep = next;
         if (next) {
           state.activeTrajectoryState.currentStepId = next.id;
-          state.activeTrajectoryState.stepStates[next.id].status = 'active';
+          if (state.activeTrajectoryState.stepStates[next.id]) {
+            state.activeTrajectoryState.stepStates[next.id].status = 'active';
+          }
           console.log(chalk.cyan(`  -> Next step: ${next.title}`));
         } else if (trajectoryComplete(state.activeTrajectory, state.activeTrajectoryState.stepStates)) {
-          console.log(chalk.green(`  Trajectory "${state.activeTrajectory.name}" complete!`));
+          const fullySucceeded = trajectoryFullySucceeded(state.activeTrajectory, state.activeTrajectoryState.stepStates);
+          const outcome = fullySucceeded ? 'completed' : 'stalled';
+          if (fullySucceeded) {
+            console.log(chalk.green(`  Trajectory "${state.activeTrajectory.name}" complete!`));
+          } else {
+            console.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" finished with some failed steps`));
+          }
           // Save final state before clearing (so completed status persists on disk)
           saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
+          if (state.drillMode) {
+            try { finishDrillTrajectory(state, outcome); }
+            catch (err) { console.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
+          }
           state.activeTrajectory = null;
           state.activeTrajectoryState = null;
           state.currentTrajectoryStep = null;
         } else {
-          // No next step available but trajectory isn't complete — blocked by failed dependencies
-          console.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" stalled (remaining steps blocked by dependencies)`));
+          // No next step available but trajectory isn't complete — shouldn't happen now
+          // (failed deps unblock dependents), but handle as fallback
+          console.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" stalled (remaining steps blocked)`));
           saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
+          if (state.drillMode) {
+            try { finishDrillTrajectory(state, 'stalled'); }
+            catch (err) { console.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
+          }
           state.activeTrajectory = null;
           state.activeTrajectoryState = null;
           state.currentTrajectoryStep = null;
@@ -647,25 +783,45 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         // Step not yet complete — increment attempt counter
         stepState.cyclesAttempted++;
         stepState.lastAttemptedCycle = state.cycleCount;
+        // Track consecutive and total failures for transient/flakiness detection
+        stepState.consecutiveFailures = (stepState.consecutiveFailures ?? 0) + 1;
+        stepState.totalFailures = (stepState.totalFailures ?? 0) + 1;
+        // Capture verification output for prompt injection on next attempt
+        if (verificationOutputParts.length > 0) {
+          stepState.lastVerificationOutput = verificationOutputParts.join('\n').slice(0, 1000);
+        }
 
-        // Check for stuck (use per-step max_retries if set)
-        const stuckId = trajectoryStuck(state.activeTrajectoryState.stepStates, step.max_retries);
+        // Check for stuck — pass full step list so each step uses its own max_retries
+        const stuckId = trajectoryStuck(state.activeTrajectoryState.stepStates, undefined, state.activeTrajectory.steps);
         if (stuckId) {
-          console.log(chalk.yellow(`  Trajectory step "${step.title}" stuck after ${stepState.cyclesAttempted} cycles`));
-          stepState.status = 'failed';
-          stepState.failureReason = 'max retries exceeded';
+          // Fail the actual stuck step (may differ from current step if state was corrupted)
+          const stuckStepState = state.activeTrajectoryState.stepStates[stuckId];
+          const stuckStep = state.activeTrajectory.steps.find(s => s.id === stuckId);
+          const stuckTitle = stuckStep?.title ?? stuckId;
+          const stuckAttempts = stuckStepState?.cyclesAttempted ?? stepState.cyclesAttempted;
+          console.log(chalk.yellow(`  Trajectory step "${stuckTitle}" stuck after ${stuckAttempts} cycles`));
+          if (stuckStepState) {
+            stuckStepState.status = 'failed';
+            stuckStepState.failureReason = 'max retries exceeded';
+          }
 
           // Try to advance to next step
           const next = getTrajectoryNextStep(state.activeTrajectory, state.activeTrajectoryState.stepStates);
           state.currentTrajectoryStep = next;
           if (next) {
             state.activeTrajectoryState.currentStepId = next.id;
-            state.activeTrajectoryState.stepStates[next.id].status = 'active';
+            if (state.activeTrajectoryState.stepStates[next.id]) {
+              state.activeTrajectoryState.stepStates[next.id].status = 'active';
+            }
             console.log(chalk.cyan(`  -> Skipping to next step: ${next.title}`));
           } else {
             // No more steps — trajectory is done (all remaining steps failed or completed)
             console.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" ended (no remaining steps)`));
             saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
+            if (state.drillMode) {
+              try { finishDrillTrajectory(state, 'stalled'); }
+              catch (err) { console.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
+            }
             state.activeTrajectory = null;
             state.activeTrajectoryState = null;
             state.currentTrajectoryStep = null;
@@ -679,9 +835,127 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     }
   }
 
-  // Pause between cycles
+  // Pause between cycles — shorter when trajectory-guided (work is pre-planned)
   if (state.runMode === 'spin' && !state.shutdownRequested) {
+    const pauseMs = state.currentTrajectoryStep ? 1000 : 5000;
     console.log(chalk.gray('Pausing before next cycle...'));
-    await sleep(5000);
+    await sleep(pauseMs);
+  }
+}
+
+// ── Drill trajectory lifecycle ───────────────────────────────────────────────
+
+/**
+ * Record a drill trajectory's completion/stall into history, record learnings,
+ * and log the next-survey message.
+ *
+ * Must be called BEFORE clearing state.activeTrajectory (needs the trajectory data).
+ */
+function finishDrillTrajectory(state: AutoSessionState, outcome: 'completed' | 'stalled'): void {
+  if (!state.activeTrajectory || !state.activeTrajectoryState) return;
+  const traj = state.activeTrajectory;
+  const trajState = state.activeTrajectoryState;
+
+  const stepsTotal = traj.steps.length;
+  const stepsCompleted = traj.steps.filter(s => trajState.stepStates[s.id]?.status === 'completed').length;
+  const stepsFailed = traj.steps.filter(s => trajState.stepStates[s.id]?.status === 'failed').length;
+
+  // Collect failed step details for history
+  const failedStepDetails = traj.steps
+    .filter(s => trajState.stepStates[s.id]?.status === 'failed')
+    .map(s => ({
+      id: s.id,
+      title: s.title,
+      reason: trajState.stepStates[s.id]?.lastVerificationOutput?.slice(0, 200)
+        ?? trajState.stepStates[s.id]?.failureReason,
+    }));
+
+  // Collect completed step summaries for causal chaining
+  const completedStepSummaries = traj.steps
+    .filter(s => trajState.stepStates[s.id]?.status === 'completed')
+    .map(s => s.title);
+
+  // Collect modified files from git (since trajectory started)
+  let modifiedFiles: string[] | undefined;
+  try {
+    const trajStartTime = trajState.startedAt ?? (state.startTime || 0);
+    if (trajStartTime > 0) {
+      // Use git log --diff-filter with --since instead of HEAD~N (which fails with shallow repos or few commits)
+      const sinceDate = new Date(trajStartTime).toISOString();
+      const gitResult = spawnSync('git', [
+        'log', '--diff-filter=ACMR', '--name-only', '--pretty=format:',
+        `--since=${sinceDate}`,
+      ], { cwd: state.repoRoot, encoding: 'utf-8', timeout: 5000 });
+      if (!gitResult.error && gitResult.status === 0 && gitResult.stdout.trim()) {
+        // Deduplicate file names (same file may appear in multiple commits)
+        modifiedFiles = [...new Set(gitResult.stdout.trim().split('\n').filter(Boolean))].slice(0, 20);
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  // Collect per-step outcomes for telemetry (enables step-level learning)
+  const stepOutcomes = traj.steps.map(s => ({
+    id: s.id,
+    status: (trajState.stepStates[s.id]?.status ?? 'pending') as 'completed' | 'failed' | 'skipped' | 'pending',
+  }));
+
+  // Record into drill history (for avoidance + diversity + stats)
+  recordDrillTrajectoryOutcome(
+    state,
+    traj.name,
+    traj.description,
+    stepsTotal,
+    stepsCompleted,
+    stepsFailed,
+    outcome,
+    traj.steps,
+    failedStepDetails.length > 0 ? failedStepDetails : undefined,
+    completedStepSummaries.length > 0 ? completedStepSummaries : undefined,
+    modifiedFiles,
+    computeAmbitionLevel(state),
+    {
+      stepOutcomes,
+      ...state.drillGenerationTelemetry,
+    },
+  );
+  state.drillGenerationTelemetry = null;
+
+  // Record learnings
+  if (state.autoConf.learningsEnabled) {
+    const categories = [...new Set(traj.steps.flatMap(s => s.categories ?? []))];
+    const catLabel = categories.join(', ') || 'mixed';
+
+    if (outcome === 'completed') {
+      addLearning(state.repoRoot, {
+        text: `Drill trajectory "${traj.name}" completed (${stepsCompleted}/${stepsTotal} steps). Theme: ${traj.description}. Categories: ${catLabel}`.slice(0, 200),
+        category: 'pattern',
+        source: { type: 'drill_completed', detail: traj.name },
+        tags: categories,
+      });
+    } else {
+      const failedSteps = traj.steps
+        .filter(s => trajState.stepStates[s.id]?.status === 'failed')
+        .map(s => s.title);
+      addLearning(state.repoRoot, {
+        text: `Drill trajectory "${traj.name}" stalled (${stepsCompleted}/${stepsTotal} completed, ${stepsFailed} failed). Failed: ${failedSteps.join(', ')}`.slice(0, 200),
+        category: 'warning',
+        source: { type: 'drill_stalled', detail: traj.name },
+        tags: categories,
+      });
+    }
+  }
+
+  const rate = stepsTotal > 0 ? Math.round((stepsCompleted / stepsTotal) * 100) : 0;
+  console.log(chalk.cyan(`  Drill: trajectory ${outcome} (${stepsCompleted}/${stepsTotal} steps, ${rate}% completion)`));
+  console.log(chalk.cyan('  Drill: will survey for next trajectory on next cycle'));
+
+  // Notify display adapter that trajectory finished (back to idle)
+  state.displayAdapter.drillStateChanged({ active: true });
+
+  // Reload learnings immediately so next trajectory generation has fresh context
+  if (state.autoConf.learningsEnabled) {
+    try {
+      state.allLearnings = loadLearnings(state.repoRoot, 0);
+    } catch { /* non-fatal */ }
   }
 }

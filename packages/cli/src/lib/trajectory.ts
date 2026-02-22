@@ -55,8 +55,29 @@ export function loadTrajectories(repoRoot: string): Trajectory[] {
   return trajectories;
 }
 
-/** Load a single trajectory by name. */
+/** Load a single trajectory by name. Tries slug-based lookup first for O(1), falls back to scan. */
 export function loadTrajectory(repoRoot: string, name: string): Trajectory | null {
+  const dir = trajectoriesDir(repoRoot);
+  if (!fs.existsSync(dir)) return null;
+
+  // Fast path: try slug-based file lookup (uses same logic as slugify in trajectory-generate.ts)
+  const rawSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const tsMatch = rawSlug.match(/-(\d{13})$/);
+  const slug = tsMatch
+    ? rawSlug.slice(0, rawSlug.length - 14).slice(0, 66) + '-' + tsMatch[1]
+    : rawSlug.slice(0, 80);
+  for (const ext of ['.yaml', '.yml']) {
+    const filePath = path.join(dir, `${slug}${ext}`);
+    if (fs.existsSync(filePath)) {
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const trajectory = parseTrajectoryYaml(content);
+        if (trajectory.name === name && trajectory.steps.length > 0) return trajectory;
+      } catch { /* fall through to scan */ }
+    }
+  }
+
+  // Fallback: full scan
   const trajectories = loadTrajectories(repoRoot);
   return trajectories.find(t => t.name === name) ?? null;
 }
@@ -69,8 +90,26 @@ export function loadTrajectory(repoRoot: string, name: string): Trajectory | nul
 export function loadTrajectoryState(repoRoot: string): TrajectoryState | null {
   const p = trajectoryStatePath(repoRoot);
   try {
+    // Recover from crash: if .tmp exists but main file doesn't, restore it
+    const tmp = p + '.tmp';
+    if (!fs.existsSync(p) && fs.existsSync(tmp)) {
+      try { fs.renameSync(tmp, p); } catch { /* best effort */ }
+    }
     if (fs.existsSync(p)) {
-      return JSON.parse(fs.readFileSync(p, 'utf-8'));
+      const raw = fs.readFileSync(p, 'utf-8');
+      if (!raw.trim()) return null;
+      const data = JSON.parse(raw);
+      // Structural validation — reject malformed state that passed JSON.parse
+      if (
+        !data ||
+        typeof data !== 'object' ||
+        typeof data.trajectoryName !== 'string' ||
+        typeof data.stepStates !== 'object' ||
+        data.stepStates === null
+      ) {
+        return null;
+      }
+      return data as TrajectoryState;
     }
   } catch {
     // Corrupted file — return null
@@ -86,8 +125,14 @@ export function saveTrajectoryState(repoRoot: string, state: TrajectoryState): v
     fs.mkdirSync(dir, { recursive: true });
   }
   const tmp = p + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, p);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, p);
+  } catch (err) {
+    // Clean up orphaned .tmp on failure
+    if (fs.existsSync(tmp)) try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
 }
 
 /** Clear trajectory state (deactivate). */

@@ -63,15 +63,23 @@ export function buildTasteProfile(
     else if (rate < 0.3) avoid.push(cat);
   }
 
-  // Determine preferred complexity from successful tickets
+  // Determine preferred complexity from successful tickets using structural signals
   const complexityCounts: Record<string, number> = { trivial: 0, simple: 0, moderate: 0 };
-  // Use learnings from ticket_success to infer complexity preference
   const successLearnings = learnings.filter(l => l.source.type === 'ticket_success');
   for (const l of successLearnings) {
-    // Simple heuristic: short titles tend to be trivial/simple
-    if (l.text.length < 40) complexityCounts['trivial']++;
-    else if (l.text.length < 80) complexityCounts['simple']++;
-    else complexityCounts['moderate']++;
+    // Use tags and source detail for structural complexity signals instead of text length
+    const tagCount = l.tags?.length ?? 0;
+    const hasMultipleCategories = tagCount >= 3;
+    const mentionsRefactor = l.text.includes('refactor') || l.text.includes('restructur');
+    const mentionsMultiFile = /\d+ file/.test(l.text) || l.text.includes('across');
+
+    if (hasMultipleCategories || mentionsRefactor || mentionsMultiFile) {
+      complexityCounts['moderate']++;
+    } else if (tagCount >= 1 || l.text.includes('add') || l.text.includes('update')) {
+      complexityCounts['simple']++;
+    } else {
+      complexityCounts['trivial']++;
+    }
   }
   const preferredComplexity = (
     complexityCounts['simple'] >= complexityCounts['trivial'] &&

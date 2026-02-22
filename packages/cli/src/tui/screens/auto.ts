@@ -78,6 +78,8 @@ export class AutoScreen {
   private startTime = Date.now();
   private endTime: number | undefined;
 
+  private drillInfo: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null = null;
+
   private headerTimer: ReturnType<typeof setInterval> | null = null;
   private destroyed = false;
   private logStream: WriteStream | null = null;
@@ -257,7 +259,19 @@ export class AutoScreen {
     const cycle = this.cycleCount > 0 ? ` │ Cycle ${this.cycleCount}` : '';
     const counts = ` │ ${this.doneCount} done${this.failedCount > 0 ? ` · ${this.failedCount} failed` : ''}`;
 
-    const content = ` {bold}PromptWheel v${this.opts.version}{/bold} │ ${this.opts.deliveryMode} │ ${elapsed}${timeLeft}${cycle}${counts}`;
+    let drill = '';
+    if (this.drillInfo) {
+      const ambTag = this.drillInfo.ambitionLevel && this.drillInfo.ambitionLevel !== 'moderate'
+        ? ` [${this.drillInfo.ambitionLevel}]` : '';
+      if (this.drillInfo.active && this.drillInfo.trajectoryName) {
+        const progress = this.drillInfo.trajectoryProgress ? ` ${this.drillInfo.trajectoryProgress}` : '';
+        drill = ` │ Drill: "${this.drillInfo.trajectoryName}"${progress}${ambTag}`;
+      } else if (this.drillInfo.active) {
+        drill = ` │ Drill: idle${ambTag}`;
+      }
+    }
+
+    const content = ` {bold}PromptWheel v${this.opts.version}{/bold} │ ${this.opts.deliveryMode} │ ${elapsed}${timeLeft}${cycle}${counts}${drill}`;
     this.header.setContent(content);
     this.screen.render();
   }
@@ -324,6 +338,11 @@ export class AutoScreen {
   }
 
   // Public API
+
+  setDrillInfo(info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void {
+    this.drillInfo = info;
+    this.updateHeader();
+  }
 
   setSessionInfo(info: { startTime: number; endTime?: number; cycleCount: number }): void {
     this.startTime = info.startTime;

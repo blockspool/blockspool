@@ -96,6 +96,10 @@ export class TuiDisplayAdapter implements DisplayAdapter {
     this.autoScreen.showLog(msg);
   }
 
+  drillStateChanged(info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void {
+    this.autoScreen.setDrillInfo(info);
+  }
+
   destroy(): void {
     this.autoScreen.destroy();
   }

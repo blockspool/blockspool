@@ -40,7 +40,7 @@ export interface AutoModeOptions {
   formula?: string;
   dryRun?: boolean;
   verbose?: boolean;
-  spin?: boolean;
+  plan?: boolean;
 
   // Secondary options (hidden but functional)
   codex?: boolean;
@@ -50,10 +50,9 @@ export interface AutoModeOptions {
   parallel?: string;
   eco?: boolean;
 
-  // Legacy/advanced options (kept for backwards compat)
+  // Legacy/advanced options
   minutes?: string;
   cycles?: string;
-  continuous?: boolean;
   maxPrs?: string;
   minConfidence?: string;
   draft?: boolean;
@@ -86,6 +85,8 @@ export interface AutoModeOptions {
   tui?: boolean;
   /** Running inside daemon process (no TTY, no interactive console, no process.exit) */
   daemon?: boolean;
+  /** Drill mode — auto-generate trajectories from scout output in spin mode */
+  drill?: boolean;
 }
 
 // ── SessionOptions ──────────────────────────────────────────────────────────
@@ -167,12 +168,53 @@ export interface SessionRuntime {
   prMetaMap: Map<string, { sectorId: string; formula: string }>;
   qaBaseline: Map<string, boolean> | null;
   shutdownRequested: boolean;
+  shutdownReason: 'user_signal' | 'user_quit' | 'convergence' | 'low_yield' | 'branch_diverged' | 'time_limit' | 'pr_limit' | 'completed' | null;
   currentlyProcessing: boolean;
   pullInterval: number;
   pullPolicy: 'halt' | 'warn';
   cyclesSinceLastPull: number;
   scoutRetries: number;
   scoutedDirs: string[];
+  drillMode: boolean;
+  drillLastGeneratedAtCycle: number;
+  drillTrajectoriesGenerated: number;
+  /** Outcome of the last drill trajectory ('completed' | 'stalled' | null) */
+  drillLastOutcome: 'completed' | 'stalled' | null;
+  /** History of drill trajectories for avoidance and stats */
+  drillHistory: Array<{
+    name: string;
+    description: string;
+    stepsTotal: number;
+    stepsCompleted: number;
+    stepsFailed: number;
+    outcome: 'completed' | 'stalled';
+    /** Step completion percentage (0-1). More granular than binary outcome. */
+    completionPct: number;
+    categories: string[];
+    scopes: string[];
+    timestamp?: number;
+    failedSteps?: Array<{ id: string; title: string; reason?: string }>;
+    completedStepSummaries?: string[];
+    modifiedFiles?: string[];
+    ambitionLevel?: 'conservative' | 'moderate' | 'ambitious';
+  }>;
+  /** Categories already covered by drill trajectories this session */
+  drillCoveredCategories: Map<string, number>;
+  /** Scopes already covered by drill trajectories this session */
+  drillCoveredScopes: Map<string, number>;
+  /** Timestamp of last drill survey — used for staleness detection */
+  drillLastSurveyTimestamp: number | null;
+  /** Consecutive 'insufficient' drill survey results — triggers stop when too many */
+  drillConsecutiveInsufficient: number;
+  /** Telemetry from the most recent trajectory generation — carried to outcome recording */
+  drillGenerationTelemetry: {
+    proposalAvgConfidence?: number;
+    proposalAvgImpact?: number;
+    freshnessDropCount?: number;
+    proposalCategoryCount?: number;
+  } | null;
+  /** Ratio of proposals dropped by freshness filter last generation (0-1) — bridges to cooldown */
+  drillLastFreshnessDropRatio: number | null;
   batchTokenBudget: number;
   scoutConcurrency: number;
   scoutTimeoutMs: number;

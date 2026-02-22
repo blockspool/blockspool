@@ -5,7 +5,7 @@
  * lines to a logger function (which can write to a file or stdout).
  */
 
-import type { DisplayAdapter, SessionInfo, BatchStatus } from './display-adapter.js';
+import type { DisplayAdapter, SessionInfo, BatchStatus, ProgressSnapshot } from './display-adapter.js';
 
 function ts(): string {
   return new Date().toISOString();
@@ -76,6 +76,10 @@ export class LogDisplayAdapter implements DisplayAdapter {
   }
 
   drillStateChanged(_info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void {
+    // No-op for log mode
+  }
+
+  progressUpdate(_snapshot: ProgressSnapshot): void {
     // No-op for log mode
   }
 

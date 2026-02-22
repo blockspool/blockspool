@@ -1,5 +1,6 @@
 import type { EventContext, ProcessResult } from './event-helpers.js';
 import { loadSectorsState, atomicWriteJsonSync } from './event-helpers.js';
+import { isRecord, toBooleanOrUndefined, toNumberOrUndefined, toStringArrayOrUndefined, toStringOrUndefined } from './event-helpers.js';
 import { repos, SCOUT_DEFAULTS } from '@promptwheel/core';
 import { filterAndCreateTickets, parseReviewedProposals } from './proposals.js';
 import type { RawProposal } from './proposals.js';
@@ -10,6 +11,10 @@ import {
 
 const MAX_SCOUT_RETRIES = SCOUT_DEFAULTS.MAX_SCOUT_RETRIES;
 
+function isRawProposal(value: unknown): value is RawProposal {
+  return isRecord(value);
+}
+
 export async function handleScoutOutput(ctx: EventContext, payload: Record<string, unknown>): Promise<ProcessResult> {
   const s = ctx.run.require();
 
@@ -18,7 +23,7 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
   }
 
   // Track explored directories for rotation across cycles
-  const exploredDirs = (payload['explored_dirs'] ?? []) as string[];
+  const exploredDirs = toStringArrayOrUndefined(payload['explored_dirs']) ?? [];
   if (exploredDirs.length > 0) {
     for (const dir of exploredDirs) {
       if (!s.scouted_dirs.includes(dir)) {
@@ -51,7 +56,13 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
   }
 
   // Handle sector reclassification if present — use recordScanResult with 0 proposals
-  const sectorReclass = payload['sector_reclassification'] as { production?: boolean; confidence?: string } | undefined;
+  const sectorReclass = (() => {
+    const raw = payload['sector_reclassification'];
+    if (!isRecord(raw)) return undefined;
+    const production = toBooleanOrUndefined(raw['production']);
+    const confidence = toStringOrUndefined(raw['confidence']);
+    return { production, confidence };
+  })();
   if (sectorReclass && (sectorReclass.confidence === 'medium' || sectorReclass.confidence === 'high') && exploredDirs.length > 0) {
     try {
       const loaded = loadSectorsState(ctx.run.rootPath);
@@ -77,12 +88,12 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
   // PROPOSALS_REVIEWED handler.
   if (s.pending_proposals !== null) {
     // Path 1: structured reviewed_proposals array in payload
-    const reviewedArray = payload['reviewed_proposals'] as unknown[] | undefined;
+    const reviewedArray = Array.isArray(payload['reviewed_proposals']) ? payload['reviewed_proposals'] : undefined;
     if (Array.isArray(reviewedArray) && reviewedArray.length > 0) {
       return handleProposalsReviewed(ctx, payload);
     }
     // Path 2: XML <reviewed-proposals> block in payload text
-    const payloadText = payload['text'] as string | undefined;
+    const payloadText = toStringOrUndefined(payload['text']);
     if (typeof payloadText === 'string' && payloadText.includes('<reviewed-proposals>')) {
       const parsed = parseReviewedProposals(payloadText);
       if (parsed && parsed.length > 0) {
@@ -92,10 +103,10 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
   }
 
   // Extract proposals from payload
-  const rawProposals = (payload['proposals'] ?? []) as RawProposal[];
+  const rawProposals = Array.isArray(payload['proposals']) ? payload['proposals'].filter(isRawProposal) : [];
 
   // Build exploration log entry (before empty-check so retries also get logged)
-  const explorationSummary = (payload['exploration_summary'] ?? '') as string;
+  const explorationSummary = toStringOrUndefined(payload['exploration_summary']) ?? '';
   const logEntry = explorationSummary
     ? `Attempt ${s.scout_retries + 1}: Explored ${exploredDirs.join(', ') || '(unknown)'}. Found ${rawProposals.length} proposals. ${explorationSummary}`
     : `Attempt ${s.scout_retries + 1}: Explored ${exploredDirs.join(', ') || '(unknown)'}. Found ${rawProposals.length} proposals.`;
@@ -203,12 +214,22 @@ export async function handleProposalsReviewed(ctx: EventContext, payload: Record
   }
 
   // Apply revised scores from review
-  const reviewedItems = (payload['reviewed_proposals'] ?? []) as Array<{
+  const reviewedItems: Array<{
     title?: string;
     confidence?: number;
     impact_score?: number;
     review_note?: string;
-  }>;
+  }> = [];
+  const rawReviewedItems = Array.isArray(payload['reviewed_proposals']) ? payload['reviewed_proposals'] : [];
+  for (const item of rawReviewedItems) {
+    if (!isRecord(item)) continue;
+    reviewedItems.push({
+      title: toStringOrUndefined(item['title']),
+      confidence: toNumberOrUndefined(item['confidence']),
+      impact_score: toNumberOrUndefined(item['impact_score']),
+      review_note: toStringOrUndefined(item['review_note']),
+    });
+  }
 
   // Merge reviewed scores back into pending proposals
   for (const reviewed of reviewedItems) {
@@ -283,13 +304,13 @@ export async function handleProposalsReviewed(ctx: EventContext, payload: Record
   };
 }
 
-export async function handleProposalsFiltered(ctx: EventContext, payload: Record<string, unknown>): Promise<ProcessResult> {
+export async function handleProposalsFiltered(ctx: EventContext, _payload: Record<string, unknown>): Promise<ProcessResult> {
   const s = ctx.run.require();
 
   // Emitted after proposal filtering.
   // Check if we have ready tickets now.
   const readyCount = await repos.tickets.countByStatus(ctx.db, s.project_id);
-  const ready = (readyCount as Record<string, number>)['ready'] ?? 0;
+  const ready = isRecord(readyCount) && typeof readyCount['ready'] === 'number' ? readyCount['ready'] : 0;
   if (ready > 0 && s.phase === 'SCOUT') {
     ctx.run.setPhase('NEXT_TICKET');
     return {

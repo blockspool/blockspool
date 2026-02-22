@@ -190,6 +190,13 @@ describe('tickets repo — extended', () => {
     await tickets.updateStatus(db, tkt.id, 'in_review');
     const final = await tickets.updateStatus(db, tkt.id, 'done');
     expect(final!.status).toBe('done');
+
+    const raw = await db.query<{ updated_at: string }>(
+      'SELECT updated_at FROM tickets WHERE id = $1',
+      [tkt.id]
+    );
+    expect(raw.rows[0]!.updated_at).toContain('T');
+    expect(raw.rows[0]!.updated_at.endsWith('Z')).toBe(true);
   });
 
   it('updateStatus returns null for non-existent ticket', async () => {
@@ -260,6 +267,14 @@ describe('runs repo — extended', () => {
     expect(run.maxIterations).toBe(5);
     expect(run.metadata).toEqual({ branch: 'feat/x' });
     expect(run.startedAt).not.toBeNull();
+
+    const raw = await db.query<{ started_at: string | null }>(
+      'SELECT started_at FROM runs WHERE id = $1',
+      [run.id]
+    );
+    expect(raw.rows[0]!.started_at).not.toBeNull();
+    expect(raw.rows[0]!.started_at!).toContain('T');
+    expect(raw.rows[0]!.started_at!.endsWith('Z')).toBe(true);
   });
 
   it('getById returns null for non-existent run', async () => {
@@ -276,6 +291,14 @@ describe('runs repo — extended', () => {
     expect(updated!.metadata).toEqual({ a: 1, b: 2 });
     expect(updated!.status).toBe('success');
     expect(updated!.completedAt).not.toBeNull();
+
+    const raw = await db.query<{ completed_at: string | null }>(
+      'SELECT completed_at FROM runs WHERE id = $1',
+      [run.id]
+    );
+    expect(raw.rows[0]!.completed_at).not.toBeNull();
+    expect(raw.rows[0]!.completed_at!).toContain('T');
+    expect(raw.rows[0]!.completed_at!.endsWith('Z')).toBe(true);
   });
 
   it('markFailure with string error', async () => {

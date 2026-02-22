@@ -188,9 +188,11 @@ export async function updateStatus(
   id: string,
   status: TicketStatus
 ): Promise<Ticket | null> {
+  const updatedAt = new Date().toISOString();
+
   await db.query(
-    `UPDATE tickets SET status = $1, updated_at = datetime('now') WHERE id = $2`,
-    [status, id]
+    `UPDATE tickets SET status = $1, updated_at = $2 WHERE id = $3`,
+    [status, updatedAt, id]
   );
   return getById(db, id);
 }

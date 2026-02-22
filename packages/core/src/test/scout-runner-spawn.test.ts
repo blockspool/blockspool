@@ -212,6 +212,32 @@ describe('scout-runner: runClaude', () => {
     expect(mockChild.kill).toHaveBeenCalledWith('SIGTERM');
   });
 
+  it('does not arm timeout when timeoutMs is 0', async () => {
+    const mockChild = createMockChildProcess({
+      exitCode: 0,
+      stdout: 'Completed without timeout',
+      stderr: '',
+      hang: true,
+    });
+    mockSpawn.mockReturnValue(mockChild as any);
+
+    const promise = runClaude({
+      prompt: 'Analyze',
+      cwd: '/tmp/repo',
+      timeoutMs: 0,
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(mockChild.kill).not.toHaveBeenCalled();
+
+    mockChild.stdout.emit('data', 'Completed without timeout');
+    mockChild.emit('close', 0);
+
+    const result = await promise;
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Completed without timeout');
+  });
+
   it('escalates to SIGKILL after grace period on timeout', async () => {
     const mockChild = createMockChildProcess({
       exitCode: null,

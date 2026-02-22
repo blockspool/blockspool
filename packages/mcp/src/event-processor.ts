@@ -18,6 +18,7 @@ export type { ProcessResult, QaErrorClass } from './event-helpers.js';
 export { classifyQaError } from './event-helpers.js';
 
 import type { ProcessResult } from './event-helpers.js';
+import { validateAndSanitizeEventPayload } from './event-helpers.js';
 import { handleScoutOutput, handleProposalsReviewed, handleProposalsFiltered } from './event-handlers-scout.js';
 import { handlePlanSubmitted, handleTicketResult, handlePrCreated } from './event-handlers-ticket.js';
 import { handleQaCommandResult, handleQaPassed, handleQaFailed } from './event-handlers-qa.js';
@@ -30,6 +31,15 @@ export async function processEvent(
   project?: Project,
 ): Promise<ProcessResult> {
   const s = run.require();
+  const validatedPayload = validateAndSanitizeEventPayload(type, payload);
+  if (!validatedPayload.ok) {
+    return {
+      processed: false,
+      phase_changed: false,
+      message: validatedPayload.error,
+    };
+  }
+  const safePayload = validatedPayload.payload;
 
   // Ensure learnings loaded for any event handler that might need them
   run.ensureLearningsLoaded();
@@ -46,11 +56,11 @@ export async function processEvent(
   ]);
 
   if (s.phase === 'PARALLEL_EXECUTE' && TICKET_WORKER_EVENTS.has(type)) {
-    const ticketId = payload['ticket_id'] as string | undefined;
+    const ticketId = typeof safePayload['ticket_id'] === 'string' ? safePayload['ticket_id'] : undefined;
     if (ticketId && run.getTicketWorker(ticketId)) {
       // Forward to ticket worker
       const ctx = { run, db, project: project ?? { id: s.project_id, rootPath: run.rootPath } as Project };
-      const result = await ingestTicketEvent(ctx, ticketId, type, payload);
+      const result = await ingestTicketEvent(ctx, ticketId, type, safePayload);
       return {
         processed: result.processed,
         phase_changed: false,
@@ -65,41 +75,42 @@ export async function processEvent(
     // -----------------------------------------------------------------
     // Scout events
     // -----------------------------------------------------------------
-    case 'SCOUT_OUTPUT': return handleScoutOutput(ctx, payload);
-    case 'PROPOSALS_REVIEWED': return handleProposalsReviewed(ctx, payload);
-    case 'PROPOSALS_FILTERED': return handleProposalsFiltered(ctx, payload);
+    case 'SCOUT_OUTPUT': return handleScoutOutput(ctx, safePayload);
+    case 'PROPOSALS_REVIEWED': return handleProposalsReviewed(ctx, safePayload);
+    case 'PROPOSALS_FILTERED': return handleProposalsFiltered(ctx, safePayload);
 
     // -----------------------------------------------------------------
     // Plan events
     // -----------------------------------------------------------------
-    case 'PLAN_SUBMITTED': return handlePlanSubmitted(ctx, payload);
+    case 'PLAN_SUBMITTED': return handlePlanSubmitted(ctx, safePayload);
 
     // -----------------------------------------------------------------
     // Execution events
     // -----------------------------------------------------------------
-    case 'TICKET_RESULT': return handleTicketResult(ctx, payload);
+    case 'TICKET_RESULT': return handleTicketResult(ctx, safePayload);
 
     // -----------------------------------------------------------------
     // QA events
     // -----------------------------------------------------------------
-    case 'QA_COMMAND_RESULT': return handleQaCommandResult(ctx, payload);
-    case 'QA_PASSED': return handleQaPassed(ctx, payload);
-    case 'QA_FAILED': return handleQaFailed(ctx, payload);
+    case 'QA_COMMAND_RESULT': return handleQaCommandResult(ctx, safePayload);
+    case 'QA_PASSED': return handleQaPassed(ctx, safePayload);
+    case 'QA_FAILED': return handleQaFailed(ctx, safePayload);
 
     // -----------------------------------------------------------------
     // PR events
     // -----------------------------------------------------------------
-    case 'PR_CREATED': return handlePrCreated(ctx, payload);
+    case 'PR_CREATED': return handlePrCreated(ctx, safePayload);
 
     // -----------------------------------------------------------------
     // User overrides
     // -----------------------------------------------------------------
     case 'USER_OVERRIDE': {
-      if (typeof payload['hint'] === 'string') {
-        run.addHint(payload['hint'] as string);
+      const hint = typeof safePayload['hint'] === 'string' ? safePayload['hint'] : undefined;
+      if (hint !== undefined) {
+        run.addHint(hint);
         return { processed: true, phase_changed: false, message: 'Hint added' };
       }
-      if (payload['cancel'] === true) {
+      if (safePayload['cancel'] === true) {
         run.setPhase('DONE');
         return {
           processed: true,
@@ -108,7 +119,7 @@ export async function processEvent(
           message: 'Session cancelled by user',
         };
       }
-      if (payload['skip_review'] === true) {
+      if (safePayload['skip_review'] === true) {
         s.skip_review = true;
         // If there are pending proposals waiting for review, create tickets immediately
         if (s.pending_proposals && s.pending_proposals.length > 0) {

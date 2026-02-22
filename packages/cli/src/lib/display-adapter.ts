@@ -24,6 +24,22 @@ export interface BatchStatus {
   error?: string;
 }
 
+export interface ProgressSnapshot {
+  phase: 'scouting' | 'filtering' | 'executing' | 'idle';
+  cycleCount: number;
+  ticketsDone: number;
+  ticketsFailed: number;
+  ticketsDeferred: number;
+  ticketsActive: number;
+  elapsedMs: number;
+  timeBudgetMs?: number;
+  sectorCoverage?: {
+    scanned: number;
+    total: number;
+    percent: number;
+  };
+}
+
 export interface DisplayAdapter {
   // Session lifecycle
   sessionStarted(info: SessionInfo): void;
@@ -49,6 +65,73 @@ export interface DisplayAdapter {
   // Drill state
   drillStateChanged(info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void;
 
+  // Progress status bar
+  progressUpdate(snapshot: ProgressSnapshot): void;
+
   // Lifecycle
   destroy(): void;
+}
+
+// ── Shared rendering helpers ─────────────────────────────────────────────────
+
+/** Render a progress bar: `████████░░░░` */
+export function renderProgressBar(percent: number, width = 20): string {
+  const clamped = Math.max(0, Math.min(100, percent));
+  const filled = Math.round((clamped / 100) * width);
+  return '█'.repeat(filled) + '░'.repeat(width - filled);
+}
+
+/** Format milliseconds as compact elapsed: `12s`, `3m`, `1h12m` */
+export function formatCompactElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return remMin > 0 ? `${hr}h${remMin}m` : `${hr}h`;
+}
+
+/** Format a full progress line: bar + cycle + time + counts + phase */
+export function formatProgressLine(snapshot: ProgressSnapshot): string {
+  const parts: string[] = [];
+
+  // Progress bar (if denominator available)
+  if (snapshot.timeBudgetMs && snapshot.timeBudgetMs > 0) {
+    const pct = Math.min(100, (snapshot.elapsedMs / snapshot.timeBudgetMs) * 100);
+    parts.push(`${renderProgressBar(pct)} ${Math.round(pct)}%`);
+  } else if (snapshot.sectorCoverage && snapshot.sectorCoverage.total > 0) {
+    parts.push(`${renderProgressBar(snapshot.sectorCoverage.percent)} ${Math.round(snapshot.sectorCoverage.percent)}%`);
+  }
+
+  // Cycle
+  if (snapshot.cycleCount > 0) {
+    parts.push(`Cycle ${snapshot.cycleCount}`);
+  }
+
+  // Time
+  if (snapshot.timeBudgetMs && snapshot.timeBudgetMs > 0) {
+    parts.push(`${formatCompactElapsed(snapshot.elapsedMs)} / ${formatCompactElapsed(snapshot.timeBudgetMs)}`);
+  } else if (snapshot.sectorCoverage && snapshot.sectorCoverage.total > 0) {
+    parts.push(`${snapshot.sectorCoverage.scanned}/${snapshot.sectorCoverage.total} sectors`);
+  } else {
+    parts.push(formatCompactElapsed(snapshot.elapsedMs));
+  }
+
+  // Counts
+  const counts: string[] = [];
+  if (snapshot.ticketsDone > 0) counts.push(`${snapshot.ticketsDone} done`);
+  if (snapshot.ticketsFailed > 0) counts.push(`${snapshot.ticketsFailed} failed`);
+  if (snapshot.ticketsDeferred > 0) counts.push(`${snapshot.ticketsDeferred} deferred`);
+  if (counts.length > 0) parts.push(counts.join(' · '));
+
+  // Phase
+  const phaseLabel = snapshot.phase.charAt(0).toUpperCase() + snapshot.phase.slice(1);
+  if (snapshot.ticketsActive > 0) {
+    parts.push(`${phaseLabel} (${snapshot.ticketsActive} active)`);
+  } else {
+    parts.push(phaseLabel);
+  }
+
+  return parts.join(' │ ');
 }

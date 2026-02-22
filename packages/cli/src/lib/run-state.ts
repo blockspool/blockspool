@@ -19,6 +19,7 @@ export interface DeferredProposal {
   impact_score: number;
   original_scope: string;
   deferredAt: number;
+  deferredAtCycle?: number;
 }
 
 export interface FormulaStats {
@@ -288,11 +289,16 @@ export function deferProposal(repoRoot: string, proposal: DeferredProposal): Pro
  * Retrieve and remove deferred proposals that now match the given scope.
  * Also prunes proposals older than 7 days.
  *
+ * Promotion: proposals that have waited 3+ cycles OR 2+ hours get promoted
+ * into the current scope regardless of file match. This ensures proposals
+ * targeting root-level files (README.md, etc.) don't sit forever when only
+ * sector-scoped cycles run.
+ *
  * This function remains synchronous because callers use its return value
  * directly (e.g. `deferred.length`). It is only called from the sequential
  * scout/filter path, never from parallel ticket execution.
  */
-export function popDeferredForScope(repoRoot: string, scope: string): DeferredProposal[] {
+export function popDeferredForScope(repoRoot: string, scope: string, currentCycle?: number): DeferredProposal[] {
   const state = readRunState(repoRoot);
   const now = Date.now();
   const normalizedScope = scope.replace(/\*\*$/, '').replace(/\*$/, '').replace(/\/$/, '');
@@ -316,12 +322,15 @@ export function popDeferredForScope(repoRoot: string, scope: string): DeferredPr
     }
   }
 
-  // Promote stale out-of-scope proposals: if a proposal has survived 2+
-  // full cycle durations it will never find a matching scope — promote it
-  // to the current cycle rather than letting it sit until the 7-day prune.
+  // Promote out-of-scope proposals that have waited long enough.
+  // Two triggers: 3+ cycles since deferral, OR 2+ hours wall-clock.
+  const PROMOTION_CYCLE_THRESHOLD = 3;
   const stillRemaining: DeferredProposal[] = [];
   for (const dp of remaining) {
-    if (now - dp.deferredAt > PROMOTION_AGE_MS) {
+    const hasCycleInfo = currentCycle !== undefined && currentCycle !== null
+      && dp.deferredAtCycle !== undefined && dp.deferredAtCycle !== null;
+    const cycleAge = hasCycleInfo ? currentCycle - dp.deferredAtCycle! : 0;
+    if ((hasCycleInfo && cycleAge >= PROMOTION_CYCLE_THRESHOLD) || now - dp.deferredAt > PROMOTION_AGE_MS) {
       matched.push(dp);
     } else {
       stillRemaining.push(dp);

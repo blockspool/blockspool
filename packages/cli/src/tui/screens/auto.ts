@@ -30,6 +30,7 @@ import { createWriteStream, mkdirSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { TicketOutputBuffer } from '../ticket-output-buffer.js';
+import { formatProgressLine, type ProgressSnapshot } from '../../lib/display-adapter.js';
 
 export type TicketStatus = 'running' | 'done' | 'failed' | 'pending';
 
@@ -79,6 +80,7 @@ export class AutoScreen {
   private endTime: number | undefined;
 
   private drillInfo: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null = null;
+  private lastProgress: ProgressSnapshot | null = null;
 
   private headerTimer: ReturnType<typeof setInterval> | null = null;
   private destroyed = false;
@@ -174,10 +176,11 @@ export class AutoScreen {
     this.updateHeader();
     this.updateTicketBar();
 
-    // Refresh header every second
+    // Refresh header + progress bar every second
     this.headerTimer = setInterval(() => {
       if (this.destroyed) return;
       this.updateHeader();
+      this.refreshProgressBar();
     }, 1000);
 
     // Handle resize
@@ -342,6 +345,24 @@ export class AutoScreen {
   setDrillInfo(info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void {
     this.drillInfo = info;
     this.updateHeader();
+  }
+
+  setProgress(snapshot: ProgressSnapshot): void {
+    this.lastProgress = snapshot;
+    this.refreshProgressBar();
+  }
+
+  private refreshProgressBar(): void {
+    if (!this.lastProgress || this.destroyed) return;
+    // Update elapsed time in real-time from stored snapshot's start reference
+    const liveSnapshot: ProgressSnapshot = {
+      ...this.lastProgress,
+      elapsedMs: Date.now() - (this.startTime || Date.now()),
+    };
+    const line = formatProgressLine(liveSnapshot);
+    // Strip ANSI for tags:true inputBar
+    this.inputBar.setContent(` ${line}`);
+    this.screen.render();
   }
 
   setSessionInfo(info: { startTime: number; endTime?: number; cycleCount: number }): void {

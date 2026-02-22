@@ -128,6 +128,91 @@ export function validateVerificationCommand(command: string): { valid: true } | 
   return { valid: true };
 }
 
+function buildToolErrorResponse(message: string) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify({ error: message }) }],
+    isError: true as const,
+  };
+}
+
+type OwnershipValidationResult =
+  | {
+      ok: true;
+      ticket: Ticket;
+      session: ReturnType<SessionManager['requireActive']>;
+    }
+  | {
+      ok: false;
+      response: ReturnType<typeof buildToolErrorResponse>;
+    };
+
+async function validateTicketAndRunOwnership(
+  state: SessionManager,
+  params: {
+    ticketId: string;
+    runId?: string;
+    requireCurrentTicket?: boolean;
+  }
+): Promise<OwnershipValidationResult> {
+  const session = state.requireActive();
+  const requireCurrentTicket = params.requireCurrentTicket ?? true;
+
+  if (requireCurrentTicket) {
+    if (!session.current_ticket_id) {
+      return {
+        ok: false,
+        response: buildToolErrorResponse('No active ticket is assigned. Call promptwheel_next_ticket first.'),
+      };
+    }
+    if (session.current_ticket_id !== params.ticketId) {
+      return {
+        ok: false,
+        response: buildToolErrorResponse('Ticket does not match the currently assigned ticket.'),
+      };
+    }
+  }
+
+  const ticket = await repos.tickets.getById(state.db, params.ticketId);
+  if (!ticket) {
+    return { ok: false, response: buildToolErrorResponse('Ticket not found.') };
+  }
+  if (ticket.projectId !== session.project_id) {
+    return {
+      ok: false,
+      response: buildToolErrorResponse('Ticket does not belong to the active session project.'),
+    };
+  }
+
+  if (!params.runId) {
+    return { ok: true, ticket, session };
+  }
+
+  const workerRun = await repos.runs.getById(state.db, params.runId);
+  if (!workerRun) {
+    return { ok: false, response: buildToolErrorResponse('Run not found.') };
+  }
+  if (workerRun.projectId !== session.project_id) {
+    return {
+      ok: false,
+      response: buildToolErrorResponse('Run does not belong to the active session project.'),
+    };
+  }
+  if (workerRun.ticketId !== ticket.id) {
+    return {
+      ok: false,
+      response: buildToolErrorResponse('Run does not belong to the specified ticket.'),
+    };
+  }
+  if (workerRun.type !== 'worker') {
+    return {
+      ok: false,
+      response: buildToolErrorResponse('Run is not a worker run for this ticket.'),
+    };
+  }
+
+  return { ok: true, ticket, session };
+}
+
 export function registerExecuteTools(server: McpServer, getState: () => SessionManager) {
   server.tool(
     'promptwheel_next_ticket',
@@ -206,15 +291,9 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
       }
       const params = { ticketId, changedFiles };
       const state = getState();
-      state.requireActive();
-
-      const ticket = await repos.tickets.getById(state.db, params.ticketId);
-      if (!ticket) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Ticket not found.' }) }],
-          isError: true,
-        };
-      }
+      const ownership = await validateTicketAndRunOwnership(state, { ticketId: params.ticketId });
+      if (!ownership.ok) return ownership.response;
+      const ticket = ownership.ticket;
 
       // If no allowed_paths, everything is allowed
       if (ticket.allowedPaths.length === 0) {
@@ -228,7 +307,7 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
       }
 
       // Use proper scope policy with minimatch-based validation
-      const s = state.run.require();
+      const s = ownership.session;
       const worktreeRoot = s.direct ? undefined : `.promptwheel/worktrees/${params.ticketId}`;
       const policy = deriveScopePolicy({
         allowedPaths: ticket.allowedPaths,
@@ -303,15 +382,9 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
       }
       const params = { ticketId, runId, summary: raw.summary };
       const state = getState();
-      state.requireActive();
-
-      const ticket = await repos.tickets.getById(state.db, params.ticketId);
-      if (!ticket) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Ticket not found.' }) }],
-          isError: true,
-        };
-      }
+      const ownership = await validateTicketAndRunOwnership(state, { ticketId: params.ticketId, runId: params.runId });
+      if (!ownership.ok) return ownership.response;
+      const ticket = ownership.ticket;
 
       state.run.appendEvent('QA_STARTED', { ticket_id: params.ticketId });
 
@@ -431,7 +504,8 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
       }
       const params = { ticketId, runId, reason: raw.reason ?? 'Unknown failure' };
       const state = getState();
-      state.requireActive();
+      const ownership = await validateTicketAndRunOwnership(state, { ticketId: params.ticketId, runId: params.runId });
+      if (!ownership.ok) return ownership.response;
 
       await repos.tickets.updateStatus(state.db, params.ticketId, 'blocked');
       await repos.runs.markFailure(state.db, params.runId, params.reason);

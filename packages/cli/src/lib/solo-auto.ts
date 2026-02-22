@@ -32,6 +32,8 @@ import { filterProposals } from './solo-auto-filter.js';
 import { executeProposals } from './solo-auto-execute.js';
 import { finalizeSession } from './solo-auto-finalize.js';
 import { maybeDrillGenerateTrajectory, tryPreVerifyTrajectoryStep, computeAmbitionLevel } from './solo-auto-drill.js';
+import { computeCoverage } from './sectors.js';
+import type { ProgressSnapshot } from './display-adapter.js';
 
 /**
  * Run auto work mode - process ready tickets in parallel
@@ -348,6 +350,28 @@ export async function runAutoMode(options: AutoModeOptions): Promise<number> {
   }
 }
 
+function buildProgressSnapshot(
+  state: import('./solo-auto-state.js').AutoSessionState,
+  phase: ProgressSnapshot['phase'],
+): ProgressSnapshot {
+  const done = state.allTicketOutcomes.filter(t => t.status === 'completed').length;
+  const failed = state.allTicketOutcomes.filter(t => t.status === 'failed' || t.status === 'spindle_abort').length;
+  const deferred = state.allTicketOutcomes.filter(t => t.status === 'deferred').length;
+  return {
+    phase,
+    cycleCount: state.cycleCount,
+    ticketsDone: done,
+    ticketsFailed: failed,
+    ticketsDeferred: deferred,
+    ticketsActive: 0,
+    elapsedMs: Date.now() - state.startTime,
+    timeBudgetMs: state.totalMinutes ? state.totalMinutes * 60_000 : undefined,
+    sectorCoverage: state.sectorState
+      ? (() => { const c = computeCoverage(state.sectorState); return { scanned: c.scannedSectors, total: c.totalSectors, percent: c.percent }; })()
+      : undefined,
+  };
+}
+
 /**
  * Spin mode — scout, fix, repeat until stopped.
  * Runs until Ctrl+C, --hours expires, or cycle/PR limits are hit.
@@ -433,6 +457,8 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
       }
     }
 
+    state.displayAdapter.progressUpdate(buildProgressSnapshot(state, 'scouting'));
+
     const scoutResult = await runScoutPhase(state);
     if (scoutResult.shouldBreak) break;
     if (scoutResult.shouldRetry) continue;
@@ -442,10 +468,14 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
     if (filterResult.shouldBreak) break;
     if (filterResult.shouldRetry) continue;
 
+    state.displayAdapter.progressUpdate(buildProgressSnapshot(state, 'executing'));
+
     const execResult = await executeProposals(state, filterResult.toProcess);
     if (execResult.shouldBreak) break;
 
     await runPostCycleMaintenance(state, filterResult.scope, scoutResult.isDocsAuditCycle);
+
+    state.displayAdapter.progressUpdate(buildProgressSnapshot(state, 'idle'));
   } while (shouldContinue(state));
 }
 

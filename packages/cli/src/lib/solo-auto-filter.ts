@@ -128,8 +128,8 @@ export async function filterProposals(
     }
   }
 
-  // Re-inject deferred proposals
-  const deferred = popDeferredForScope(state.repoRoot, scope);
+  // Re-inject deferred proposals (pass cycle count for cycle-based promotion)
+  const deferred = popDeferredForScope(state.repoRoot, scope, state.cycleCount);
   if (deferred.length > 0) {
     state.displayAdapter.log(chalk.cyan(`  ♻ ${deferred.length} deferred proposal(s) now in scope`));
     for (const dp of deferred) {
@@ -195,9 +195,10 @@ export async function filterProposals(
             impact_score: p.impact_score ?? 5,
             original_scope: scope,
             deferredAt: Date.now(),
+            deferredAtCycle: state.cycleCount,
           });
           const outOfScopeFiles = files.filter((f: string) => !minimatch(f, scope, { dot: true }));
-          state.displayAdapter.log(chalk.gray(`  ✗ Out of scope (${scope}): ${p.title}${outOfScopeFiles.length > 0 ? ` [${outOfScopeFiles.join(', ')}]` : ''}`));
+          state.displayAdapter.log(chalk.yellow(`  ↻ Deferred (outside ${scope}): ${p.title}${outOfScopeFiles.length > 0 ? ` [${outOfScopeFiles.join(', ')}]` : ''}`));
           return false;
         }
         return true;

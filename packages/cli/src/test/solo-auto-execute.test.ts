@@ -106,6 +106,7 @@ vi.mock('../lib/file-cooldown.js', () => ({
 
 vi.mock('../lib/sectors.js', () => ({
   recordTicketOutcome: vi.fn(),
+  computeCoverage: vi.fn().mockReturnValue({ scannedSectors: 0, totalSectors: 0, percent: 0 }),
 }));
 
 vi.mock('../lib/wave-scheduling.js', () => ({
@@ -309,6 +310,8 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
       ticketDone: vi.fn(),
       log: vi.fn(),
       destroy: vi.fn(),
+      drillStateChanged: vi.fn(),
+      progressUpdate: vi.fn(),
     },
 
     getCycleFormula: vi.fn().mockReturnValue(null),

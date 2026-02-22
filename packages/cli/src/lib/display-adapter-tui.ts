@@ -11,7 +11,7 @@ const _require = createRequire(import.meta.url);
 const CLI_VERSION: string = _require('../../package.json').version;
 
 import { AutoScreen } from '../tui/screens/auto.js';
-import type { DisplayAdapter, SessionInfo, BatchStatus } from './display-adapter.js';
+import type { DisplayAdapter, SessionInfo, BatchStatus, ProgressSnapshot } from './display-adapter.js';
 
 export interface TuiDisplayAdapterOptions {
   repoRoot: string;
@@ -98,6 +98,10 @@ export class TuiDisplayAdapter implements DisplayAdapter {
 
   drillStateChanged(info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void {
     this.autoScreen.setDrillInfo(info);
+  }
+
+  progressUpdate(snapshot: ProgressSnapshot): void {
+    this.autoScreen.setProgress(snapshot);
   }
 
   destroy(): void {

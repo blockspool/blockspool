@@ -1,6 +1,6 @@
 {
   "name": "promptwheel",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Continuous codebase improvement tool — scouts, executes, and batches into milestone PRs",
   "author": "PromptWheel",
   "license": "Apache-2.0",
@@ -41,7 +41,6 @@
     "@vitest/coverage-v8": "^4.0.18",
     "eslint": "^9.39.2",
     "eslint-plugin-security": "^3.0.1",
-
     "tsx": "^4.19.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"

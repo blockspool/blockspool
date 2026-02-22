@@ -29,7 +29,7 @@ export class OpenAILocalScoutBackend implements ScoutBackend {
 
     // Combine external signal with timeout
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
     const abortHandler = () => controller.abort();
     signal?.addEventListener('abort', abortHandler);
 
@@ -87,7 +87,7 @@ export class OpenAILocalScoutBackend implements ScoutBackend {
         durationMs,
       };
     } finally {
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
       signal?.removeEventListener('abort', abortHandler);
     }
   }

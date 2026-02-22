@@ -133,9 +133,17 @@ describe('tickets repo', () => {
 
     expect(updated).not.toBeNull();
     expect(updated!.status).toBe('in_progress');
+    expect(updated!.updatedAt.toISOString()).toContain('T');
 
     const fetched = await tickets.getById(db, ticketId);
     expect(fetched!.status).toBe('in_progress');
+
+    const raw = await db.query<{ updated_at: string }>(
+      'SELECT updated_at FROM tickets WHERE id = $1',
+      [ticketId]
+    );
+    expect(raw.rows[0]!.updated_at).toContain('T');
+    expect(raw.rows[0]!.updated_at.endsWith('Z')).toBe(true);
   });
 });
 
@@ -155,6 +163,16 @@ describe('runs repo', () => {
     expect(run.type).toBe('scout');
     expect(run.status).toBe('running');
     expect(run.metadata).toEqual({ scope: 'src/**' });
+    expect(run.startedAt).not.toBeNull();
+    expect(run.startedAt!.toISOString()).toContain('T');
+
+    const raw = await db.query<{ started_at: string | null }>(
+      'SELECT started_at FROM runs WHERE id = $1',
+      [run.id]
+    );
+    expect(raw.rows[0]!.started_at).not.toBeNull();
+    expect(raw.rows[0]!.started_at!).toContain('T');
+    expect(raw.rows[0]!.started_at!.endsWith('Z')).toBe(true);
   });
 
   it('getById returns run', async () => {
@@ -175,6 +193,14 @@ describe('runs repo', () => {
       scope: 'src/**',
       proposalCount: 5,
     }));
+
+    const raw = await db.query<{ completed_at: string | null }>(
+      'SELECT completed_at FROM runs WHERE id = $1',
+      [runId]
+    );
+    expect(raw.rows[0]!.completed_at).not.toBeNull();
+    expect(raw.rows[0]!.completed_at!).toContain('T');
+    expect(raw.rows[0]!.completed_at!.endsWith('Z')).toBe(true);
   });
 
   it('markFailure records error', async () => {

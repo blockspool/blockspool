@@ -373,33 +373,35 @@ export async function ingestTicketEvent(
     }
 
     case 'TICKET_RESULT': {
-      // Accept TICKET_RESULT in any phase — inline prompts (Task subagents) don't
-      // call back at each step, so worker.phase may still be 'PLAN'.
       const status = payload['status'] as string;
       if (status === 'done' || status === 'success') {
-        // For inline prompts, 'success' means the subagent completed everything
-        // including QA, commit, push. If PR_CREATED follows, that's the final step.
-        // If not, treat this as ticket complete (e.g., direct commit without PR).
-        if (payload['pr_url']) {
-          // PR was created — mark complete
-          if (run.require().create_prs) {
+        const inline = validateInlineCompletionContract(payload, ticketId, 'TICKET_RESULT');
+
+        // Explicit inline-completion contract allows intentional phase bypass.
+        if (inline.valid) {
+          const prUrl = typeof payload['pr_url'] === 'string' && payload['pr_url'].trim().length > 0
+            ? payload['pr_url']
+            : null;
+          if (run.require().create_prs && !prUrl) {
+            return { processed: true, message: 'Inline completion requires pr_url when PR creation is enabled' };
+          }
+          if (prUrl && run.require().create_prs) {
             run.require().prs_created++;
           }
           run.completeTicketWorker(ticketId);
-          return { processed: true, message: 'Ticket complete with PR' };
+          return { processed: true, message: prUrl ? 'Ticket complete with PR (inline contract)' : 'Ticket complete (inline contract)' };
         }
-        // No PR URL — move to QA if in traditional flow, or complete if inline
-        if (worker.phase === 'EXECUTE') {
-          const diff = (payload['diff'] ?? null) as string | null;
-          const changedFiles = (payload['changed_files'] ?? []) as string[];
-          recordDiff(worker.spindle, diff ?? (changedFiles.length > 0 ? changedFiles.join('\n') : null));
-          const nextPhase = run.require().cross_verify ? 'CROSS_QA' : 'QA';
-          run.updateTicketWorker(ticketId, { phase: nextPhase, spindle: worker.spindle });
-          return { processed: true, message: run.require().cross_verify ? 'Moving to CROSS_QA (independent verification)' : 'Moving to QA' };
+
+        if (worker.phase !== 'EXECUTE') {
+          return { processed: true, message: 'Ticket result outside EXECUTE phase (missing/invalid inline_completion contract)' };
         }
-        // Inline prompt completed without PR — mark complete
-        run.completeTicketWorker(ticketId);
-        return { processed: true, message: 'Ticket complete (no PR)' };
+
+        const diff = (payload['diff'] ?? null) as string | null;
+        const changedFiles = (payload['changed_files'] ?? []) as string[];
+        recordDiff(worker.spindle, diff ?? (changedFiles.length > 0 ? changedFiles.join('\n') : null));
+        const nextPhase = run.require().cross_verify ? 'CROSS_QA' : 'QA';
+        run.updateTicketWorker(ticketId, { phase: nextPhase, spindle: worker.spindle });
+        return { processed: true, message: run.require().cross_verify ? 'Moving to CROSS_QA (independent verification)' : 'Moving to QA' };
       }
       if (status === 'failed') {
         await repos.tickets.updateStatus(db, ticketId, 'blocked');
@@ -460,9 +462,17 @@ export async function ingestTicketEvent(
     }
 
     case 'PR_CREATED': {
-      // Accept PR_CREATED in any phase — inline prompts (Task subagents) don't
-      // call back at each step, so worker.phase may still be 'PLAN'.
-      // The session-level phase is PARALLEL_EXECUTE which is what matters.
+      if (worker.phase !== 'PR') {
+        const inline = validateInlineCompletionContract(payload, ticketId, 'PR_CREATED');
+        if (!inline.valid) {
+          return { processed: true, message: 'PR created outside PR phase (missing/invalid inline_completion contract)' };
+        }
+      }
+
+      if (typeof payload['url'] !== 'string' || payload['url'].trim().length === 0) {
+        return { processed: true, message: 'PR_CREATED missing url' };
+      }
+
       if (run.require().create_prs) {
         run.require().prs_created++;
       }
@@ -473,6 +483,35 @@ export async function ingestTicketEvent(
     default:
       return { processed: true, message: `Event ${type} recorded for ticket ${ticketId}` };
   }
+}
+
+type InlineCompletionEvent = 'TICKET_RESULT' | 'PR_CREATED';
+
+function validateInlineCompletionContract(
+  payload: Record<string, unknown>,
+  ticketId: string,
+  eventType: InlineCompletionEvent,
+): { valid: boolean; reason?: string } {
+  const raw = payload['inline_completion'];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { valid: false, reason: 'missing inline_completion' };
+  }
+
+  const contract = raw as Record<string, unknown>;
+  if (contract['contract_version'] !== 1) {
+    return { valid: false, reason: 'invalid contract_version' };
+  }
+  if (contract['mode'] !== 'full') {
+    return { valid: false, reason: 'invalid mode' };
+  }
+  if (contract['ticket_id'] !== ticketId) {
+    return { valid: false, reason: 'ticket_id mismatch' };
+  }
+  if (contract['event_type'] !== eventType) {
+    return { valid: false, reason: 'event_type mismatch' };
+  }
+
+  return { valid: true };
 }
 
 // ---------------------------------------------------------------------------

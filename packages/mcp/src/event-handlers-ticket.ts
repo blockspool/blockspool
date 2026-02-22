@@ -1,9 +1,10 @@
 import { repos } from '@promptwheel/core';
 import type { EventContext, ProcessResult } from './event-helpers.js';
 import { recordSectorOutcome, recordTicketDedup } from './event-helpers.js';
+import { isRecord, toNumberOrUndefined, toStringArrayOrUndefined, toStringOrUndefined } from './event-helpers.js';
 import type { CommitPlan } from './types.js';
 import { deriveScopePolicy, validatePlanScope } from './scope-policy.js';
-import { recordDiff, recordCommandFailure, recordPlanHash } from './spindle.js';
+import { recordDiff, recordPlanHash } from './spindle.js';
 import { addLearning, extractTags, type StructuredKnowledge } from './learnings.js';
 import { isStreamJsonOutput, analyzeTrace } from '@promptwheel/core/trace/shared';
 
@@ -14,23 +15,43 @@ export async function handlePlanSubmitted(ctx: EventContext, payload: Record<str
     return { processed: true, phase_changed: false, message: 'Plan submitted outside PLAN phase, ignored' };
   }
 
-  const raw = payload as Record<string, unknown>;
+  const raw = payload;
   // Coerce files_to_touch — accept files/touched_files as fallback names
   const rawFiles = Array.isArray(raw.files_to_touch) ? raw.files_to_touch
     : Array.isArray(raw.files) ? raw.files
     : Array.isArray(raw.touched_files) ? raw.touched_files : [];
-  const files_to_touch = rawFiles.map((f: unknown) => {
-    if (typeof f === 'string') return { path: f, action: 'modify' as const, reason: '' };
-    if (f && typeof f === 'object' && 'path' in f) return f as { path: string; action: 'create' | 'modify' | 'delete'; reason: string };
-    return { path: String(f), action: 'modify' as const, reason: '' };
-  });
+  const files_to_touch: CommitPlan['files_to_touch'] = [];
+  for (const file of rawFiles) {
+    if (typeof file === 'string') {
+      files_to_touch.push({ path: file, action: 'modify', reason: '' });
+      continue;
+    }
+    if (isRecord(file)) {
+      const pathValue = toStringOrUndefined(file['path']);
+      if (!pathValue) continue;
+      const actionValue = toStringOrUndefined(file['action']);
+      const action: 'create' | 'modify' | 'delete' =
+        actionValue === 'create' || actionValue === 'modify' || actionValue === 'delete'
+          ? actionValue
+          : 'modify';
+      files_to_touch.push({
+        path: pathValue,
+        action,
+        reason: toStringOrUndefined(file['reason']) ?? '',
+      });
+      continue;
+    }
+    if (file !== undefined && file !== null) {
+      files_to_touch.push({ path: String(file), action: 'modify', reason: '' });
+    }
+  }
   const plan: CommitPlan = {
-    ticket_id: String(raw.ticket_id ?? s.current_ticket_id ?? ''),
+    ticket_id: toStringOrUndefined(raw.ticket_id) ?? String(raw.ticket_id ?? s.current_ticket_id ?? ''),
     files_to_touch,
-    expected_tests: Array.isArray(raw.expected_tests) ? raw.expected_tests.map(String) : [],
+    expected_tests: toStringArrayOrUndefined(raw.expected_tests) ?? [],
     risk_level: (raw.risk_level === 'low' || raw.risk_level === 'medium' || raw.risk_level === 'high')
       ? raw.risk_level : 'low',
-    estimated_lines: typeof raw.estimated_lines === 'number' ? raw.estimated_lines : 50,
+    estimated_lines: toNumberOrUndefined(raw.estimated_lines) ?? 50,
   };
 
   // Derive scope policy for the current ticket
@@ -114,14 +135,14 @@ export async function handleTicketResult(ctx: EventContext, payload: Record<stri
     return { processed: true, phase_changed: false, message: 'Ticket result outside EXECUTE phase' };
   }
 
-  const status = payload['status'] as string;
+  const status = toStringOrUndefined(payload['status']) ?? '';
 
   // Accept both 'done' and 'success' as completion status
   if (status === 'done' || status === 'success') {
     // Validate changed_files against plan (if plan exists)
-    const changedFiles = (payload['changed_files'] ?? []) as string[];
-    const linesAdded = (payload['lines_added'] ?? 0) as number;
-    const linesRemoved = (payload['lines_removed'] ?? 0) as number;
+    const changedFiles = toStringArrayOrUndefined(payload['changed_files']) ?? [];
+    const linesAdded = toNumberOrUndefined(payload['lines_added']) ?? 0;
+    const linesRemoved = toNumberOrUndefined(payload['lines_removed']) ?? 0;
     const totalLines = linesAdded + linesRemoved;
 
     // Save ticket result artifact
@@ -168,11 +189,11 @@ export async function handleTicketResult(ctx: EventContext, payload: Record<stri
     s.total_lines_changed += totalLines;
 
     // Update spindle state with diff info
-    const diff = (payload['diff'] ?? null) as string | null;
+    const diff = toStringOrUndefined(payload['diff']) ?? null;
     recordDiff(s.spindle, diff ?? (changedFiles.length > 0 ? changedFiles.join('\n') : null));
 
     // Opportunistic trace analysis: if stdout is in payload, check for stream-json
-    const stdout = payload['stdout'] as string | undefined;
+    const stdout = toStringOrUndefined(payload['stdout']);
     if (stdout && isStreamJsonOutput(stdout.split('\n')[0] ?? '')) {
       try {
         const traceAnalysis = analyzeTrace(stdout);
@@ -203,7 +224,7 @@ export async function handleTicketResult(ctx: EventContext, payload: Record<stri
     const ticket = s.current_ticket_id ? await repos.tickets.getById(ctx.db, s.current_ticket_id) : null;
     // Record learning on ticket failure
     if (s.learnings_enabled) {
-      const reason = (payload['reason'] as string) ?? 'Execution failed';
+      const reason = toStringOrUndefined(payload['reason']) ?? 'Execution failed';
       const structured: StructuredKnowledge = {
         root_cause: reason.slice(0, 200),
         fragile_paths: ticket?.allowedPaths?.filter(p => !p.includes('*')),
@@ -222,7 +243,7 @@ export async function handleTicketResult(ctx: EventContext, payload: Record<stri
     // Fail the ticket, move to next
     if (s.current_ticket_id) {
       await repos.tickets.updateStatus(ctx.db, s.current_ticket_id, 'blocked');
-      ctx.run.failTicket(payload['reason'] as string ?? 'Execution failed');
+      ctx.run.failTicket(toStringOrUndefined(payload['reason']) ?? 'Execution failed');
     }
     ctx.run.setPhase('NEXT_TICKET');
     return {

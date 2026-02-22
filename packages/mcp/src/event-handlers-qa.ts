@@ -6,6 +6,10 @@ import {
   extractErrorSignature,
   recordSectorOutcome,
   recordTicketDedup,
+  toBooleanOrUndefined,
+  toNumberOrUndefined,
+  toStringArrayOrUndefined,
+  toStringOrUndefined,
 } from './event-helpers.js';
 import { recordCommandFailure, recordDiff } from './spindle.js';
 import { recordQualitySignal } from './run-state-bridge.js';
@@ -19,11 +23,11 @@ export async function handleQaCommandResult(ctx: EventContext, payload: Record<s
     return { processed: true, phase_changed: false, message: 'QA command result outside QA phase' };
   }
 
-  const command = payload['command'] as string;
-  const success = payload['success'] as boolean;
-  const output = (payload['output'] ?? '') as string;
-  const durationMs = (payload['durationMs'] ?? 0) as number;
-  const timedOut = (payload['timedOut'] ?? false) as boolean;
+  const command = toStringOrUndefined(payload['command']) ?? '';
+  const success = toBooleanOrUndefined(payload['success']) ?? false;
+  const output = toStringOrUndefined(payload['output']) ?? '';
+  const durationMs = toNumberOrUndefined(payload['durationMs']) ?? 0;
+  const timedOut = toBooleanOrUndefined(payload['timedOut']) ?? false;
 
   // Record command failure in spindle state
   if (!success) {
@@ -160,10 +164,17 @@ export async function handleQaFailed(ctx: EventContext, payload: Record<string, 
   s.qa_retries++;
 
   // Store failure context for critic block injection on retry
-  const failedCmds = (payload['failed_commands'] ?? payload['command'] ?? '') as string | string[];
-  const errorOutput = (payload['error'] ?? payload['output'] ?? '') as string;
+  const failedCommands = (() => {
+    const explicitFailed = payload['failed_commands'];
+    if (typeof explicitFailed === 'string') return [explicitFailed];
+    const explicitFailedArray = toStringArrayOrUndefined(explicitFailed);
+    if (explicitFailedArray) return explicitFailedArray;
+    const singleCommand = toStringOrUndefined(payload['command']);
+    return singleCommand ? [singleCommand] : [];
+  })();
+  const errorOutput = toStringOrUndefined(payload['error']) ?? toStringOrUndefined(payload['output']) ?? '';
   s.last_qa_failure = {
-    failed_commands: Array.isArray(failedCmds) ? failedCmds : failedCmds ? [failedCmds] : [],
+    failed_commands: failedCommands,
     error_output: errorOutput.slice(0, 500),
   };
 
@@ -176,22 +187,21 @@ export async function handleQaFailed(ctx: EventContext, payload: Record<string, 
     const ticket = s.current_ticket_id ? await repos.tickets.getById(ctx.db, s.current_ticket_id) : null;
     // Record learning on final QA failure
     if (s.learnings_enabled) {
-      const failedCmds = (payload['failed_commands'] ?? payload['command'] ?? '') as string;
-      const errorOutput = (payload['error'] ?? payload['output'] ?? '') as string;
+      const primaryFailedCommand = failedCommands[0] ?? '';
       const errorSummary = errorOutput.slice(0, 100);
       const errorSig = extractErrorSignature(errorOutput);
       const structured: StructuredKnowledge = {
         pattern_type: errorClass === 'environment' ? 'environment' : 'antipattern',
         failure_context: {
-          command: failedCmds || (ticket?.verificationCommands?.[0] ?? ''),
+          command: primaryFailedCommand || (ticket?.verificationCommands?.[0] ?? ''),
           error_signature: errorSig ?? errorSummary.slice(0, 120),
         },
         fragile_paths: ticket?.allowedPaths?.filter(p => !p.includes('*')),
       };
       addLearning(ctx.run.rootPath, {
-        text: `QA fails on ${ticket?.title ?? 'unknown'} — ${errorSummary || failedCmds}`.slice(0, 200),
+        text: `QA fails on ${ticket?.title ?? 'unknown'} — ${errorSummary || primaryFailedCommand}`.slice(0, 200),
         category: 'gotcha',
-        source: { type: 'qa_failure', detail: failedCmds },
+        source: { type: 'qa_failure', detail: primaryFailedCommand },
         tags: extractTags(ticket?.allowedPaths ?? [], ticket?.verificationCommands ?? []),
         structured,
       });

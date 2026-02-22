@@ -485,3 +485,60 @@ describe('Golden Path E2E', () => {
     expect(resp.constraints.plan_required).toBe(false);
   });
 });
+
+describe('Golden Path E2E — parallel worker completion gating', () => {
+  it('rejects out-of-phase TICKET_RESULT completion without inline contract and accepts valid contract', async () => {
+    run.create(project.id, {
+      step_budget: 50,
+      parallel: 2,
+      create_prs: false,
+      categories: ['refactor'],
+    });
+
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Inline completion hardening',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: [],
+    });
+
+    const s = run.require();
+    s.phase = 'PARALLEL_EXECUTE';
+    run.initTicketWorker(ticket.id, { title: ticket.title });
+
+    const rejected = await ingestEvent('TICKET_RESULT', {
+      ticket_id: ticket.id,
+      status: 'success',
+      changed_files: ['src/utils.ts'],
+      lines_added: 1,
+      lines_removed: 0,
+    });
+
+    expect(rejected.phase_changed).toBe(false);
+    expect(rejected.message).toContain('outside EXECUTE phase');
+    expect(run.getTicketWorker(ticket.id)).not.toBeNull();
+
+    const accepted = await ingestEvent('TICKET_RESULT', {
+      ticket_id: ticket.id,
+      status: 'success',
+      changed_files: ['src/utils.ts'],
+      lines_added: 1,
+      lines_removed: 0,
+      inline_completion: {
+        contract_version: 1,
+        mode: 'full',
+        ticket_id: ticket.id,
+        event_type: 'TICKET_RESULT',
+      },
+    });
+
+    expect(accepted.phase_changed).toBe(false);
+    expect(accepted.message).toContain('inline contract');
+    expect(run.getTicketWorker(ticket.id)).toBeNull();
+    expect(run.require().tickets_completed).toBe(1);
+  });
+});

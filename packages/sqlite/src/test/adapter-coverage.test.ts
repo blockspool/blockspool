@@ -111,11 +111,11 @@ describe('getQueryType (tested via stats)', () => {
   });
 });
 
-describe('extractTableName (tested via RETURNING clause)', () => {
+describe('RETURNING clause support', () => {
   it('handles INSERT with RETURNING', async () => {
     await adapter.query('CREATE TABLE ret (id INTEGER PRIMARY KEY, name TEXT)');
     const result = await adapter.query("INSERT INTO ret (id, name) VALUES (1, 'test') RETURNING *");
-    // RETURNING simulation should return the inserted row
+    // Native RETURNING should return the inserted row.
     expect(result.rows).toHaveLength(1);
     expect((result.rows[0] as any).name).toBe('test');
   });

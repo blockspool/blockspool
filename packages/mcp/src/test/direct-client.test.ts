@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { createSQLiteAdapter } from '@promptwheel/sqlite';
 import type { DatabaseAdapter } from '@promptwheel/core';
+import { repos } from '@promptwheel/core';
 import { DirectClient } from '../direct-client.js';
 
 let tmpDir: string;
@@ -378,6 +379,61 @@ describe('DirectClient — spindle detection', () => {
     expect(resp.next_action).toBe('STOP');
     expect(resp.phase).toBe('FAILED_SPINDLE');
     expect(resp.reason).toContain('recovery cap reached');
+
+    client.endSession();
+    await client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parallel worker completion gating
+// ---------------------------------------------------------------------------
+
+describe('DirectClient — parallel worker completion gating', () => {
+  it('rejects out-of-phase completion events unless inline contract is explicit and valid', async () => {
+    const client = await DirectClient.create({ projectPath: tmpDir, db });
+    client.startSession({ step_budget: 100, parallel: 2, create_prs: true });
+
+    const ticket = await repos.tickets.create(client._db, {
+      projectId: client._project.id,
+      title: 'Parallel PR flow',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: [],
+    });
+
+    const state = client.getState();
+    state.phase = 'PARALLEL_EXECUTE';
+    client._run.initTicketWorker(ticket.id, { title: ticket.title });
+
+    const rejected = await client.ingestEvent('PR_CREATED', {
+      ticket_id: ticket.id,
+      url: 'https://github.com/test/test/pull/99',
+      branch: 'promptwheel/parallel',
+    });
+    expect(rejected.processed).toBe(true);
+    expect(rejected.message).toContain('outside PR phase');
+    expect(client._run.getTicketWorker(ticket.id)).not.toBeNull();
+
+    const accepted = await client.ingestEvent('PR_CREATED', {
+      ticket_id: ticket.id,
+      url: 'https://github.com/test/test/pull/99',
+      branch: 'promptwheel/parallel',
+      inline_completion: {
+        contract_version: 1,
+        mode: 'full',
+        ticket_id: ticket.id,
+        event_type: 'PR_CREATED',
+      },
+    });
+    expect(accepted.processed).toBe(true);
+    expect(accepted.message).toBe('PR created, ticket complete');
+    expect(client._run.getTicketWorker(ticket.id)).toBeNull();
+    expect(client.getState().tickets_completed).toBe(1);
+    expect(client.getState().prs_created).toBe(1);
 
     client.endSession();
     await client.close();

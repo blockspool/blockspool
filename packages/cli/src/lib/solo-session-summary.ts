@@ -3,7 +3,7 @@
  */
 
 import chalk from 'chalk';
-import { readRunState, getQualityRate } from './run-state.js';
+import { readRunState, getQualityRate, type DeferredProposal } from './run-state.js';
 import { loadQaStats } from './qa-stats.js';
 import { computeCoverage, type SectorState } from './sectors.js';
 import { computeConvergenceMetrics } from './cycle-context.js';
@@ -255,6 +255,7 @@ export function displayFinalSummary(ctx: SessionSummaryContext): void {
     for (const t of ctx.allTicketOutcomes) {
       const icon = t.status === 'completed' ? chalk.green('✓')
         : t.status === 'no_changes' ? chalk.gray('·')
+        : t.status === 'deferred' ? chalk.yellow('↻')
         : chalk.red('✗');
       const cat = t.category ? chalk.gray(`[${t.category}]`) : '';
       console.log(`  ${icon} ${cat} ${t.title}`);
@@ -271,6 +272,15 @@ export function displayFinalSummary(ctx: SessionSummaryContext): void {
   if (ctx.totalFailed > 0) {
     console.log(chalk.red(`\n✗ ${ctx.totalFailed} failed`));
   }
+
+  // Show pending deferred proposals
+  try {
+    const runState = readRunState(ctx.repoRoot);
+    const pendingDeferred = runState.deferredProposals?.length ?? 0;
+    if (pendingDeferred > 0) {
+      console.log(chalk.yellow(`\n↻ ${pendingDeferred} deferred proposal(s) pending for next session`));
+    }
+  } catch { /* non-fatal */ }
 
   if (ctx.allPrUrls.length > 0) {
     console.log();

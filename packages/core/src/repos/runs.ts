@@ -83,12 +83,13 @@ export async function create(
   }
 ): Promise<Run> {
   const id = `run_${nanoid(12)}`;
+  const startedAt = new Date().toISOString();
 
   await db.query(
     `INSERT INTO runs (
       id, ticket_id, project_id, type, status,
       max_iterations, metadata, started_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, datetime('now'))`,
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       id,
       opts.ticketId ?? null,
@@ -97,6 +98,7 @@ export async function create(
       'running',
       opts.maxIterations ?? 10,
       JSON.stringify(opts.metadata ?? {}),
+      startedAt,
     ]
   );
 
@@ -121,14 +123,15 @@ export async function markSuccess(
     const existing = rowToRun(result.rows[0]);
 
     const merged = { ...existing.metadata, ...metadata };
+    const completedAt = new Date().toISOString();
 
     await tx.query(
       `UPDATE runs SET
         status = 'success',
-        completed_at = datetime('now'),
-        metadata = $1
-       WHERE id = $2`,
-      [JSON.stringify(merged), id]
+        completed_at = $1,
+        metadata = $2
+       WHERE id = $3`,
+      [completedAt, JSON.stringify(merged), id]
     );
 
     const updated = await tx.query<RunRow>('SELECT * FROM runs WHERE id = $1', [id]);
@@ -152,15 +155,16 @@ export async function markFailure(
 
     const merged = { ...existing.metadata, ...metadata };
     const errorMsg = error instanceof Error ? error.message : error;
+    const completedAt = new Date().toISOString();
 
     await tx.query(
       `UPDATE runs SET
         status = 'failure',
-        completed_at = datetime('now'),
-        error = $1,
-        metadata = $2
-       WHERE id = $3`,
-      [errorMsg, JSON.stringify(merged), id]
+        completed_at = $1,
+        error = $2,
+        metadata = $3
+       WHERE id = $4`,
+      [completedAt, errorMsg, JSON.stringify(merged), id]
     );
 
     const updated = await tx.query<RunRow>('SELECT * FROM runs WHERE id = $1', [id]);

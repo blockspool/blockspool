@@ -13,7 +13,8 @@ import {
   type BlockSpinner,
   type BatchProgressDisplay,
 } from './spinner.js';
-import type { DisplayAdapter, SessionInfo, BatchStatus } from './display-adapter.js';
+import type { DisplayAdapter, SessionInfo, BatchStatus, ProgressSnapshot } from './display-adapter.js';
+import { formatProgressLine } from './display-adapter.js';
 
 export class SpinnerDisplayAdapter implements DisplayAdapter {
   private ticketSpinners = new Map<string, BlockSpinner>();
@@ -102,6 +103,13 @@ export class SpinnerDisplayAdapter implements DisplayAdapter {
 
   drillStateChanged(_info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void {
     // No-op for spinner mode
+  }
+
+  progressUpdate(snapshot: ProgressSnapshot): void {
+    if (process.stderr.isTTY) {
+      const line = formatProgressLine(snapshot);
+      process.stderr.write(`\n  ${chalk.gray('───')} ${line} ${chalk.gray('───')}\n`);
+    }
   }
 
   destroy(): void {

@@ -118,8 +118,11 @@ export class SQLiteAdapter implements DatabaseAdapter {
   /**
    * Convert Postgres-style $1, $2 params to SQLite ? params
    *
-   * Note: This is a simple conversion that assumes params are used in order.
-   * For complex queries with out-of-order params, this would need enhancement.
+   * Supports out-of-order and repeated placeholders by reordering values based
+   * on placeholder indices found in the SQL text.
+   *
+   * Caveat: Conversion uses a regex replacement over raw SQL text, so `$n`
+   * patterns inside SQL string literals or comments may also be replaced.
    */
   private convertParams(text: string, params?: unknown[]): { sql: string; values: unknown[] } {
     if (!params || params.length === 0) {

@@ -54,11 +54,11 @@ export class KimiScoutBackend implements ScoutBackend {
       let stderr = '';
       let killed = false;
 
-      const timeout = setTimeout(() => {
+      const timeout = timeoutMs > 0 ? setTimeout(() => {
         killed = true;
         proc.kill('SIGTERM');
         setTimeout(() => proc.kill('SIGKILL'), 5000);
-      }, timeoutMs);
+      }, timeoutMs) : null;
 
       const abortHandler = () => { killed = true; proc.kill('SIGTERM'); };
       signal?.addEventListener('abort', abortHandler);
@@ -67,7 +67,7 @@ export class KimiScoutBackend implements ScoutBackend {
       proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
       proc.on('close', (code) => {
-        clearTimeout(timeout);
+        if (timeout) clearTimeout(timeout);
         signal?.removeEventListener('abort', abortHandler);
         const durationMs = Date.now() - start;
 
@@ -85,7 +85,7 @@ export class KimiScoutBackend implements ScoutBackend {
       });
 
       proc.on('error', (err) => {
-        clearTimeout(timeout);
+        if (timeout) clearTimeout(timeout);
         signal?.removeEventListener('abort', abortHandler);
         resolve({ success: false, output: '', error: err.message, durationMs: Date.now() - start });
       });

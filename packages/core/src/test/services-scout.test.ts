@@ -159,6 +159,41 @@ describe('scoutRepo', () => {
     }));
   });
 
+  it('forwards explicit timeout to scout', async () => {
+    vi.mocked(scanAndPropose).mockResolvedValue({
+      success: true,
+      proposals: [],
+      errors: [],
+      scannedFiles: 2,
+    });
+
+    await scoutRepo(makeDeps(), {
+      path: '/repo',
+      timeoutMs: 45000,
+    });
+
+    expect(scanAndPropose).toHaveBeenCalledWith(expect.objectContaining({
+      timeoutMs: 45000,
+    }));
+  });
+
+  it('does not inject timeout when not provided', async () => {
+    vi.mocked(scanAndPropose).mockResolvedValue({
+      success: true,
+      proposals: [],
+      errors: [],
+      scannedFiles: 2,
+    });
+
+    await scoutRepo(makeDeps(), {
+      path: '/repo',
+    });
+
+    expect(scanAndPropose).toHaveBeenCalledWith(expect.objectContaining({
+      timeoutMs: undefined,
+    }));
+  });
+
   it('stores proposals as tickets when autoApprove', async () => {
     const proposal = makeProposal();
     vi.mocked(scanAndPropose).mockResolvedValue({

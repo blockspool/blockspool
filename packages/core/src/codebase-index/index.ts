@@ -355,34 +355,12 @@ export function buildCodebaseIndex(
 // ---------------------------------------------------------------------------
 
 export function refreshCodebaseIndex(
-  existing: CodebaseIndex,
+  _existing: CodebaseIndex,
   projectRoot: string,
   excludeDirs: string[] = [],
   useGitTracking = true,
 ): CodebaseIndex {
-  const fresh = buildCodebaseIndex(projectRoot, excludeDirs, useGitTracking);
-
-  const oldByPath = new Map(existing.modules.map(m => [m.path, m]));
-
-  const mergedEdges: Record<string, string[]> = {};
-
-  for (const mod of fresh.modules) {
-    const old = oldByPath.get(mod.path);
-    if (old && old.file_count === mod.file_count) {
-      const oldEdges = existing.dependency_edges[mod.path];
-      if (oldEdges) {
-        mergedEdges[mod.path] = oldEdges;
-      }
-    } else {
-      const freshEdges = fresh.dependency_edges[mod.path];
-      if (freshEdges) {
-        mergedEdges[mod.path] = freshEdges;
-      }
-    }
-  }
-
-  fresh.dependency_edges = mergedEdges;
-  return fresh;
+  return buildCodebaseIndex(projectRoot, excludeDirs, useGitTracking);
 }
 
 // ---------------------------------------------------------------------------

@@ -77,7 +77,7 @@ export interface ScoutRepoOptions {
   model?: 'haiku' | 'sonnet' | 'opus';
   /** Custom prompt from formula — tells the AI what to focus on */
   customPrompt?: string;
-  /** Timeout per batch */
+  /** Timeout per batch in ms (0 = no timeout, unset = backend default) */
   timeoutMs?: number;
   /** Abort signal */
   signal?: AbortSignal;
@@ -234,7 +234,7 @@ export async function scoutRepo(
       minConfidence: opts.minConfidence ?? 50,
       projectPath: repoRoot,
       model: opts.model ?? (opts.backend ? undefined : 'opus'),
-      timeoutMs: opts.timeoutMs ?? 120000,
+      timeoutMs: opts.timeoutMs,
       signal: opts.signal,
       recentlyCompletedTitles: recentTitles,
       customPrompt: opts.customPrompt,
@@ -260,7 +260,38 @@ export async function scoutRepo(
     });
 
     if (!scanResult.success) {
-      errors.push(...scanResult.errors);
+      const durationMs = Date.now() - startTime;
+      const scanErrors = scanResult.errors.length > 0
+        ? scanResult.errors
+        : ['Scout scan did not complete successfully'];
+      const failureMessage = scanErrors[0];
+
+      errors.push(...scanErrors);
+
+      await runs.markFailure(db, run.id, failureMessage, {
+        scannedFiles: scanResult.scannedFiles,
+        proposalCount: scanResult.proposals.length,
+        durationMs,
+      });
+
+      logger?.warn('Scan incomplete, marking run as failure', {
+        runId: run.id,
+        scannedFiles: scanResult.scannedFiles,
+        proposals: scanResult.proposals.length,
+        error: failureMessage,
+      });
+
+      return {
+        success: false,
+        project,
+        run: (await runs.getById(db, run.id))!,
+        proposals: scanResult.proposals,
+        tickets: [],
+        errors: scanErrors,
+        scannedFiles: scanResult.scannedFiles,
+        durationMs,
+        sectorReclassification: scanResult.sectorReclassification,
+      };
     }
 
     logger?.info('Scan complete', {

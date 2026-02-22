@@ -9,10 +9,14 @@
  *   - formatIndexForPrompt
  *   - Constants: SOURCE_EXTENSIONS, PURPOSE_HINT, NON_PRODUCTION_PURPOSES
  *
- * Tests pure functions only (no filesystem).
+ * Includes targeted filesystem-backed coverage for index refresh behavior.
  */
 
 import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { buildCodebaseIndex, refreshCodebaseIndex } from '../codebase-index/index.js';
 import {
   purposeHintFromDirName,
   sampleEvenly,
@@ -490,5 +494,49 @@ describe('formatIndexForPrompt', () => {
     expect(result).not.toContain('Hotspots');
     expect(result).not.toContain('Entrypoints');
     expect(result).not.toContain('Other Modules');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshCodebaseIndex
+// ---------------------------------------------------------------------------
+
+describe('refreshCodebaseIndex', () => {
+  it('keeps fresh dependency edges when file counts are unchanged', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebase-index-refresh-'));
+
+    try {
+      fs.mkdirSync(path.join(projectRoot, 'src', 'services'), { recursive: true });
+      fs.mkdirSync(path.join(projectRoot, 'src', 'lib'), { recursive: true });
+      fs.mkdirSync(path.join(projectRoot, 'src', 'utils'), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(projectRoot, 'src', 'services', 'index.ts'),
+        'import { helper } from "../lib/helper";\nexport { helper };\n',
+      );
+      fs.writeFileSync(
+        path.join(projectRoot, 'src', 'lib', 'helper.ts'),
+        'export const helper = 1;\n',
+      );
+      fs.writeFileSync(
+        path.join(projectRoot, 'src', 'utils', 'helper.ts'),
+        'export const helper = 2;\n',
+      );
+
+      const existing = buildCodebaseIndex(projectRoot, [], false);
+
+      fs.writeFileSync(
+        path.join(projectRoot, 'src', 'services', 'index.ts'),
+        'import { helper } from "../utils/helper";\nexport { helper };\n',
+      );
+
+      const refreshed = refreshCodebaseIndex(existing, projectRoot, [], false);
+      expect(existing.modules.find(m => m.path === 'src/services')?.file_count).toBe(1);
+      expect(refreshed.modules.find(m => m.path === 'src/services')?.file_count).toBe(1);
+      expect(refreshed.dependency_edges['src/services']).toEqual(['src/utils']);
+      expect(refreshed.dependency_edges['src/services']).not.toContain('src/lib');
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });

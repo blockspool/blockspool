@@ -85,6 +85,10 @@ function execStatusToStepStatus(exec: ExecResult): 'success' | 'failed' | 'cance
   return 'failed';
 }
 
+function isValidAttemptCount(value: number): boolean {
+  return Number.isFinite(value) && value >= 1;
+}
+
 /**
  * Run QA commands and record results
  */
@@ -111,9 +115,24 @@ export async function runQa(
   const startedAtMs = Date.now();
 
   // Determine max attempts
+  if (
+    opts.maxAttemptsOverride !== undefined &&
+    !isValidAttemptCount(opts.maxAttemptsOverride)
+  ) {
+    throw new Error('QA maxAttemptsOverride must be >= 1');
+  }
+
+  if (config.retry.enabled && !isValidAttemptCount(config.retry.maxAttempts)) {
+    throw new Error('QA retry.maxAttempts must be >= 1');
+  }
+
   const maxAttempts =
     opts.maxAttemptsOverride ??
     (config.retry.enabled ? config.retry.maxAttempts : 1);
+
+  if (!isValidAttemptCount(maxAttempts)) {
+    throw new Error('QA maxAttempts must be >= 1');
+  }
 
   // Create the run
   const run = await runs.create(db, {
@@ -128,196 +147,220 @@ export async function runQa(
 
   logger.info(`QA run started: ${run.id}`);
 
-  let latestAttempt = 1;
+  let latestAttempt = 0;
   let finalStatus: 'success' | 'failed' | 'canceled' = 'failed';
   let failedAt: QaRunResult['failedAt'] | undefined;
 
-  // Check for early cancellation
-  if (signal?.aborted) {
-    await runs.markFailure(db, run.id, 'Canceled before start', { attempts: 0 });
-    return {
-      runId: run.id,
-      projectId,
-      status: 'canceled',
-      attempts: 0,
-      latestAttempt: 0,
-      startedAtMs,
-      endedAtMs: Date.now(),
-      durationMs: Date.now() - startedAtMs,
-    };
-  }
+  try {
+    // Check for early cancellation
+    if (signal?.aborted) {
+      await runs.markFailure(db, run.id, 'Canceled before start', { attempts: 0 });
+      return {
+        runId: run.id,
+        projectId,
+        status: 'canceled',
+        attempts: 0,
+        latestAttempt: 0,
+        startedAtMs,
+        endedAtMs: Date.now(),
+        durationMs: Date.now() - startedAtMs,
+      };
+    }
 
-  // Attempt loop
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    latestAttempt = attempt;
-    logger.info(`Attempt ${attempt}/${maxAttempts}`);
+    // Attempt loop
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      latestAttempt = attempt;
+      logger.info(`Attempt ${attempt}/${maxAttempts}`);
 
-    // Pre-create steps as queued
-    const createdSteps = await runSteps.createMany(
-      db,
-      run.id,
-      config.commands.map((c) => ({
-        name: c.name,
-        cmd: c.cmd,
-        cwd: c.cwd ?? '.',
-        timeoutMs: c.timeoutMs,
-      })),
-      attempt
-    );
+      // Pre-create steps as queued
+      const createdSteps = await runSteps.createMany(
+        db,
+        run.id,
+        config.commands.map((c) => ({
+          name: c.name,
+          cmd: c.cmd,
+          cwd: c.cwd ?? '.',
+          timeoutMs: c.timeoutMs,
+        })),
+        attempt
+      );
 
-    let attemptFailed = false;
+      let attemptFailed = false;
 
-    for (const step of createdSteps) {
-      // Check for cancellation before each step
-      if (signal?.aborted) {
-        await runSteps.markCanceled(db, step.id, 'Canceled by user');
-        // Cancel remaining steps
-        for (const remaining of createdSteps) {
-          if (remaining.ordinal > step.ordinal) {
-            await runSteps.markCanceled(db, remaining.id, 'Canceled by user');
+      for (const step of createdSteps) {
+        // Check for cancellation before each step
+        if (signal?.aborted) {
+          await runSteps.markCanceled(db, step.id, 'Canceled by user');
+          // Cancel remaining steps
+          for (const remaining of createdSteps) {
+            if (remaining.ordinal > step.ordinal) {
+              await runSteps.markCanceled(db, remaining.id, 'Canceled by user');
+            }
           }
+          finalStatus = 'canceled';
+          failedAt = { attempt, stepName: step.name };
+          attemptFailed = true;
+          break;
         }
-        finalStatus = 'canceled';
-        failedAt = { attempt, stepName: step.name };
+
+        await runSteps.markStarted(db, step.id);
+
+        const cmdCfg = config.commands[step.ordinal]!;
+        const cwdAbs = resolveCwd(repoRoot, cmdCfg.cwd ?? step.cwd ?? '.');
+
+        const execRes = await exec.run({
+          cmd: cmdCfg.cmd,
+          cwd: cwdAbs,
+          env: cmdCfg.env,
+          timeoutMs: cmdCfg.timeoutMs ?? step.timeoutMs ?? undefined,
+          signal,
+
+          repoRoot,
+          artifactsDir: config.artifacts.dir,
+
+          runId: run.id,
+          attempt,
+          stepName: step.name,
+          ordinal: step.ordinal,
+
+          maxLogBytes: config.artifacts.maxLogBytes,
+          tailBytes: config.artifacts.tailBytes,
+        });
+
+        const stepStatus = execStatusToStepStatus(execRes);
+
+        if (stepStatus === 'success') {
+          await runSteps.markSuccess(db, step.id, {
+            exitCode: execRes.exitCode ?? 0,
+            stdoutPath: execRes.stdout.path,
+            stderrPath: execRes.stderr.path,
+            stdoutBytes: execRes.stdout.bytes,
+            stderrBytes: execRes.stderr.bytes,
+            stdoutTruncated: execRes.stdout.truncated,
+            stderrTruncated: execRes.stderr.truncated,
+            stdoutTail: execRes.stdout.tail,
+            stderrTail: execRes.stderr.tail,
+            metadata: { execStatus: execRes.status },
+          });
+          logger.info(`  ✓ ${step.name}`);
+          continue;
+        }
+
+        // Failed or canceled
         attemptFailed = true;
+
+        const errorMessage =
+          execRes.errorMessage ??
+          (execRes.status === 'timeout'
+            ? `Timed out after ${cmdCfg.timeoutMs ?? step.timeoutMs ?? 'unknown'}ms`
+            : execRes.status === 'canceled'
+            ? 'Canceled'
+            : `Exited with code ${execRes.exitCode ?? 'unknown'}`);
+
+        if (stepStatus === 'canceled') {
+          await runSteps.markCanceled(db, step.id, errorMessage);
+          finalStatus = 'canceled';
+        } else {
+          await runSteps.markFailed(db, step.id, {
+            exitCode: execRes.exitCode ?? undefined,
+            signal: execRes.signal ?? undefined,
+            errorMessage,
+            stdoutPath: execRes.stdout.path,
+            stderrPath: execRes.stderr.path,
+            stdoutBytes: execRes.stdout.bytes,
+            stderrBytes: execRes.stderr.bytes,
+            stdoutTruncated: execRes.stdout.truncated,
+            stderrTruncated: execRes.stderr.truncated,
+            stdoutTail: execRes.stdout.tail,
+            stderrTail: execRes.stderr.tail,
+            metadata: { execStatus: execRes.status },
+          });
+          finalStatus = 'failed';
+        }
+
+        logger.error(`  ✗ ${step.name}: ${errorMessage}`);
+        failedAt = { attempt, stepName: step.name };
+
+        // Cancel remaining queued steps in this attempt
+        for (const remaining of createdSteps) {
+          if (remaining.ordinal <= step.ordinal) continue;
+          await runSteps.markSkipped(
+            db,
+            remaining.id,
+            `Skipped (previous step "${step.name}" ${stepStatus})`
+          );
+        }
+
         break;
       }
 
-      await runSteps.markStarted(db, step.id);
+      if (!attemptFailed) {
+        finalStatus = 'success';
+        failedAt = undefined;
+        break;
+      }
 
-      const cmdCfg = config.commands[step.ordinal]!;
-      const cwdAbs = resolveCwd(repoRoot, cmdCfg.cwd ?? step.cwd ?? '.');
+      // If canceled, don't retry
+      if (finalStatus === 'canceled') {
+        break;
+      }
+    }
 
-      const execRes = await exec.run({
-        cmd: cmdCfg.cmd,
-        cwd: cwdAbs,
-        env: cmdCfg.env,
-        timeoutMs: cmdCfg.timeoutMs ?? step.timeoutMs ?? undefined,
-        signal,
+    const endedAtMs = Date.now();
 
-        repoRoot,
-        artifactsDir: config.artifacts.dir,
-
-        runId: run.id,
-        attempt,
-        stepName: step.name,
-        ordinal: step.ordinal,
-
-        maxLogBytes: config.artifacts.maxLogBytes,
-        tailBytes: config.artifacts.tailBytes,
+    // Finalize run
+    if (finalStatus === 'success') {
+      await runs.markSuccess(db, run.id, {
+        attempts: latestAttempt,
+        durationMs: endedAtMs - startedAtMs,
       });
-
-      const stepStatus = execStatusToStepStatus(execRes);
-
-      if (stepStatus === 'success') {
-        await runSteps.markSuccess(db, step.id, {
-          exitCode: execRes.exitCode ?? 0,
-          stdoutPath: execRes.stdout.path,
-          stderrPath: execRes.stderr.path,
-          stdoutBytes: execRes.stdout.bytes,
-          stderrBytes: execRes.stderr.bytes,
-          stdoutTruncated: execRes.stdout.truncated,
-          stderrTruncated: execRes.stderr.truncated,
-          stdoutTail: execRes.stdout.tail,
-          stderrTail: execRes.stderr.tail,
-          metadata: { execStatus: execRes.status },
-        });
-        logger.info(`  ✓ ${step.name}`);
-        continue;
-      }
-
-      // Failed or canceled
-      attemptFailed = true;
-
-      const errorMessage =
-        execRes.errorMessage ??
-        (execRes.status === 'timeout'
-          ? `Timed out after ${cmdCfg.timeoutMs ?? step.timeoutMs ?? 'unknown'}ms`
-          : execRes.status === 'canceled'
-          ? 'Canceled'
-          : `Exited with code ${execRes.exitCode ?? 'unknown'}`);
-
-      if (stepStatus === 'canceled') {
-        await runSteps.markCanceled(db, step.id, errorMessage);
-        finalStatus = 'canceled';
-      } else {
-        await runSteps.markFailed(db, step.id, {
-          exitCode: execRes.exitCode ?? undefined,
-          signal: execRes.signal ?? undefined,
-          errorMessage,
-          stdoutPath: execRes.stdout.path,
-          stderrPath: execRes.stderr.path,
-          stdoutBytes: execRes.stdout.bytes,
-          stderrBytes: execRes.stderr.bytes,
-          stdoutTruncated: execRes.stdout.truncated,
-          stderrTruncated: execRes.stderr.truncated,
-          stdoutTail: execRes.stdout.tail,
-          stderrTail: execRes.stderr.tail,
-          metadata: { execStatus: execRes.status },
-        });
-        finalStatus = 'failed';
-      }
-
-      logger.error(`  ✗ ${step.name}: ${errorMessage}`);
-      failedAt = { attempt, stepName: step.name };
-
-      // Cancel remaining queued steps in this attempt
-      for (const remaining of createdSteps) {
-        if (remaining.ordinal <= step.ordinal) continue;
-        await runSteps.markSkipped(
-          db,
-          remaining.id,
-          `Skipped (previous step "${step.name}" ${stepStatus})`
-        );
-      }
-
-      break;
+    } else {
+      const errorMsg = failedAt
+        ? `Failed at ${failedAt.stepName} (attempt ${failedAt.attempt})`
+        : finalStatus === 'canceled'
+        ? 'QA canceled'
+        : 'QA failed';
+      await runs.markFailure(db, run.id, errorMsg, {
+        attempts: latestAttempt,
+        failedAt,
+        durationMs: endedAtMs - startedAtMs,
+      });
     }
 
-    if (!attemptFailed) {
-      finalStatus = 'success';
-      failedAt = undefined;
-      break;
-    }
-
-    // If canceled, don't retry
-    if (finalStatus === 'canceled') {
-      break;
-    }
-  }
-
-  const endedAtMs = Date.now();
-
-  // Finalize run
-  if (finalStatus === 'success') {
-    await runs.markSuccess(db, run.id, {
+    return {
+      runId: run.id,
+      projectId,
+      status: finalStatus,
       attempts: latestAttempt,
-      durationMs: endedAtMs - startedAtMs,
-    });
-  } else {
-    const errorMsg = failedAt
-      ? `Failed at ${failedAt.stepName} (attempt ${failedAt.attempt})`
-      : finalStatus === 'canceled'
-      ? 'QA canceled'
-      : 'QA failed';
-    await runs.markFailure(db, run.id, errorMsg, {
-      attempts: latestAttempt,
+      latestAttempt,
       failedAt,
+      startedAtMs,
+      endedAtMs,
       durationMs: endedAtMs - startedAtMs,
-    });
-  }
+    };
+  } catch (error) {
+    const endedAtMs = Date.now();
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const cancellationRequested = signal?.aborted === true;
+    const finalizationMessage = cancellationRequested
+      ? 'QA canceled'
+      : `QA orchestration error: ${errorMessage}`;
 
-  return {
-    runId: run.id,
-    projectId,
-    status: finalStatus,
-    attempts: latestAttempt,
-    latestAttempt,
-    failedAt,
-    startedAtMs,
-    endedAtMs,
-    durationMs: endedAtMs - startedAtMs,
-  };
+    try {
+      await runs.markFailure(db, run.id, finalizationMessage, {
+        attempts: latestAttempt,
+        failedAt,
+        durationMs: endedAtMs - startedAtMs,
+      });
+    } catch (finalizeError) {
+      const finalizeErrorMessage =
+        finalizeError instanceof Error ? finalizeError.message : String(finalizeError);
+      logger.error(`Failed to finalize QA run after error: ${finalizeErrorMessage}`);
+    }
+
+    logger.error(`QA run failed unexpectedly: ${errorMessage}`);
+    throw error;
+  }
 }
 
 /**

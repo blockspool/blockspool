@@ -17,7 +17,7 @@ import { classifyFailure } from './failure-classifier.js';
 import { normalizeQaConfig } from './solo-utils.js';
 import { recordPrFiles } from './file-cooldown.js';
 import { recordDedupEntry } from './dedup-memory.js';
-import { recordFormulaTicketOutcome, pushRecentDiff, recordQualitySignal, recordCategoryOutcome } from './run-state.js';
+import { recordFormulaTicketOutcome, pushRecentDiff, recordQualitySignal, recordCategoryOutcome, deferProposal } from './run-state.js';
 import { recordTicketOutcome } from './sectors.js';
 import { appendErrorLedger } from './error-ledger.js';
 import { appendPrOutcome } from './pr-outcomes.js';
@@ -29,6 +29,8 @@ import {
 import { getAdaptiveParallelCount, sleep } from './dedup.js';
 import { partitionIntoWaves, type ConflictSensitivity } from './wave-scheduling.js';
 import type { TicketOutcome } from './run-history.js';
+import { computeCoverage } from './sectors.js';
+import type { ProgressSnapshot } from './display-adapter.js';
 
 export interface ExecuteResult {
   shouldBreak: boolean;
@@ -40,6 +42,7 @@ export interface ProposalResult {
   noChanges?: boolean;
   wasRetried?: boolean;
   conflictBranch?: string;
+  mergeConflictDeferred?: boolean;
   costUsd?: number;
   inputTokens?: number;
   outputTokens?: number;
@@ -247,8 +250,23 @@ export async function processOneProposal(
               });
               continue; // re-run soloRunTicket with fresh worktree from updated promptwheel-direct
             }
-            state.displayAdapter.ticketDone(currentTicket.id, false, 'Merge conflict with direct branch');
-            return { success: false };
+            // Defer for next cycle instead of discarding
+            await deferProposal(state.repoRoot, {
+              category: proposal.category,
+              title: proposal.title,
+              description: proposal.description,
+              files: proposal.files ?? [],
+              allowed_paths: proposal.allowed_paths ?? [],
+              confidence: proposal.confidence ?? 50,
+              impact_score: proposal.impact_score ?? 5,
+              original_scope: 'merge-conflict',
+              deferredAt: Date.now(),
+              deferredAtCycle: state.cycleCount,
+            });
+            // Reset ticket so dedup doesn't block re-attempt
+            await tickets.updateStatus(state.adapter, currentTicket.id, 'ready');
+            state.displayAdapter.ticketDone(currentTicket.id, false, 'Merge conflict — deferred to next cycle');
+            return { success: false, mergeConflictDeferred: true };
           }
           state.completedDirectTickets.push({
             title: proposal.title,
@@ -472,13 +490,46 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
     }
   }
 
+  // Build a progress snapshot from current state
+  const pushProgress = () => {
+    const done = state.allTicketOutcomes.filter(t => t.status === 'completed').length;
+    const failed = state.allTicketOutcomes.filter(t => t.status === 'failed' || t.status === 'spindle_abort').length;
+    const deferred = state.allTicketOutcomes.filter(t => t.status === 'deferred').length;
+    const snapshot: ProgressSnapshot = {
+      phase: 'executing',
+      cycleCount: state.cycleCount,
+      ticketsDone: done,
+      ticketsFailed: failed,
+      ticketsDeferred: deferred,
+      ticketsActive: 0,
+      elapsedMs: Date.now() - state.startTime,
+      timeBudgetMs: state.totalMinutes ? state.totalMinutes * 60_000 : undefined,
+      sectorCoverage: state.sectorState
+        ? (() => { const c = computeCoverage(state.sectorState); return { scanned: c.scannedSectors, total: c.totalSectors, percent: c.percent }; })()
+        : undefined,
+    };
+    state.displayAdapter.progressUpdate(snapshot);
+  };
+
   // Helper to record outcome after processing
   const recordOutcome = (proposal: TicketProposal, result: ProposalResult, otherTitles: string[]) => {
+    if (result.mergeConflictDeferred) {
+      // Don't record dedup entry — we want the re-injected proposal to pass dedup
+      // Don't count as failed — it will be retried next cycle
+      const outcome: TicketOutcome = {
+        id: '', title: proposal.title, category: proposal.category, status: 'deferred',
+      };
+      state.allTicketOutcomes.push(outcome);
+      state.cycleOutcomes.push(outcome);
+      pushProgress();
+      return;
+    }
     if (result.noChanges) {
       recordDedupEntry(state.repoRoot, proposal.title, false, 'no_changes');
       const outcome: TicketOutcome = { id: '', title: proposal.title, category: proposal.category, status: 'no_changes' };
       state.allTicketOutcomes.push(outcome);
       state.cycleOutcomes.push(outcome);
+      pushProgress();
       return;
     }
     if (result.success) {
@@ -539,6 +590,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       state.allTicketOutcomes.push(outcome);
       state.cycleOutcomes.push(outcome);
     }
+    pushProgress();
   };
 
   // In direct mode, just show ticket number; in PR modes, show progress toward limit

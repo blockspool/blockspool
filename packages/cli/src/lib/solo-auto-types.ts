@@ -87,6 +87,8 @@ export interface AutoModeOptions {
   daemon?: boolean;
   /** Drill mode — auto-generate trajectories from scout output in spin mode */
   drill?: boolean;
+  /** Explicit spin mode flag (used by daemon to force spin without CLI parsing) */
+  spin?: boolean;
 }
 
 // ── SessionOptions ──────────────────────────────────────────────────────────
@@ -197,6 +199,16 @@ export interface SessionRuntime {
     completedStepSummaries?: string[];
     modifiedFiles?: string[];
     ambitionLevel?: 'conservative' | 'moderate' | 'ambitious';
+    /** Per-step outcomes — enables step-level learning. */
+    stepOutcomes?: Array<{ id: string; status: 'completed' | 'failed' | 'skipped' | 'pending' }>;
+    /** Avg confidence of proposals at generation time. */
+    proposalAvgConfidence?: number;
+    /** Avg impact of proposals at generation time. */
+    proposalAvgImpact?: number;
+    /** Number of proposals dropped by freshness filter. */
+    freshnessDropCount?: number;
+    /** Number of distinct categories in proposals at generation time. */
+    proposalCategoryCount?: number;
   }>;
   /** Categories already covered by drill trajectories this session */
   drillCoveredCategories: Map<string, number>;

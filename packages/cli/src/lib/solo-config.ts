@@ -164,6 +164,12 @@ export interface AutoConfig {
     causalWindow?: number;
     /** Maximum cycles a single trajectory can consume before being abandoned (default: 15, range: 5-30). Prevents runaway trajectories from consuming the entire session. */
     maxCyclesPerTrajectory?: number;
+    /** Sigmoid steepness for quality gate scoring (default: 6, range: 1-20). Higher values create sharper pass/fail boundaries. */
+    sigmoidK?: number;
+    /** Sigmoid center point for quality gate (default: 0.5, range: 0-1). Shifts the inflection point of the quality curve. */
+    sigmoidCenter?: number;
+    /** Log base for staleness decay calculation (default: 11, range: 2-100). Higher values slow staleness decay. */
+    stalenessLogBase?: number;
   };
 }
 

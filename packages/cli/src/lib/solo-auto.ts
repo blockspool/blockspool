@@ -363,11 +363,14 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
         const drillResult = await maybeDrillGenerateTrajectory(state);
         if (drillResult === 'generated') {
           state.drillConsecutiveInsufficient = 0;
+          // Re-read after mutation — maybeDrillGenerateTrajectory sets these on state
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const traj = (state as any).activeTrajectory as import('./solo-auto-state.js').AutoSessionState['activeTrajectory'];
           state.displayAdapter.drillStateChanged({
             active: true,
-            trajectoryName: state.activeTrajectory?.name,
-            trajectoryProgress: state.activeTrajectory
-              ? `${Object.values(state.activeTrajectoryState?.stepStates ?? {}).filter(s => s.status === 'completed').length}/${state.activeTrajectory.steps.length}`
+            trajectoryName: traj?.name,
+            trajectoryProgress: traj
+              ? `${Object.values(state.activeTrajectoryState?.stepStates ?? {}).filter(s => s.status === 'completed').length}/${traj.steps.length}`
               : undefined,
             ambitionLevel: computeAmbitionLevel(state),
           });

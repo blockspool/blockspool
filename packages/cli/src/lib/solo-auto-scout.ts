@@ -84,8 +84,13 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     state.displayAdapter.log(chalk.gray(`  Elapsed: ${formatElapsed(Date.now() - state.startTime)}`));
     if (state.milestoneMode) {
       state.displayAdapter.log(chalk.gray(`  Milestone PRs: ${state.totalMilestonePrs}/${state.maxPrs} (${state.totalPrsCreated} tickets merged)`));
-    } else {
-      state.displayAdapter.log(chalk.gray(`  PRs created: ${state.totalPrsCreated}/${state.maxPrs}`));
+    } else if (state.deliveryMode === 'direct') {
+      if (state.completedDirectTickets.length > 0) {
+        state.displayAdapter.log(chalk.gray(`  Tickets: ${state.completedDirectTickets.length}`));
+      }
+    } else if (state.totalPrsCreated > 0 || state.maxPrs < 999) {
+      const limit = state.maxPrs < 999 ? `/${state.maxPrs}` : '';
+      state.displayAdapter.log(chalk.gray(`  PRs created: ${state.totalPrsCreated}${limit}`));
     }
     if (state.endTime) {
       const remaining = Math.max(0, state.endTime - Date.now());

@@ -828,7 +828,8 @@ function initInteractiveConsole(state: AutoSessionState) {
       } else if (state.deliveryMode === 'direct') {
         console.log(chalk.gray(`    Completed tickets: ${state.completedDirectTickets.length}`));
       } else {
-        console.log(chalk.gray(`    PRs created: ${state.totalPrsCreated}/${state.maxPrs}`));
+        const limit = state.maxPrs < 999 ? `/${state.maxPrs}` : '';
+        console.log(chalk.gray(`    PRs created: ${state.totalPrsCreated}${limit}`));
       }
       console.log(chalk.gray(`    Failed: ${state.totalFailed}`));
       if (state.endTime) {

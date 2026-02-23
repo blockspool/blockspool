@@ -56,7 +56,7 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
 
   // Finalize direct mode
   if (state.deliveryMode === 'direct' && state.completedDirectTickets.length > 0 && state.directFinalize !== 'none') {
-    console.log(chalk.cyan(`\nFinalizing direct branch (${state.completedDirectTickets.length} tickets)...`));
+    state.displayAdapter.log(chalk.cyan(`\nFinalizing direct branch (${state.completedDirectTickets.length} tickets)...`));
     try {
       await pushDirectBranch(state.repoRoot, state.directBranch);
       const elapsed = Date.now() - state.startTime;
@@ -80,12 +80,12 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
       if (state.directFinalize === 'pr') {
         const prUrl = await createDirectSummaryPr(state.repoRoot, state.directBranch, state.detectedBaseBranch, title, summaryBody, true);
         state.allPrUrls.push(prUrl);
-        console.log(chalk.cyan(`  Summary PR: ${prUrl}`));
+        state.displayAdapter.log(chalk.cyan(`  Summary PR: ${prUrl}`));
       } else if (state.directFinalize === 'merge') {
         const prUrl = await createDirectSummaryPr(state.repoRoot, state.directBranch, state.detectedBaseBranch, title, summaryBody, false);
         state.allPrUrls.push(prUrl);
         await autoMergePr(state.repoRoot, prUrl);
-        console.log(chalk.cyan(`  Summary PR (auto-merge): ${prUrl}`));
+        state.displayAdapter.log(chalk.cyan(`  Summary PR (auto-merge): ${prUrl}`));
       }
     } catch (err) {
       console.error(chalk.red(`  Direct finalize failed: ${err instanceof Error ? err.message : err}`));

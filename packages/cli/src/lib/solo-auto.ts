@@ -405,7 +405,7 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
           state.drillConsecutiveInsufficient++;
           const MAX_DRILL_INSUFFICIENT = state.autoConf.drill?.maxConsecutiveInsufficient ?? 3;
           if (state.drillConsecutiveInsufficient >= MAX_DRILL_INSUFFICIENT) {
-            console.log(chalk.yellow(`  Drill: ${state.drillConsecutiveInsufficient} consecutive empty surveys — disabling drill (codebase appears converged)`));
+            state.displayAdapter.log(chalk.yellow(`  Drill: ${state.drillConsecutiveInsufficient} consecutive empty surveys — disabling drill (codebase appears converged)`));
             state.drillMode = false;
             state.displayAdapter.drillStateChanged(null);
           }
@@ -416,7 +416,7 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
           const MAX = state.autoConf.drill?.maxConsecutiveInsufficient ?? 3;
           if (state.drillConsecutiveInsufficient >= MAX + 2) {
             // More patient: needs 2 extra rounds of low quality before disabling
-            console.log(chalk.yellow(`  Drill: proposals consistently too weak — disabling drill (try lowering minAvgConfidence/minAvgImpact)`));
+            state.displayAdapter.log(chalk.yellow(`  Drill: proposals consistently too weak — disabling drill (try lowering minAvgConfidence/minAvgImpact)`));
             state.drillMode = false;
             state.displayAdapter.drillStateChanged(null);
           }
@@ -429,8 +429,10 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
         }
         // 'cooldown', 'failed', 'insufficient', 'low_quality', 'stale' → fall through to normal cycle
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.log(chalk.yellow(`  Drill: error during trajectory generation — ${msg}`));
+        if (state.options.verbose) {
+          const msg = err instanceof Error ? err.message : String(err);
+          state.displayAdapter.log(chalk.yellow(`  Drill: error during trajectory generation — ${msg}`));
+        }
         // Fall through to normal cycle instead of crashing
       }
     }
@@ -445,14 +447,16 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
           preVerifyAdvances++;
         }
         if (preVerifyAdvances > 0) {
-          console.log(chalk.gray(`  Drill: pre-verified ${preVerifyAdvances} step(s) (verification commands already pass)`));
+          if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Drill: pre-verified ${preVerifyAdvances} step(s) (verification commands already pass)`));
           if (!state.activeTrajectory) {
             continue; // trajectory completed via pre-verification — restart loop
           }
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.log(chalk.yellow(`  Drill: pre-verification error — ${msg}`));
+        if (state.options.verbose) {
+          const msg = err instanceof Error ? err.message : String(err);
+          state.displayAdapter.log(chalk.yellow(`  Drill: pre-verification error — ${msg}`));
+        }
         // Fall through to normal cycle instead of crashing
       }
     }

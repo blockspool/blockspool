@@ -74,7 +74,7 @@ export async function filterProposals(
             return orig !== undefined && r.confidence !== orig;
           }).length;
           const rejectedCount = reviewed.filter(r => r.confidence === 0).length;
-          if (adjustedCount > 0 || rejectedCount > 0) {
+          if (state.options.verbose && (adjustedCount > 0 || rejectedCount > 0)) {
             state.displayAdapter.log(chalk.gray(`  Review: ${adjustedCount} adjusted, ${rejectedCount} rejected`));
           }
 
@@ -131,7 +131,7 @@ export async function filterProposals(
   // Re-inject deferred proposals (pass cycle count for cycle-based promotion)
   const deferred = popDeferredForScope(state.repoRoot, scope, state.cycleCount);
   if (deferred.length > 0) {
-    state.displayAdapter.log(chalk.cyan(`  ♻ ${deferred.length} deferred proposal(s) now in scope`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.cyan(`  ♻ ${deferred.length} deferred proposal(s) now in scope`));
     for (const dp of deferred) {
       proposals.push({
         id: `deferred-${Date.now()}`,
@@ -151,7 +151,7 @@ export async function filterProposals(
   }
 
   // Show all proposals before filtering
-  if (proposals.length > 0) {
+  if (state.options.verbose && proposals.length > 0) {
     state.displayAdapter.log(chalk.gray(`  Proposals found:`));
     for (const p of proposals) {
       const conf = p.confidence || 50;
@@ -168,7 +168,7 @@ export async function filterProposals(
     const category = (p.category || 'refactor').toLowerCase();
     if (blockCategories.length > 0 && blockCategories.some(blocked => category.includes(blocked))) {
       rejectedByCategory++;
-      state.displayAdapter.log(chalk.gray(`  ✗ Blocked category (${category}): ${p.title}`));
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  ✗ Blocked category (${category}): ${p.title}`));
       return false;
     }
     return true;
@@ -198,7 +198,7 @@ export async function filterProposals(
             deferredAtCycle: state.cycleCount,
           });
           const outOfScopeFiles = files.filter((f: string) => !minimatch(f, scope, { dot: true }));
-          state.displayAdapter.log(chalk.yellow(`  ↻ Deferred (outside ${scope}): ${p.title}${outOfScopeFiles.length > 0 ? ` [${outOfScopeFiles.join(', ')}]` : ''}`));
+          if (state.options.verbose) state.displayAdapter.log(chalk.yellow(`  ↻ Deferred (outside ${scope}): ${p.title}${outOfScopeFiles.length > 0 ? ` [${outOfScopeFiles.join(', ')}]` : ''}`));
           return false;
         }
         return true;
@@ -217,7 +217,7 @@ export async function filterProposals(
   try {
     dedupContext = await getDeduplicationContext(state.adapter, state.project.id, state.repoRoot);
   } catch (err) {
-    state.displayAdapter.log(chalk.yellow(`  ⚠ Dedup context failed: ${err instanceof Error ? err.message : err}`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.yellow(`  ⚠ Dedup context failed: ${err instanceof Error ? err.message : err}`));
     dedupContext = { existingTitles: [], openPrBranches: [] };
   }
   const approvedProposals: typeof scopeFiltered = [];
@@ -232,7 +232,7 @@ export async function filterProposals(
     if (dupCheck.isDuplicate) {
       duplicateCount++;
       rejectedDupTitles.push(p.title);
-      state.displayAdapter.log(chalk.gray(`  ✗ Duplicate: ${p.title}`));
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  ✗ Duplicate: ${p.title}`));
       if (state.options.verbose) {
         state.displayAdapter.log(chalk.gray(`    Reason: ${dupCheck.reason}`));
       }
@@ -282,9 +282,11 @@ export async function filterProposals(
     }
   }
 
-  // Always-on compact pipeline summary
-  const { found, cat, scope: sc, dedup: dd } = pipelineCounts;
-  state.displayAdapter.log(chalk.gray(`  Filter: ${found} → cat:${cat} → scope:${sc} → dedup:${dd}`));
+  // Compact pipeline summary (verbose only)
+  if (state.options.verbose) {
+    const { found, cat, scope: sc, dedup: dd } = pipelineCounts;
+    state.displayAdapter.log(chalk.gray(`  Filter: ${found} → cat:${cat} → scope:${sc} → dedup:${dd}`));
+  }
 
   if (approvedProposals.length === 0) {
     const parts: string[] = [];
@@ -294,13 +296,13 @@ export async function filterProposals(
     const reason = parts.length > 0
       ? `No proposals approved (${parts.join(', ')})`
       : 'No proposals passed filters';
-    state.displayAdapter.log(chalk.gray(`  ${reason}`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  ${reason}`));
     state.scoutedDirs.push(scope);
     // CLI gets more retries than MCP plugin since it's a longer-running standalone process
     const maxRetries = SCOUT_DEFAULTS.MAX_SCOUT_RETRIES + 2;
     if (state.scoutRetries < maxRetries) {
       state.scoutRetries++;
-      state.displayAdapter.log(chalk.gray(`  Retrying with fresh approach (attempt ${state.scoutRetries}/${maxRetries + 1})...`));
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Retrying with fresh approach (attempt ${state.scoutRetries}/${maxRetries + 1})...`));
       await sleep(1000);
       return { toProcess: [], scope, shouldRetry: true, shouldBreak: false, categoryRejected: rejectedByCategory };
     }

@@ -157,6 +157,7 @@ function makeState(overrides: Partial<any> = {}): any {
     codebaseIndex: null,
     excludeDirs: [],
     dedupMemory: [],
+    displayAdapter: { log: vi.fn(), progressUpdate: vi.fn(), drillStateChanged: vi.fn(), destroy: vi.fn() },
     shutdownRequested: false,
     currentlyProcessing: true,
     guidelinesRefreshInterval: 10,
@@ -550,29 +551,25 @@ describe('runPostCycleMaintenance', () => {
   it('prints spin one-liner when cycleCount >= 2', async () => {
     writeRunStateRaw({ totalCycles: 1 });
 
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
     const state = makeState({
       cycleCount: 2,
       cycleOutcomes: [],
       effectiveMinConfidence: 35,
+      options: { verbose: true },
     });
 
     await runPostCycleMaintenance(state, '**', false);
 
-    // Find the spin one-liner in console output
-    const spinCall = consoleSpy.mock.calls.find(
-      (args) => typeof args[0] === 'string' && args[0].includes('Spin:'),
+    // Find the spin one-liner in displayAdapter.log output
+    const logMock = state.displayAdapter.log as ReturnType<typeof vi.fn>;
+    const spinCall = logMock.mock.calls.find(
+      (args: string[]) => typeof args[0] === 'string' && args[0].includes('Spin:'),
     );
     expect(spinCall).toBeDefined();
-
-    consoleSpy.mockRestore();
   });
 
   it('does not print spin one-liner when cycleCount < 2', async () => {
     writeRunStateRaw({ totalCycles: 0 });
-
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     const state = makeState({
       cycleCount: 1,
@@ -581,12 +578,11 @@ describe('runPostCycleMaintenance', () => {
 
     await runPostCycleMaintenance(state, '**', false);
 
-    const spinCall = consoleSpy.mock.calls.find(
-      (args) => typeof args[0] === 'string' && args[0].includes('Spin:'),
+    const logMock = state.displayAdapter.log as ReturnType<typeof vi.fn>;
+    const spinCall = logMock.mock.calls.find(
+      (args: string[]) => typeof args[0] === 'string' && args[0].includes('Spin:'),
     );
     expect(spinCall).toBeUndefined();
-
-    consoleSpy.mockRestore();
   });
 
   // -----------------------------------------------------------------------

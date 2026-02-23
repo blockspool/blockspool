@@ -716,7 +716,7 @@ function getDrillHistoryPath(repoRoot: string): string {
 }
 
 /** Load persisted drill history from disk. Returns empty state if missing or corrupted. */
-export function loadDrillHistory(repoRoot: string): DrillHistoryFile {
+export function loadDrillHistory(repoRoot: string, verbose?: boolean): DrillHistoryFile {
   const empty: DrillHistoryFile = { entries: [], coveredCategories: {}, coveredScopes: {} };
   try {
     const filePath = getDrillHistoryPath(repoRoot);
@@ -752,13 +752,13 @@ export function loadDrillHistory(repoRoot: string): DrillHistoryFile {
         ? data.coveredScopes : {},
     };
   } catch (err) {
-    console.log(chalk.yellow(`  Drill: history corrupted — starting fresh (${err instanceof Error ? err.message : String(err)})`));
+    if (verbose) console.log(chalk.yellow(`  Drill: history corrupted — starting fresh (${err instanceof Error ? err.message : String(err)})`));
     return empty;
   }
 }
 
 /** Persist drill history to disk. Caps entries to prevent unbounded growth. */
-function saveDrillHistory(repoRoot: string, history: DrillHistoryFile, cap: number = 100): void {
+function saveDrillHistory(repoRoot: string, history: DrillHistoryFile, cap: number = 100, verbose?: boolean): void {
   const filePath = getDrillHistoryPath(repoRoot);
   const tmp = filePath + '.tmp';
   try {
@@ -767,7 +767,7 @@ function saveDrillHistory(repoRoot: string, history: DrillHistoryFile, cap: numb
     fs.writeFileSync(tmp, JSON.stringify(capped, null, 2));
     fs.renameSync(tmp, filePath);
   } catch (err) {
-    console.log(chalk.yellow(`  Drill: failed to save history (${err instanceof Error ? err.message : String(err)})`));
+    if (verbose) console.log(chalk.yellow(`  Drill: failed to save history (${err instanceof Error ? err.message : String(err)})`));
   } finally {
     // Always clean up .tmp to prevent orphaned files on error
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
@@ -776,7 +776,7 @@ function saveDrillHistory(repoRoot: string, history: DrillHistoryFile, cap: numb
 
 /** Hydrate session state from persisted drill history. */
 export function hydrateDrillState(state: AutoSessionState): void {
-  const persisted = loadDrillHistory(state.repoRoot);
+  const persisted = loadDrillHistory(state.repoRoot, state.options?.verbose);
   if (persisted.entries.length === 0) return;
 
   state.drillHistory = persisted.entries;
@@ -876,7 +876,7 @@ export function recordDrillTrajectoryOutcome(
     entries: state.drillHistory,
     coveredCategories: Object.fromEntries(state.drillCoveredCategories),
     coveredScopes: Object.fromEntries(state.drillCoveredScopes),
-  }, drillConf?.historyCap ?? 100);
+  }, drillConf?.historyCap ?? 100, state.options?.verbose);
 }
 
 // ── Pre-verification ────────────────────────────────────────────────────────
@@ -915,7 +915,7 @@ export function tryPreVerifyTrajectoryStep(state: AutoSessionState): boolean {
 
   stepState.status = 'completed';
   stepState.completedAt = Date.now();
-  console.log(chalk.green(`  Trajectory step "${step.title}" already passing — advancing`));
+  state.displayAdapter.log(chalk.green(`  Trajectory step "${step.title}" already passing — advancing`));
 
   const next = getTrajectoryNextStep(state.activeTrajectory, state.activeTrajectoryState.stepStates);
   state.currentTrajectoryStep = next;
@@ -924,9 +924,9 @@ export function tryPreVerifyTrajectoryStep(state: AutoSessionState): boolean {
     if (state.activeTrajectoryState.stepStates[next.id]) {
       state.activeTrajectoryState.stepStates[next.id].status = 'active';
     }
-    console.log(chalk.cyan(`  -> Next step: ${next.title}`));
+    state.displayAdapter.log(chalk.cyan(`  -> Next step: ${next.title}`));
   } else if (trajectoryComplete(state.activeTrajectory, state.activeTrajectoryState.stepStates)) {
-    console.log(chalk.green(`  Trajectory "${state.activeTrajectory.name}" complete!`));
+    state.displayAdapter.log(chalk.green(`  Trajectory "${state.activeTrajectory.name}" complete!`));
     // Don't clear here — let the post-cycle handler finish the drill trajectory properly
   }
 
@@ -995,17 +995,17 @@ export function applyDrillDirectives(state: AutoSessionState): void {
     switch (h.directive) {
       case 'drill:pause':
         state.drillMode = false;
-        console.log(chalk.cyan('  Drill: paused via nudge'));
+        state.displayAdapter.log(chalk.cyan('  Drill: paused via nudge'));
         state.displayAdapter.drillStateChanged(null);
         break;
       case 'drill:resume':
         state.drillMode = true;
-        console.log(chalk.cyan('  Drill: resumed via nudge'));
+        state.displayAdapter.log(chalk.cyan('  Drill: resumed via nudge'));
         state.displayAdapter.drillStateChanged({ active: true });
         break;
       case 'drill:disable':
         state.drillMode = false;
-        console.log(chalk.cyan('  Drill: disabled via nudge'));
+        state.displayAdapter.log(chalk.cyan('  Drill: disabled via nudge'));
         state.displayAdapter.drillStateChanged(null);
         break;
     }
@@ -1029,7 +1029,7 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
   const cooldownCycles = getDrillCooldown(state);
   const cyclesSinceLastGen = state.cycleCount - state.drillLastGeneratedAtCycle;
   if (state.drillTrajectoriesGenerated > 0 && cyclesSinceLastGen < cooldownCycles) {
-    console.log(chalk.gray(`  Drill: cooldown (${cyclesSinceLastGen}/${cooldownCycles} cycles)`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Drill: cooldown (${cyclesSinceLastGen}/${cooldownCycles} cycles)`));
     return 'cooldown';
   }
 
@@ -1039,19 +1039,19 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     const staleness = measureCodeStaleness(state.repoRoot, state.drillLastSurveyTimestamp, stalenessLogBase);
     if (staleness === 0) {
       if (state.options.verbose) {
-        console.log(chalk.gray('  Drill: no code changes since last survey — skipping'));
+        state.displayAdapter.log(chalk.gray('  Drill: no code changes since last survey — skipping'));
       }
       return 'cooldown';
     }
     // Low staleness (few changes) — still survey but with less confidence discount
     // This prevents full re-survey on trivial changes while allowing exploration on significant ones
     if (staleness < 0.4 && state.options.verbose) {
-      console.log(chalk.gray(`  Drill: minor changes since last survey (staleness: ${(staleness * 100).toFixed(0)}%)`));
+      state.displayAdapter.log(chalk.gray(`  Drill: minor changes since last survey (staleness: ${(staleness * 100).toFixed(0)}%)`));
     }
   }
 
   // Run broad survey — temporarily lower confidence threshold for wider discovery
-  console.log(chalk.cyan(`Drill: surveying codebase for trajectory generation...`));
+  state.displayAdapter.log(chalk.cyan(`Drill: surveying codebase for trajectory generation...`));
   state.drillLastSurveyTimestamp = Date.now();
   const savedConfidence = state.effectiveMinConfidence;
   const confidenceDiscount = state.autoConf.drill?.confidenceDiscount ?? 15;
@@ -1063,7 +1063,7 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
   const { min: minProposals, max: maxProposals } = getAdaptiveProposalThresholds(state);
 
   if (allProposals.length < minProposals) {
-    console.log(chalk.gray(`  Drill: ${allProposals.length} proposal(s) found — below threshold (${minProposals}), running normal cycle`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Drill: ${allProposals.length} proposal(s) found — below threshold (${minProposals}), running normal cycle`));
     return 'insufficient'; // genuinely no proposals — codebase may be polished
   }
 
@@ -1093,14 +1093,14 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
   });
 
   if (freshProposals.length < allProposals.length) {
-    console.log(chalk.gray(`  Drill: filtered ${allProposals.length - freshProposals.length} stale proposal(s) (modified since survey)`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Drill: filtered ${allProposals.length - freshProposals.length} stale proposal(s) (modified since survey)`));
   }
 
   // Staleness check — if freshness filter dropped enough proposals to fall below threshold, return 'stale'
   const { min: freshMin } = getAdaptiveProposalThresholds(state);
   if (freshProposals.length < freshMin && freshProposals.length < allProposals.length) {
     // Had proposals but freshness filter killed them — wait for external changes
-    console.log(chalk.gray(`  Drill: ${allProposals.length - freshProposals.length} proposal(s) filtered as stale — waiting for external changes`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Drill: ${allProposals.length - freshProposals.length} proposal(s) filtered as stale — waiting for external changes`));
     return 'stale';
   }
 
@@ -1118,12 +1118,12 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
   const HARD_FLOOR_IMPACT = Math.max(1, Math.round(MIN_AVG_IMPACT / 2));
   let qualityWarning: string | undefined;
   if (avgConfidence < HARD_FLOOR_CONFIDENCE || avgImpact < HARD_FLOOR_IMPACT) {
-    console.log(chalk.gray(`  Drill: proposals too weak (avg confidence: ${avgConfidence.toFixed(0)}, avg impact: ${avgImpact.toFixed(1)}) — skipping generation`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Drill: proposals too weak (avg confidence: ${avgConfidence.toFixed(0)}, avg impact: ${avgImpact.toFixed(1)}) — skipping generation`));
     return 'low_quality'; // proposals exist but quality is truly unusable
   } else if (avgConfidence < MIN_AVG_CONFIDENCE || avgImpact < MIN_AVG_IMPACT) {
     // Soft threshold: proposals are weak but usable — proceed with conservative guidance
     qualityWarning = `Proposal quality is below ideal (avg confidence: ${avgConfidence.toFixed(0)}/${MIN_AVG_CONFIDENCE}, avg impact: ${avgImpact.toFixed(1)}/${MIN_AVG_IMPACT}). Generate a SHORT, conservative trajectory (2-3 steps max) focused on the 1-2 highest-confidence proposals. Drop weaker proposals rather than spreading thin.`;
-    console.log(chalk.gray(`  Drill: weak proposals (confidence: ${avgConfidence.toFixed(0)}, impact: ${avgImpact.toFixed(1)}) — generating conservative trajectory`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Drill: weak proposals (confidence: ${avgConfidence.toFixed(0)}, impact: ${avgImpact.toFixed(1)}) — generating conservative trajectory`));
   }
 
   // Freshness filter → cooldown bridge: store drop ratio for next cooldown calculation
@@ -1143,8 +1143,8 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
 
   // Stratified sampling — ensure diversity across categories while prioritizing quality
   const proposals = stratifiedSample(proposalsForQuality, maxProposals);
-  if (proposalsForQuality.length > maxProposals) {
-    console.log(chalk.gray(`  Drill: stratified ${proposalsForQuality.length} proposals to ${proposals.length}`));
+  if (state.options.verbose && proposalsForQuality.length > maxProposals) {
+    state.displayAdapter.log(chalk.gray(`  Drill: stratified ${proposalsForQuality.length} proposals to ${proposals.length}`));
   }
 
   // Build context for trajectory generation
@@ -1316,10 +1316,10 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
   let effectiveAmbition = baseAmbition;
   if (avgConfidence < 40 && effectiveAmbition !== 'conservative') {
     effectiveAmbition = effectiveAmbition === 'ambitious' ? 'moderate' : 'conservative';
-    if (state.options.verbose) console.log(chalk.gray(`    Ambition downgraded to ${effectiveAmbition} (low proposal confidence: ${avgConfidence.toFixed(0)})`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`    Ambition downgraded to ${effectiveAmbition} (low proposal confidence: ${avgConfidence.toFixed(0)})`));
   } else if (avgConfidence > 70 && effectiveAmbition !== 'ambitious' && state.drillHistory.length >= 5) {
     effectiveAmbition = effectiveAmbition === 'conservative' ? 'moderate' : 'ambitious';
-    if (state.options.verbose) console.log(chalk.gray(`    Ambition upgraded to ${effectiveAmbition} (high proposal confidence: ${avgConfidence.toFixed(0)})`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`    Ambition upgraded to ${effectiveAmbition} (high proposal confidence: ${avgConfidence.toFixed(0)})`));
   }
 
   // Multi-trajectory arc guidance — directional hints across consecutive trajectories
@@ -1335,9 +1335,9 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
       : arcGuidance;
   }
 
-  console.log(chalk.cyan(`  Drill: generating trajectory from ${proposals.length} proposal(s)...`));
-  if (effectiveAmbition !== 'moderate') {
-    console.log(chalk.gray(`    Ambition: ${effectiveAmbition}${effectiveAmbition !== baseAmbition ? ` (adjusted from ${baseAmbition})` : ''}`));
+  state.displayAdapter.log(chalk.cyan(`  Drill: generating trajectory from ${proposals.length} proposal(s)...`));
+  if (state.options.verbose && effectiveAmbition !== 'moderate') {
+    state.displayAdapter.log(chalk.gray(`    Ambition: ${effectiveAmbition}${effectiveAmbition !== baseAmbition ? ` (adjusted from ${baseAmbition})` : ''}`));
   }
 
   try {
@@ -1372,14 +1372,14 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     // Activate the generated trajectory
     const trajState = activateTrajectory(state.repoRoot, result.trajectory.name);
     if (!trajState) {
-      console.log(chalk.yellow('  Drill: trajectory generated but activation failed'));
+      state.displayAdapter.log(chalk.yellow('  Drill: trajectory generated but activation failed'));
       return 'failed';
     }
 
     // Load into session state
     const traj = loadTrajectory(state.repoRoot, result.trajectory.name);
     if (!traj) {
-      console.log(chalk.yellow('  Drill: trajectory generated but could not be loaded'));
+      state.displayAdapter.log(chalk.yellow('  Drill: trajectory generated but could not be loaded'));
       return 'failed';
     }
 
@@ -1392,19 +1392,19 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     state.drillTrajectoriesGenerated++;
 
     const stepCount = traj.steps.length;
-    console.log(chalk.green(`  Drill: trajectory "${traj.name}" activated (${stepCount} steps)`));
-    console.log(chalk.gray(`    ${result.filePath}`));
+    state.displayAdapter.log(chalk.green(`  Drill: trajectory "${traj.name}" activated (${stepCount} steps)`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`    ${result.filePath}`));
     if (state.currentTrajectoryStep) {
-      console.log(chalk.cyan(`    First step: ${state.currentTrajectoryStep.title}`));
+      state.displayAdapter.log(chalk.cyan(`    First step: ${state.currentTrajectoryStep.title}`));
     }
-    if (state.drillHistory.length > 0) {
-      console.log(chalk.gray(`    Session trajectories: ${state.drillHistory.length} previous`));
+    if (state.options.verbose && state.drillHistory.length > 0) {
+      state.displayAdapter.log(chalk.gray(`    Session trajectories: ${state.drillHistory.length} previous`));
     }
 
     return 'generated';
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.log(chalk.yellow(`  Drill: trajectory generation failed — ${msg}`));
+    state.displayAdapter.log(chalk.yellow(`  Drill: trajectory generation failed — ${msg}`));
     // Don't update drillLastGeneratedAtCycle on failure — allow retry on next cycle
     // instead of forcing a full cooldown after a transient error
     return 'failed';

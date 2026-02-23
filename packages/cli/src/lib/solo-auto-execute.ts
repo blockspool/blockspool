@@ -434,11 +434,11 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
   // Reuse cached baseline from initSession on first cycle to avoid redundant runs.
   let cycleQaBaseline: Map<string, boolean> | null = state.qaBaseline;
   if (!cycleQaBaseline && state.config?.qa?.commands?.length && !state.config.qa.disableBaseline) {
-    state.displayAdapter.log(chalk.gray('  Capturing QA baseline for this cycle...'));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray('  Capturing QA baseline for this cycle...'));
     const fullBaseline = await captureQaBaseline(state.repoRoot, state.config, (msg) => state.displayAdapter.log(chalk.gray(msg)), state.repoRoot);
     cycleQaBaseline = baselineToPassFail(fullBaseline);
     const preExisting = [...cycleQaBaseline.entries()].filter(([, passed]) => !passed);
-    if (preExisting.length > 0) {
+    if (state.options.verbose && preExisting.length > 0) {
       state.displayAdapter.log(chalk.yellow(`  QA baseline: ${preExisting.length} pre-existing failure(s) will be skipped`));
     }
 
@@ -608,11 +608,9 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       const otherTitles = toProcess.filter((_, j) => j !== i).map(p => p.title);
       if (result.noChanges) {
         recordOutcome(toProcess[i], result, otherTitles);
-        state.displayAdapter.log('');
         continue;
       }
       recordOutcome(toProcess[i], result, otherTitles);
-      state.displayAdapter.log('');
       if (i < toProcess.length - 1 && shouldContinue(state)) {
         await sleep(1000);
       }
@@ -627,7 +625,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       // - 'relaxed': Only direct file overlap (most parallel, riskier)
       const sensitivity: ConflictSensitivity = state.autoConf.conflictSensitivity ?? 'normal';
       waves = partitionIntoWaves(toProcess, { sensitivity });
-      if (waves.length > 1) {
+      if (state.options.verbose && waves.length > 1) {
         state.displayAdapter.log(chalk.gray(`  Conflict-aware scheduling: ${waves.length} waves (sensitivity: ${sensitivity})`));
       }
     } else {
@@ -682,7 +680,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
           }
         }
         if (conflicted.length > 0) {
-          state.displayAdapter.log(chalk.gray(`  Retrying ${conflicted.length} merge-conflicted ticket(s)...`));
+          if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Retrying ${conflicted.length} merge-conflicted ticket(s)...`));
           for (const { proposal, branch } of conflicted) {
             if (!shouldContinue(state)) break;
             const retryResult = await mergeTicketToMilestone(
@@ -693,7 +691,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
             if (retryResult.success) {
               state.milestoneTicketCount++;
               state.milestoneTicketSummaries.push(proposal.title);
-              state.displayAdapter.log(chalk.green(`    ✓ ${proposal.title} — merged on retry`));
+              if (state.options.verbose) state.displayAdapter.log(chalk.green(`    ✓ ${proposal.title} — merged on retry`));
               // Check milestone full
               if (state.batchSize && state.milestoneTicketCount >= state.batchSize) {
                 await state.finalizeMilestone();

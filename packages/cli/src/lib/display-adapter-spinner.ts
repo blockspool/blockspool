@@ -20,6 +20,8 @@ export class SpinnerDisplayAdapter implements DisplayAdapter {
   private ticketSpinners = new Map<string, BlockSpinner>();
   private scoutSpinner: BlockSpinner | null = null;
   private batchProgress: BatchProgressDisplay | null = null;
+  private lastProgressLine = '';
+  private lastProgressTime = 0;
 
   sessionStarted(_info: SessionInfo): void {
     // Banner is already printed by initSession — no-op here
@@ -108,6 +110,10 @@ export class SpinnerDisplayAdapter implements DisplayAdapter {
   progressUpdate(snapshot: ProgressSnapshot): void {
     if (process.stderr.isTTY) {
       const line = formatProgressLine(snapshot);
+      const now = Date.now();
+      if (line === this.lastProgressLine || now - this.lastProgressTime < 2000) return;
+      this.lastProgressLine = line;
+      this.lastProgressTime = now;
       process.stderr.write(`\n  ${chalk.gray('───')} ${line} ${chalk.gray('───')}\n`);
     }
   }

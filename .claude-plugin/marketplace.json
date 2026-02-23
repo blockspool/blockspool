@@ -10,7 +10,7 @@
     {
       "name": "promptwheel",
       "description": "Continuous codebase improvement — scouts improvements, executes in parallel, batches into milestone PRs",
-      "version": "0.7.3",
+      "version": "0.7.4",
       "author": {
         "name": "PromptWheel",
         "email": "support@promptwheel.com"

@@ -266,9 +266,11 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     recordScanResult(state.sectorState, state.currentSectorId, state.currentSectorCycle, scoutResult.proposals.length, scoutResult.sectorReclassification);
     saveSectors(state.repoRoot, state.sectorState);
     const cov = computeCoverage(state.sectorState);
-    state.displayAdapter.log(chalk.gray(`  Sector: ${state.currentSectorId} (${cov.scannedSectors}/${cov.totalSectors} scanned, ${cov.percent}% coverage)`));
-    if (cov.sectorPercent >= 100) {
-      state.displayAdapter.log(chalk.gray(`  Full coverage — sector fully scanned`));
+    if (state.options.verbose) {
+      state.displayAdapter.log(chalk.gray(`  Sector: ${state.currentSectorId} (${cov.scannedSectors}/${cov.totalSectors} scanned, ${cov.percent}% coverage)`));
+      if (cov.sectorPercent >= 100) {
+        state.displayAdapter.log(chalk.gray(`  Full coverage — sector fully scanned`));
+      }
     }
   }
 
@@ -308,7 +310,7 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     const maxRetries = SCOUT_DEFAULTS.MAX_SCOUT_RETRIES + 2;
     if (state.scoutRetries < maxRetries) {
       state.scoutRetries++;
-      state.displayAdapter.log(chalk.gray(`  No improvements found in ${scope} (attempt ${state.scoutRetries}/${maxRetries + 1}). Retrying with fresh approach...`));
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  No improvements found in ${scope} (attempt ${state.scoutRetries}/${maxRetries + 1}). Retrying with fresh approach...`));
       await sleep(1000);
       return { proposals: [], scoutResult, scope, cycleFormula, isDeepCycle, isDocsAuditCycle, shouldRetry: true, shouldBreak: false };
     }

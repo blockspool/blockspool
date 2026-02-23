@@ -537,6 +537,7 @@ function makeDrillState(overrides: Record<string, unknown> = {}): AutoSessionSta
     drillLastOutcome: 'completed',
     drillHistory: [],
     autoConf: { drill: {} },
+    displayAdapter: { log: () => {}, drillStateChanged: () => {} },
     ...overrides,
   } as unknown as AutoSessionState;
 }
@@ -918,34 +919,34 @@ describe('applyDrillDirectives', () => {
 
   it('pauses drill mode via drill:pause directive', () => {
     addDirective(tmpDir, 'drill:pause');
-    const state = makeDrillState({ repoRoot: tmpDir, drillMode: true, displayAdapter: { drillStateChanged: () => {} } });
+    const state = makeDrillState({ repoRoot: tmpDir, drillMode: true, displayAdapter: { log: () => {}, drillStateChanged: () => {} } });
     applyDrillDirectives(state as any);
     expect(state.drillMode).toBe(false);
   });
 
   it('resumes drill mode via drill:resume directive', () => {
     addDirective(tmpDir, 'drill:resume');
-    const state = makeDrillState({ repoRoot: tmpDir, drillMode: false, displayAdapter: { drillStateChanged: () => {} } });
+    const state = makeDrillState({ repoRoot: tmpDir, drillMode: false, displayAdapter: { log: () => {}, drillStateChanged: () => {} } });
     applyDrillDirectives(state as any);
     expect(state.drillMode).toBe(true);
   });
 
   it('disables drill mode via drill:disable directive', () => {
     addDirective(tmpDir, 'drill:disable');
-    const state = makeDrillState({ repoRoot: tmpDir, drillMode: true, displayAdapter: { drillStateChanged: () => {} } });
+    const state = makeDrillState({ repoRoot: tmpDir, drillMode: true, displayAdapter: { log: () => {}, drillStateChanged: () => {} } });
     applyDrillDirectives(state as any);
     expect(state.drillMode).toBe(false);
   });
 
   it('no-op when no directive hints pending', () => {
-    const state = makeDrillState({ repoRoot: tmpDir, drillMode: true, displayAdapter: { drillStateChanged: () => {} } });
+    const state = makeDrillState({ repoRoot: tmpDir, drillMode: true, displayAdapter: { log: () => {}, drillStateChanged: () => {} } });
     applyDrillDirectives(state as any);
     expect(state.drillMode).toBe(true);
   });
 
   it('marks directive hints as consumed on disk', () => {
     addDirective(tmpDir, 'drill:pause');
-    const state = makeDrillState({ repoRoot: tmpDir, drillMode: true, displayAdapter: { drillStateChanged: () => {} } });
+    const state = makeDrillState({ repoRoot: tmpDir, drillMode: true, displayAdapter: { log: () => {}, drillStateChanged: () => {} } });
     applyDrillDirectives(state as any);
     // Read hints back from disk
     const hintsRaw = fs.readFileSync(path.join(tmpDir, '.promptwheel', 'hints.json'), 'utf-8');

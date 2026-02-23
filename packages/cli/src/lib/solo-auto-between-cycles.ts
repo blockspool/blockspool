@@ -89,7 +89,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
     if (qualityRate < 0.5) {
       state.effectiveMinConfidence += 10;
       if (state.options.verbose) {
-        console.log(chalk.gray(`  Quality rate ${(qualityRate * 100).toFixed(0)}% — raising confidence +10`));
+        state.displayAdapter.log(chalk.gray(`  Quality rate ${(qualityRate * 100).toFixed(0)}% — raising confidence +10`));
       }
     }
   }
@@ -104,7 +104,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
       );
       if (confDelta !== 0) {
         state.effectiveMinConfidence += confDelta;
-        console.log(chalk.gray(`  Confidence calibration: ${confDelta > 0 ? '+' : ''}${confDelta} → ${state.effectiveMinConfidence}`));
+        if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Confidence calibration: ${confDelta > 0 ? '+' : ''}${confDelta} → ${state.effectiveMinConfidence}`));
       }
     } catch {
       // Non-fatal
@@ -115,14 +115,14 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
   if (state.runMode === 'spin' && state.pendingPrUrls.length > 0 && state.deliveryMode !== 'direct') {
     const openRatio = state.pendingPrUrls.length / state.maxPrs;
     if (openRatio > 0.7) {
-      console.log(chalk.yellow(`  Backpressure: ${state.pendingPrUrls.length}/${state.maxPrs} PRs open — waiting for reviews...`));
+      state.displayAdapter.log(chalk.yellow(`  Backpressure: ${state.pendingPrUrls.length}/${state.maxPrs} PRs open — waiting for reviews...`));
       await sleep(15000);
       state.cycleCount--; // undo increment so the cycle reruns
       return { shouldSkipCycle: true };
     } else if (openRatio > 0.4) {
       state.effectiveMinConfidence += 15;
       if (state.options.verbose) {
-        console.log(chalk.gray(`  Light backpressure (${state.pendingPrUrls.length}/${state.maxPrs} open) — raising confidence +15`));
+        state.displayAdapter.log(chalk.gray(`  Light backpressure (${state.pendingPrUrls.length}/${state.maxPrs} open) — raising confidence +15`));
       }
     }
   }
@@ -132,7 +132,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
   const CONFIDENCE_CEILING = 80;
   if (state.effectiveMinConfidence > CONFIDENCE_CEILING) {
     if (state.options.verbose) {
-      console.log(chalk.gray(`  Confidence clamped: ${state.effectiveMinConfidence} → ${CONFIDENCE_CEILING} (ceiling)`));
+      state.displayAdapter.log(chalk.gray(`  Confidence clamped: ${state.effectiveMinConfidence} → ${CONFIDENCE_CEILING} (ceiling)`));
     }
     state.effectiveMinConfidence = CONFIDENCE_CEILING;
   } else if (state.effectiveMinConfidence < CONFIDENCE_FLOOR) {
@@ -145,7 +145,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
     state.tasteProfile = buildTasteProfile(state.sectorState, state.allLearnings, rs.formulaStats);
     saveTasteProfile(state.repoRoot, state.tasteProfile);
     if (state.options.verbose) {
-      console.log(chalk.gray(`  Taste profile rebuilt: prefer [${state.tasteProfile.preferredCategories.join(', ')}], avoid [${state.tasteProfile.avoidCategories.join(', ')}]`));
+      state.displayAdapter.log(chalk.gray(`  Taste profile rebuilt: prefer [${state.tasteProfile.preferredCategories.join(', ')}], avoid [${state.tasteProfile.avoidCategories.join(', ')}]`));
     }
   }
 
@@ -169,34 +169,34 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
           if (mergeResult.status === 0) {
             const summary = mergeResult.stdout?.trim();
             if (summary && !summary.includes('Already up to date')) {
-              console.log(chalk.cyan(`  ⬇ Pulled latest from origin/${state.detectedBaseBranch}`));
+              state.displayAdapter.log(chalk.cyan(`  ⬇ Pulled latest from origin/${state.detectedBaseBranch}`));
             }
           } else {
             const errMsg = mergeResult.stderr?.trim() || 'fast-forward not possible';
 
             if (state.pullPolicy === 'halt') {
-              console.log();
-              console.log(chalk.red(`✗ HCF — Base branch has diverged from origin/${state.detectedBaseBranch}`));
-              console.log(chalk.gray(`  ${errMsg}`));
-              console.log();
-              console.log(chalk.bold('Resolution:'));
-              console.log(`  1. Resolve the divergence (rebase, merge, or reset)`);
-              console.log(`  2. Re-run: promptwheel`);
-              console.log();
-              console.log(chalk.gray(`  To keep going despite divergence, set pullPolicy: "warn" in config.`));
+              state.displayAdapter.log('');
+              state.displayAdapter.log(chalk.red(`✗ HCF — Base branch has diverged from origin/${state.detectedBaseBranch}`));
+              state.displayAdapter.log(chalk.gray(`  ${errMsg}`));
+              state.displayAdapter.log('');
+              state.displayAdapter.log(chalk.bold('Resolution:'));
+              state.displayAdapter.log(`  1. Resolve the divergence (rebase, merge, or reset)`);
+              state.displayAdapter.log(`  2. Re-run: promptwheel`);
+              state.displayAdapter.log('');
+              state.displayAdapter.log(chalk.gray(`  To keep going despite divergence, set pullPolicy: "warn" in config.`));
 
               // Signal orchestrator to break — finalizeSession handles cleanup
               state.shutdownRequested = true;
               if (state.shutdownReason === null) state.shutdownReason = 'branch_diverged';
               return { shouldSkipCycle: true };
             } else {
-              console.log(chalk.yellow(`  ⚠ Base branch diverged from origin/${state.detectedBaseBranch} — continuing on stale base`));
-              console.log(chalk.gray(`    ${errMsg}`));
-              console.log(chalk.gray(`    Subsequent work may produce merge conflicts`));
+              state.displayAdapter.log(chalk.yellow(`  ⚠ Base branch diverged from origin/${state.detectedBaseBranch} — continuing on stale base`));
+              state.displayAdapter.log(chalk.gray(`    ${errMsg}`));
+              state.displayAdapter.log(chalk.gray(`    Subsequent work may produce merge conflicts`));
             }
           }
-        } else if (state.options.verbose) {
-          console.log(chalk.yellow(`  ⚠ Fetch failed (network?): ${fetchResult.stderr?.trim()}`));
+        } else if (state.options.verbose) {  // already verbose-gated
+          state.displayAdapter.log(chalk.yellow(`  ⚠ Fetch failed (network?): ${fetchResult.stderr?.trim()}`));
         }
       } catch {
         // Network unavailable — non-fatal
@@ -276,7 +276,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
     try {
       state.guidelines = loadGuidelines(state.repoRoot, state.guidelinesOpts);
       if (state.guidelines && state.options.verbose) {
-        console.log(chalk.gray(`  Refreshed project guidelines (${state.guidelines.source})`));
+        state.displayAdapter.log(chalk.gray(`  Refreshed project guidelines (${state.guidelines.source})`));
       }
     } catch {
       // Non-fatal — keep existing guidelines
@@ -346,7 +346,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
               }
             }
             if (healed.length > 0) {
-              console.log(chalk.green(`  Baseline healed: ${healed.join(', ')} now passing`));
+              state.displayAdapter.log(chalk.green(`  Baseline healed: ${healed.join(', ')} now passing`));
               if (state.autoConf.learningsEnabled) {
                 addLearning(state.repoRoot, {
                   text: `Baseline healed in ${scope}: ${healed.join(', ')} now pass after cycle ${state.cycleCount}`.slice(0, 200),
@@ -375,7 +375,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         }
       }
     } catch (err) {
-      console.warn(chalk.gray(`  Baseline healing skipped: ${err instanceof Error ? err.message : String(err)}`));
+      if (state.options.verbose) console.warn(chalk.gray(`  Baseline healing skipped: ${err instanceof Error ? err.message : String(err)}`));
     }
   }
 
@@ -391,7 +391,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         existingLearnings: state.allLearnings,
       });
       if (metaInsightsAdded > 0 && state.options.verbose) {
-        console.log(chalk.gray(`  Meta-learnings: ${metaInsightsAdded} process insight(s) extracted`));
+        state.displayAdapter.log(chalk.gray(`  Meta-learnings: ${metaInsightsAdded} process insight(s) extracted`));
       }
     } catch {
       // Non-fatal
@@ -404,11 +404,11 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     state.consecutiveLowYieldCycles++;
     const MAX_LOW_YIELD_CYCLES = state.drillMode ? 5 : 3;
     if (state.consecutiveLowYieldCycles >= MAX_LOW_YIELD_CYCLES) {
-      console.log(chalk.yellow(`  ${state.consecutiveLowYieldCycles} consecutive low-yield cycles — diminishing returns, stopping`));
+      state.displayAdapter.log(chalk.yellow(`  ${state.consecutiveLowYieldCycles} consecutive low-yield cycles — diminishing returns, stopping`));
       state.shutdownRequested = true;
       if (state.shutdownReason === null) state.shutdownReason = 'low_yield';
     } else if (state.options.verbose) {
-      console.log(chalk.gray(`  Low-yield cycle (${state.consecutiveLowYieldCycles}/${MAX_LOW_YIELD_CYCLES})`));
+      state.displayAdapter.log(chalk.gray(`  Low-yield cycle (${state.consecutiveLowYieldCycles}/${MAX_LOW_YIELD_CYCLES})`));
     }
   } else if (completedThisCount > 0) {
     state.consecutiveLowYieldCycles = 0;
@@ -426,7 +426,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     const confValue = state.effectiveMinConfidence;
     const insightsStr = metaInsightsAdded > 0 ? ` | insights +${metaInsightsAdded}` : '';
     const baselineStr = baselineFailing > 0 ? ` | baseline failing ${baselineFailing}` : '';
-    console.log(chalk.gray(`  Spin: quality ${qualityPct}% | confidence ${confValue}${baselineStr}${insightsStr}`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Spin: quality ${qualityPct}% | confidence ${confValue}${baselineStr}${insightsStr}`));
   }
 
   // Convergence metrics
@@ -451,7 +451,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       };
     }
     const metrics = computeConvergenceMetrics(state.sectorState, state.allLearnings.length, rs.recentCycles ?? [], sessionCtx, drillCtx);
-    console.log(chalk.gray(`  ${formatConvergenceOneLiner(metrics)}`));
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  ${formatConvergenceOneLiner(metrics)}`));
     if (metrics.suggestedAction === 'stop') {
       if (state.activeTrajectory && state.activeTrajectoryState) {
         // Adaptive threshold: use historical completion rate to decide when to abandon
@@ -471,10 +471,10 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         ).length;
         const progressPct = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
         if (progressPct < abandonThreshold) {
-          console.log(chalk.yellow(`  Convergence suggests stopping — trajectory "${state.activeTrajectory.name}" only ${progressPct}% complete, skipping it`));
+          state.displayAdapter.log(chalk.yellow(`  Convergence suggests stopping — trajectory "${state.activeTrajectory.name}" only ${progressPct}% complete, skipping it`));
           if (state.drillMode) {
             try { finishDrillTrajectory(state, 'stalled'); }
-            catch (err) { console.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
+            catch (err) { state.displayAdapter.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
           }
           state.activeTrajectory = null;
           state.activeTrajectoryState = null;
@@ -482,10 +482,10 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
           state.shutdownRequested = true;
           if (state.shutdownReason === null) state.shutdownReason = 'convergence';
         } else {
-          console.log(chalk.gray(`  Convergence suggests stopping, but trajectory "${state.activeTrajectory.name}" is ${progressPct}% complete — continuing`));
+          state.displayAdapter.log(chalk.gray(`  Convergence suggests stopping, but trajectory "${state.activeTrajectory.name}" is ${progressPct}% complete — continuing`));
         }
       } else {
-        console.log(chalk.yellow(`  Convergence suggests stopping — most sectors polished, low yield.`));
+        state.displayAdapter.log(chalk.yellow(`  Convergence suggests stopping — most sectors polished, low yield.`));
         state.shutdownRequested = true;
         if (state.shutdownReason === null) state.shutdownReason = 'convergence';
       }
@@ -498,15 +498,15 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     if (scopeAdj === 'widen') {
       // In drill mode with active trajectory, don't widen — stay focused on trajectory scope
       if (state.drillMode && state.currentTrajectoryStep?.scope) {
-        if (state.options.verbose) console.log(chalk.gray(`  Scope adjustment: drill mode — staying focused on trajectory scope`));
+        if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Scope adjustment: drill mode — staying focused on trajectory scope`));
       } else {
         state.effectiveMinConfidence = state.autoConf.minConfidence ?? 20;
-        if (state.options.verbose) console.log(chalk.gray(`  Scope adjustment: widening (resetting confidence threshold)`));
+        if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Scope adjustment: widening (resetting confidence threshold)`));
       }
     } else if (scopeAdj === 'narrow' && state.drillMode && state.currentTrajectoryStep) {
       // In drill mode, tighten confidence when trajectory-guided to focus on high-quality proposals
       state.effectiveMinConfidence += 5;
-      if (state.options.verbose) console.log(chalk.gray(`  Scope adjustment: drill-narrowed (confidence +5)`));
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Scope adjustment: drill-narrowed (confidence +5)`));
     }
   }
 
@@ -564,7 +564,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     try {
       state.codebaseIndex = refreshCodebaseIndex(state.codebaseIndex, state.repoRoot, state.excludeDirs);
       if (state.options.verbose) {
-        console.log(chalk.gray(`  Codebase index refreshed: ${state.codebaseIndex.modules.length} modules`));
+        state.displayAdapter.log(chalk.gray(`  Codebase index refreshed: ${state.codebaseIndex.modules.length} modules`));
       }
       if (state.sectorState) {
         state.sectorState = refreshSectors(
@@ -573,7 +573,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
           state.codebaseIndex.modules,
         );
         if (state.options.verbose) {
-          console.log(chalk.gray(`  Sectors refreshed: ${state.sectorState.sectors.length} sector(s)`));
+          state.displayAdapter.log(chalk.gray(`  Sectors refreshed: ${state.sectorState.sectors.length} sector(s)`));
         }
       }
     } catch {
@@ -596,7 +596,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       const arrow = state.activeGoal.measure.direction === 'up'
         ? (delta > 0 ? chalk.green('↑') : delta < 0 ? chalk.yellow('↓') : '→')
         : (delta < 0 ? chalk.green('↓') : delta > 0 ? chalk.yellow('↑') : '→');
-      console.log(chalk.cyan(`  🎯 ${state.activeGoal.name}: ${value} ${arrow} (${deltaSign}${delta.toFixed(1)}) target: ${state.activeGoal.measure.target}`));
+      state.displayAdapter.log(chalk.cyan(`  🎯 ${state.activeGoal.name}: ${value} ${arrow} (${deltaSign}${delta.toFixed(1)}) target: ${state.activeGoal.measure.target}`));
 
       // Check if goal is now met
       const { target, direction } = state.activeGoal.measure;
@@ -607,7 +607,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       recordGoalMeasurement(state.repoRoot, measurement);
 
       if (met) {
-        console.log(chalk.green(`  ✓ Goal "${state.activeGoal.name}" met!`));
+        state.displayAdapter.log(chalk.green(`  ✓ Goal "${state.activeGoal.name}" met!`));
 
         // Re-evaluate all goals and pivot to next
         const allMeasurements = measureGoals(state.goals, state.repoRoot);
@@ -618,11 +618,11 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         if (next) {
           state.activeGoal = state.goals.find(g => g.name === next.goalName) ?? null;
           state.activeGoalMeasurement = next;
-          console.log(chalk.cyan(`  → Pivoting to: ${next.goalName} (gap: ${next.gapPercent}%)`));
+          state.displayAdapter.log(chalk.cyan(`  → Pivoting to: ${next.goalName} (gap: ${next.gapPercent}%)`));
         } else {
           const allMet = allMeasurements.every(m => m.met);
           if (allMet) {
-            console.log(chalk.green(`  ✓ All goals met!`));
+            state.displayAdapter.log(chalk.green(`  ✓ All goals met!`));
           }
           state.activeGoal = null;
           state.activeGoalMeasurement = null;
@@ -650,7 +650,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         }
       }
     } else {
-      console.log(chalk.yellow(`  ⚠ Goal "${state.activeGoal.name}" re-measurement failed${error ? `: ${error}` : ''}`));
+      state.displayAdapter.log(chalk.yellow(`  ⚠ Goal "${state.activeGoal.name}" re-measurement failed${error ? `: ${error}` : ''}`));
     }
   }
 
@@ -667,10 +667,10 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         s => state.activeTrajectoryState!.stepStates[s.id]?.status === 'completed',
       ).length;
       const pct = Math.round((completedSteps / state.activeTrajectory.steps.length) * 100);
-      console.log(chalk.yellow(`  Drill: trajectory "${state.activeTrajectory.name}" hit cycle budget (${totalCyclesUsed}/${maxCycles} cycles, ${pct}% complete) — abandoning`));
+      state.displayAdapter.log(chalk.yellow(`  Drill: trajectory "${state.activeTrajectory.name}" hit cycle budget (${totalCyclesUsed}/${maxCycles} cycles, ${pct}% complete) — abandoning`));
       saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
       try { finishDrillTrajectory(state, 'stalled'); }
-      catch (err) { console.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
+      catch (err) { state.displayAdapter.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
       state.activeTrajectory = null;
       state.activeTrajectoryState = null;
       state.currentTrajectoryStep = null;
@@ -697,15 +697,15 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
             // Timeout or spawn error
             allPassed = false;
             const reason = result.error.message?.includes('TIMEOUT') ? 'timeout (30s)' : result.error.message;
-            console.log(chalk.yellow(`    ✗ ${cmd} (${reason})`));
+            state.displayAdapter.log(chalk.yellow(`    ✗ ${cmd} (${reason})`));
             verificationOutputParts.push(`$ ${cmd}\n${reason}`);
           } else if (result.status !== 0) {
             allPassed = false;
             const stderr = (result.stderr || '').trim().slice(0, 500);
             const stdout = (result.stdout || '').trim().slice(0, 200);
-            console.log(chalk.yellow(`    ✗ ${cmd} (exit ${result.status})`));
-            if (stderr) console.log(chalk.gray(`      ${stderr.split('\n')[0]}`));
-            else if (stdout) console.log(chalk.gray(`      ${stdout.split('\n')[0]}`));
+            state.displayAdapter.log(chalk.yellow(`    ✗ ${cmd} (exit ${result.status})`));
+            if (stderr) state.displayAdapter.log(chalk.gray(`      ${stderr.split('\n')[0]}`));
+            else if (stdout) state.displayAdapter.log(chalk.gray(`      ${stdout.split('\n')[0]}`));
             verificationOutputParts.push(`$ ${cmd} (exit ${result.status})\n${stderr || stdout}`);
           }
         }
@@ -722,11 +722,11 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
             : value <= step.measure.target;
           stepState.measurement = { value, timestamp: Date.now() };
           if (!measureMet) {
-            console.log(chalk.yellow(`    measure: ${value} (target: ${arrow} ${step.measure.target})`));
+            state.displayAdapter.log(chalk.yellow(`    measure: ${value} (target: ${arrow} ${step.measure.target})`));
           }
         } else {
           measureMet = false;
-          console.log(chalk.yellow(`    measure failed${error ? `: ${error}` : ''}`));
+          state.displayAdapter.log(chalk.yellow(`    measure failed${error ? `: ${error}` : ''}`));
         }
       }
 
@@ -738,7 +738,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         stepState.lastVerificationOutput = undefined;
         const completedCount = state.activeTrajectory.steps.filter(s => state.activeTrajectoryState!.stepStates[s.id]?.status === 'completed').length;
         const totalCount = state.activeTrajectory.steps.length;
-        console.log(chalk.green(`  Trajectory step ${completedCount}/${totalCount} "${step.title}" completed`));
+        state.displayAdapter.log(chalk.green(`  Trajectory step ${completedCount}/${totalCount} "${step.title}" completed`));
 
         // Pick next step
         const next = getTrajectoryNextStep(state.activeTrajectory, state.activeTrajectoryState.stepStates);
@@ -748,20 +748,20 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
           if (state.activeTrajectoryState.stepStates[next.id]) {
             state.activeTrajectoryState.stepStates[next.id].status = 'active';
           }
-          console.log(chalk.cyan(`  -> Next step: ${next.title}`));
+          state.displayAdapter.log(chalk.cyan(`  -> Next step: ${next.title}`));
         } else if (trajectoryComplete(state.activeTrajectory, state.activeTrajectoryState.stepStates)) {
           const fullySucceeded = trajectoryFullySucceeded(state.activeTrajectory, state.activeTrajectoryState.stepStates);
           const outcome = fullySucceeded ? 'completed' : 'stalled';
           if (fullySucceeded) {
-            console.log(chalk.green(`  Trajectory "${state.activeTrajectory.name}" complete!`));
+            state.displayAdapter.log(chalk.green(`  Trajectory "${state.activeTrajectory.name}" complete!`));
           } else {
-            console.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" finished with some failed steps`));
+            state.displayAdapter.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" finished with some failed steps`));
           }
           // Save final state before clearing (so completed status persists on disk)
           saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
           if (state.drillMode) {
             try { finishDrillTrajectory(state, outcome); }
-            catch (err) { console.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
+            catch (err) { state.displayAdapter.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
           }
           state.activeTrajectory = null;
           state.activeTrajectoryState = null;
@@ -769,11 +769,11 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         } else {
           // No next step available but trajectory isn't complete — shouldn't happen now
           // (failed deps unblock dependents), but handle as fallback
-          console.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" stalled (remaining steps blocked)`));
+          state.displayAdapter.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" stalled (remaining steps blocked)`));
           saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
           if (state.drillMode) {
             try { finishDrillTrajectory(state, 'stalled'); }
-            catch (err) { console.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
+            catch (err) { state.displayAdapter.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
           }
           state.activeTrajectory = null;
           state.activeTrajectoryState = null;
@@ -799,7 +799,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
           const stuckStep = state.activeTrajectory.steps.find(s => s.id === stuckId);
           const stuckTitle = stuckStep?.title ?? stuckId;
           const stuckAttempts = stuckStepState?.cyclesAttempted ?? stepState.cyclesAttempted;
-          console.log(chalk.yellow(`  Trajectory step "${stuckTitle}" stuck after ${stuckAttempts} cycles`));
+          state.displayAdapter.log(chalk.yellow(`  Trajectory step "${stuckTitle}" stuck after ${stuckAttempts} cycles`));
           if (stuckStepState) {
             stuckStepState.status = 'failed';
             stuckStepState.failureReason = 'max retries exceeded';
@@ -813,14 +813,14 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
             if (state.activeTrajectoryState.stepStates[next.id]) {
               state.activeTrajectoryState.stepStates[next.id].status = 'active';
             }
-            console.log(chalk.cyan(`  -> Skipping to next step: ${next.title}`));
+            state.displayAdapter.log(chalk.cyan(`  -> Skipping to next step: ${next.title}`));
           } else {
             // No more steps — trajectory is done (all remaining steps failed or completed)
-            console.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" ended (no remaining steps)`));
+            state.displayAdapter.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" ended (no remaining steps)`));
             saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
             if (state.drillMode) {
               try { finishDrillTrajectory(state, 'stalled'); }
-              catch (err) { console.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
+              catch (err) { state.displayAdapter.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
             }
             state.activeTrajectory = null;
             state.activeTrajectoryState = null;
@@ -838,7 +838,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
   // Pause between cycles — shorter when trajectory-guided (work is pre-planned)
   if (state.runMode === 'spin' && !state.shutdownRequested) {
     const pauseMs = state.currentTrajectoryStep ? 1000 : 5000;
-    console.log(chalk.gray('Pausing before next cycle...'));
+    state.displayAdapter.log(chalk.gray('Pausing before next cycle...'));
     await sleep(pauseMs);
   }
 }
@@ -946,8 +946,8 @@ function finishDrillTrajectory(state: AutoSessionState, outcome: 'completed' | '
   }
 
   const rate = stepsTotal > 0 ? Math.round((stepsCompleted / stepsTotal) * 100) : 0;
-  console.log(chalk.cyan(`  Drill: trajectory ${outcome} (${stepsCompleted}/${stepsTotal} steps, ${rate}% completion)`));
-  console.log(chalk.cyan('  Drill: will survey for next trajectory on next cycle'));
+  state.displayAdapter.log(chalk.cyan(`  Drill: trajectory ${outcome} (${stepsCompleted}/${stepsTotal} steps, ${rate}% completion)`));
+  if (state.options.verbose) state.displayAdapter.log(chalk.cyan('  Drill: will survey for next trajectory on next cycle'));
 
   // Notify display adapter that trajectory finished (back to idle)
   state.displayAdapter.drillStateChanged({ active: true });

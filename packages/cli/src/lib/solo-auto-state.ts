@@ -128,7 +128,7 @@ async function resolveOptions(options: AutoModeOptions): Promise<ResolvedOptions
     }
     console.log(chalk.cyan(`📜 Using formula: ${activeFormula.name}`));
     console.log(chalk.gray(`   ${activeFormula.description}`));
-    if (activeFormula.prompt) {
+    if (options.verbose && activeFormula.prompt) {
       console.log(chalk.gray(`   Prompt: ${activeFormula.prompt.slice(0, 80)}...`));
     }
     console.log();
@@ -193,7 +193,7 @@ async function initEnvironment(
     console.error(chalk.red('✗ Another PromptWheel session is already running in this repo'));
     process.exit(1);
   }
-  if (lockResult.stalePid) {
+  if (options.verbose && lockResult.stalePid) {
     console.log(chalk.gray(`  Cleaned up stale session lock (PID ${lockResult.stalePid})`));
   }
   const releaseLock = () => releaseSessionLock(repoRoot);
@@ -202,15 +202,15 @@ async function initEnvironment(
   // Clean up stale resources
   gitWorktreePrune(repoRoot);
   const prunedWorktrees = pruneStaleWorktrees(repoRoot);
-  if (prunedWorktrees > 0) {
+  if (options.verbose && prunedWorktrees > 0) {
     console.log(chalk.gray(`  Cleaned up ${prunedWorktrees} stale worktree(s)`));
   }
   const prunedBranches = pruneStaleBranches(repoRoot, 7);
-  if (prunedBranches > 0) {
+  if (options.verbose && prunedBranches > 0) {
     console.log(chalk.gray(`  Cleaned up ${prunedBranches} stale branch(es)`));
   }
   const prunedCodexSessions = pruneStaleCodexSessions(7);
-  if (prunedCodexSessions > 0) {
+  if (options.verbose && prunedCodexSessions > 0) {
     console.log(chalk.gray(`  Cleaned up ${prunedCodexSessions} stale codex session(s)`));
   }
 
@@ -220,11 +220,11 @@ async function initEnvironment(
 
   // Project setup command
   if (config?.setup && !options.dryRun) {
-    console.log(chalk.gray(`  Running setup: ${config.setup}`));
+    if (options.verbose) console.log(chalk.gray(`  Running setup: ${config.setup}`));
     try {
       const { execSync } = await import('node:child_process');
       execSync(config.setup, { cwd: repoRoot, timeout: 300_000, stdio: 'pipe' });
-      console.log(chalk.green('  ✓ Setup complete'));
+      if (options.verbose) console.log(chalk.green('  ✓ Setup complete'));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.log(chalk.yellow(`  ⚠ Setup failed: ${msg.split('\n')[0]}`));
@@ -279,7 +279,7 @@ async function initEnvironment(
       if (content.includes('.promptwheel')) {
         spawnSync('git', ['add', '.gitignore'], { cwd: repoRoot, timeout: 15000 });
         spawnSync('git', ['commit', '-m', 'chore: add .promptwheel to .gitignore'], { cwd: repoRoot, timeout: 15000 });
-        console.log(chalk.gray('  Auto-committed .gitignore update'));
+        if (options.verbose) console.log(chalk.gray('  Auto-committed .gitignore update'));
       }
     } else {
       console.error(chalk.red('✗ Working tree has uncommitted changes'));
@@ -376,19 +376,19 @@ async function loadSessionData(
   };
   const guidelines: ProjectGuidelines | null = loadGuidelines(repoRoot, guidelinesOpts);
   const guidelinesRefreshInterval = config?.auto?.guidelinesRefreshCycles ?? 10;
-  if (guidelines) {
+  if (options.verbose && guidelines) {
     console.log(chalk.gray(`  Guidelines loaded: ${guidelines.source}`));
   }
 
   // Learnings
   const allLearnings: Learning[] = autoConf.learningsEnabled
     ? loadLearnings(repoRoot, autoConf.learningsDecayRate) : [];
-  if (allLearnings.length > 0) {
+  if (options.verbose && allLearnings.length > 0) {
     console.log(chalk.gray(`  Learnings loaded: ${allLearnings.length}`));
   }
 
   // Wheel health summary
-  {
+  if (options.verbose) {
     const { getQualityRate } = await import('./run-state.js');
     const qualityRate = getQualityRate(repoRoot);
     const qualityPct = Math.round(qualityRate * 100);
@@ -423,7 +423,7 @@ async function loadSessionData(
 
   // Dedup memory
   const dedupMemory: DedupEntry[] = loadDedupMemory(repoRoot);
-  if (dedupMemory.length > 0) {
+  if (options.verbose && dedupMemory.length > 0) {
     console.log(chalk.gray(`  Dedup memory loaded: ${dedupMemory.length} titles`));
   }
 
@@ -432,7 +432,7 @@ async function loadSessionData(
   let codebaseIndex: CodebaseIndex | null = null;
   try {
     codebaseIndex = buildCodebaseIndex(repoRoot, excludeDirs, true);
-    console.log(chalk.gray(`  Codebase index: ${codebaseIndex.modules.length} modules, ${codebaseIndex.untested_modules.length} untested, ${codebaseIndex.large_files.length} hotspots`));
+    if (options.verbose) console.log(chalk.gray(`  Codebase index: ${codebaseIndex.modules.length} modules, ${codebaseIndex.untested_modules.length} untested, ${codebaseIndex.large_files.length} hotspots`));
   } catch {
     // Non-fatal
   }
@@ -440,7 +440,7 @@ async function loadSessionData(
   // Project metadata
   const projectMeta = detectProjectMetadata(repoRoot);
   const metadataBlock = formatMetadataForPrompt(projectMeta);
-  if (projectMeta.languages.length > 0) {
+  if (options.verbose && projectMeta.languages.length > 0) {
     console.log(chalk.gray(`  Project: ${projectMeta.languages.join(', ')}${projectMeta.framework ? ` / ${projectMeta.framework}` : ''}${projectMeta.test_runner ? ` / ${projectMeta.test_runner.name}` : ''}`));
   }
 
@@ -449,7 +449,7 @@ async function loadSessionData(
     const { pruneAllAsync: pruneAllAsyncFn, getRetentionConfig } = await import('./retention.js');
     const retentionConfig = getRetentionConfig(config);
     const pruneReport = await pruneAllAsyncFn(repoRoot, retentionConfig, adapter);
-    if (pruneReport.totalPruned > 0) {
+    if (options.verbose && pruneReport.totalPruned > 0) {
       console.log(chalk.gray(`  Pruned ${pruneReport.totalPruned} stale item(s)`));
     }
   } catch {
@@ -461,7 +461,7 @@ async function loadSessionData(
   if (codebaseIndex) {
     try {
       sectorState = loadOrBuildSectors(repoRoot, codebaseIndex.modules);
-      console.log(chalk.gray(`  Sectors loaded: ${sectorState.sectors.length} sector(s)`));
+      if (options.verbose) console.log(chalk.gray(`  Sectors loaded: ${sectorState.sectors.length} sector(s)`));
     } catch {
       // Non-fatal
     }
@@ -588,7 +588,7 @@ async function initDependencies(
     if (scoutBackendName === 'codex' && options.codexMcp) {
       const { CodexMcpScoutBackend } = await import('@promptwheel/core/scout');
       scoutBackend = new CodexMcpScoutBackend({ apiKey: process.env.OPENAI_API_KEY, model: options.codexModel });
-      console.log(chalk.cyan('  Scout: Codex MCP (persistent session)'));
+      if (options.verbose) console.log(chalk.cyan('  Scout: Codex MCP (persistent session)'));
     } else {
       const scoutProvider = getProvider(scoutBackendName);
       scoutBackend = await scoutProvider.createScoutBackend({
@@ -660,7 +660,7 @@ async function initBranches(
       console.log();
     } else if (deliveryMode === 'direct') {
       const cleaned = await cleanupMergedDirectBranch(repoRoot, directBranch);
-      if (cleaned) console.log(chalk.gray(`  Cleaned up merged direct branch: ${directBranch}`));
+      if (options.verbose && cleaned) console.log(chalk.gray(`  Cleaned up merged direct branch: ${directBranch}`));
       await ensureDirectBranch(repoRoot, directBranch, detectedBaseBranch);
       console.log(chalk.cyan(`Direct branch: ${directBranch}`));
       console.log();
@@ -1070,7 +1070,7 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
   if (state.drillMode) {
     const { hydrateDrillState } = await import('./solo-auto-drill.js');
     hydrateDrillState(state);
-    if (state.drillHistory.length > 0) {
+    if (options.verbose && state.drillHistory.length > 0) {
       console.log(chalk.gray(`  Drill history loaded: ${state.drillHistory.length} previous trajectory(s)`));
     }
     // Notify display adapter of initial drill state

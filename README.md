@@ -133,6 +133,29 @@ promptwheel --deep                     # Architectural review
 
 Custom formulas live in `.promptwheel/formulas/` as YAML files with scope, categories, confidence thresholds, and optional measurement targets.
 
+## Integrations
+
+Connect external MCP tools that run on a schedule during spin mode:
+
+```yaml
+# .promptwheel/integrations.yaml
+providers:
+  - name: securitychecks
+    command: "npx @securitychecks/mcp-server"
+    tool: security_scan
+    every: 5
+    feed: proposals
+
+  - name: patternstack
+    command: "npx @patternstack/mcp-server"
+    tool: analyze_patterns
+    every: 10
+    feed: learnings
+```
+
+Each provider is an MCP server that PromptWheel spawns and queries on cadence.
+Results feed back as proposals (scout output), learnings (cross-run memory), or nudges (session guidance).
+
 ---
 
 ## Safety
@@ -238,5 +261,5 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>PromptWheel v0.7.4</b>
+  <b>PromptWheel v0.7.5</b>
 </p>

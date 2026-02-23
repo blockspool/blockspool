@@ -63,13 +63,19 @@ export function startInteractiveConsole(opts: ConsoleOptions): InteractiveConsol
   const promptStr = chalk.cyan('☀') + ' ';
   const promptLen = 2; // "☀ "
 
-  // Draw the input bar
+  // Draw the input bar (2 rows: border + prompt)
   function drawInputBar() {
     if (stopped || isPaused) return;
     const row = inputRow();
-    // Move to input row, clear it, draw prompt and current input
+    const cols = process.stdout.columns || 80;
+    const label = ' nudge · /help ';
+    const pad = Math.max(0, cols - 3 - label.length);
+    const border = chalk.gray('───' + label + '─'.repeat(pad));
     process.stdout.write(
       SAVE_CURSOR +
+      CURSOR_TO(row - 1, 1) +
+      CLEAR_LINE +
+      border +
       CURSOR_TO(row, 1) +
       CLEAR_LINE +
       promptStr +
@@ -87,12 +93,12 @@ export function startInteractiveConsole(opts: ConsoleOptions): InteractiveConsol
     }
 
     const row = inputRow();
-    // Save cursor, move to row above input, print, restore
+    // Save cursor, move to row above 2-row input area, print, restore
     process.stdout.write(
       SAVE_CURSOR +
-      CURSOR_TO(row - 1, 1) +  // Line above input bar
+      CURSOR_TO(row - 2, 1) +  // Line above border row
       '\n' +                    // Scroll everything up
-      CURSOR_TO(row - 1, 1) +  // Back to that line
+      CURSOR_TO(row - 2, 1) +  // Back to that line
       CLEAR_LINE +
       message +
       RESTORE_CURSOR
@@ -252,12 +258,7 @@ export function startInteractiveConsole(opts: ConsoleOptions): InteractiveConsol
   process.stdin.on('data', onData);
 
   // Initial draw
-  setTimeout(() => {
-    if (!stopped) {
-      log(chalk.gray('  ☀ Type anytime to guide the session (/help for commands)'));
-      drawInputBar();
-    }
-  }, 1000);
+  drawInputBar();
 
   function stop() {
     if (stopped) return;
@@ -266,8 +267,12 @@ export function startInteractiveConsole(opts: ConsoleOptions): InteractiveConsol
     try {
       process.stdin.setRawMode(false);
     } catch { /* ignore */ }
-    // Clear input bar area
-    process.stdout.write(CURSOR_TO(inputRow(), 1) + CLEAR_LINE);
+    // Clear both rows of the input bar area
+    const row = inputRow();
+    process.stdout.write(
+      CURSOR_TO(row - 1, 1) + CLEAR_LINE +
+      CURSOR_TO(row, 1) + CLEAR_LINE
+    );
   }
 
   return {

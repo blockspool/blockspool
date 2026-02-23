@@ -172,6 +172,9 @@ function makeState(overrides: Partial<any> = {}): any {
     allPrUrls: [],
     totalMergedPrs: 0,
     totalClosedPrs: 0,
+    integrations: { providers: [] },
+    _pendingIntegrationProposals: [],
+    integrationLastRun: {},
     ...overrides,
   };
 }

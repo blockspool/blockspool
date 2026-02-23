@@ -1,6 +1,6 @@
 {
   "name": "@promptwheel/mcp",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "PromptWheel MCP server - stateful tool provider for Claude Code",
   "author": "PromptWheel",
   "homepage": "https://promptwheel.com",
@@ -50,8 +50,8 @@
   ],
   "license": "Apache-2.0",
   "dependencies": {
-    "@promptwheel/core": "^0.7.4",
-    "@promptwheel/sqlite": "^0.7.4",
+    "@promptwheel/core": "^0.7.5",
+    "@promptwheel/sqlite": "^0.7.5",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "minimatch": "^10.1.1"
   },

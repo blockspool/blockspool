@@ -40,6 +40,7 @@ promptwheel nudge "focus on auth"               # Steer a running session
 - **Guidelines context** — loads CLAUDE.md (Claude) or AGENTS.md (Codex) into every prompt; auto-creates baseline if missing; re-reads every 10 cycles
 - **Scout diversification** — test proposals excluded by default (`--tests` to opt in); when enabled, hard-capped by `maxTestRatio` (default 0.4)
 - **QA retry with test fix** — when a refactor/perf/types ticket breaks tests, retries once with test files in scope
+- **MCP Integrations** — plug in external MCP servers (security, patterns, etc.) that run on cadence during spin. Configured in `.promptwheel/integrations.yaml`
 
 ## How It Works
 
@@ -112,3 +113,4 @@ npm run lint
 | **Learnings** | Cross-run memory. Records failures and successes, injects relevant learnings into future prompts. |
 | **Hint / Nudge** | Live guidance for a running auto session. Added via `nudge "text"` or stdin, consumed in the next scout cycle. |
 | **Guidelines** | Project conventions loaded from CLAUDE.md (Claude) or AGENTS.md (Codex) and injected into every prompt. Auto-created from `package.json` if missing. Re-read every 10 cycles. |
+| **Integration** | An external MCP server invoked on a configurable cycle cadence. Results feed back as proposals, learnings, or nudges. Configured in `.promptwheel/integrations.yaml`. |

@@ -51,6 +51,7 @@ import {
   trajectoryStuck,
 } from '@promptwheel/core/trajectory/shared';
 import { recordDrillTrajectoryOutcome, computeAmbitionLevel } from './solo-auto-drill.js';
+import { runIntegrations, toProposals } from './integrations.js';
 
 // ── Pre-cycle maintenance ───────────────────────────────────────────────────
 
@@ -268,6 +269,19 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
       state.pendingPrUrls = state.pendingPrUrls.filter(u => !closedOrMergedSet.has(u));
     } catch {
       // Non-fatal
+    }
+  }
+
+  // Run pre-scout integrations
+  if (state.integrations.providers.length > 0) {
+    try {
+      const preResults = await runIntegrations(state, state.integrations, 'pre-scout');
+      const proposalResults = preResults.filter(r => r.feed === 'proposals');
+      if (proposalResults.length > 0) {
+        state._pendingIntegrationProposals = proposalResults.flatMap(r => toProposals(r));
+      }
+    } catch {
+      // Non-fatal — integrations should never crash the spin loop
     }
   }
 
@@ -832,6 +846,15 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       if (state.activeTrajectoryState) {
         saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
       }
+    }
+  }
+
+  // Run post-cycle integrations
+  if (state.integrations.providers.length > 0) {
+    try {
+      await runIntegrations(state, state.integrations, 'post-cycle');
+    } catch {
+      // Non-fatal
     }
   }
 

@@ -129,6 +129,22 @@ export interface AutoConfig {
    */
   conflictSensitivity?: 'strict' | 'normal' | 'relaxed';
   /**
+   * MCP integration providers invoked on cadence during spin.
+   * Alternative to standalone `.promptwheel/integrations.yaml`.
+   */
+  integrations?: {
+    providers: Array<{
+      name: string;
+      command: string;
+      tool: string;
+      args?: Record<string, unknown>;
+      every: number;
+      phase: 'pre-scout' | 'post-cycle';
+      feed: 'proposals' | 'learnings' | 'nudges';
+      timeout?: number;
+    }>;
+  };
+  /**
    * Drill mode settings — auto-trajectory generation in spin mode.
    *
    * When drill mode is active, spin will automatically generate multi-step

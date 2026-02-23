@@ -57,6 +57,36 @@ PromptWheel configuration is stored in `.promptwheel/config.json`. All settings 
 | `maxFilesPerCycle` | `60` | Maximum files scanned per scout cycle. Increase for large repos in spin mode. |
 | `learningsEnabled` | `true` | Enable cross-run learning from failures |
 | `learningsBudget` | `2000` | Character budget for learnings in prompts |
+| `integrations` | `null` | Inline MCP integration providers (alternative to `.promptwheel/integrations.yaml`). See Integrations section below. |
+
+### Integrations
+
+MCP integration providers can be configured inline in `config.json` under `auto.integrations`, or in a standalone `.promptwheel/integrations.yaml` file. The standalone file takes precedence.
+
+```yaml
+# .promptwheel/integrations.yaml
+providers:
+  - name: securitychecks
+    command: "npx @securitychecks/mcp-server"
+    tool: security_scan
+    args:
+      severity: high
+    every: 5
+    phase: pre-scout
+    feed: proposals
+    timeout: 60000
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `name` | yes | — | Unique provider name |
+| `command` | yes | — | MCP server launch command |
+| `tool` | yes | — | Tool name to call on the server |
+| `args` | no | `{}` | Arguments passed to the tool call |
+| `every` | yes | — | Invoke every N spin cycles |
+| `phase` | no | `pre-scout` | `pre-scout` or `post-cycle` |
+| `feed` | no | `proposals` | `proposals`, `learnings`, or `nudges` |
+| `timeout` | no | `60000` | Timeout in milliseconds |
 
 ---
 

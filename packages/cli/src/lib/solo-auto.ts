@@ -467,6 +467,12 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
     if (scoutResult.shouldBreak) break;
     if (scoutResult.shouldRetry) continue;
 
+    // Merge integration proposals into scout results
+    if (state._pendingIntegrationProposals.length > 0) {
+      scoutResult.proposals.push(...state._pendingIntegrationProposals);
+      state._pendingIntegrationProposals = [];
+    }
+
     const filterResult = await filterProposals(state, scoutResult.proposals, scoutResult.scope, scoutResult.cycleFormula);
 
     if (filterResult.shouldBreak) break;

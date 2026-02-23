@@ -173,3 +173,46 @@ promptwheel nudge --clear
 ```
 
 Nudges are consumed in the next scout cycle and appended to the scout prompt.
+
+### Integrations
+
+Connect external MCP tools that run on a configurable schedule during spin mode:
+
+```yaml
+# .promptwheel/integrations.yaml
+providers:
+  - name: securitychecks
+    command: "npx @securitychecks/mcp-server"
+    tool: security_scan
+    args:
+      severity: high
+    every: 5             # invoke every 5th spin cycle
+    phase: pre-scout     # before scout phase
+    feed: proposals      # inject results as proposals
+    timeout: 60000       # ms
+
+  - name: patternstack
+    command: "npx @patternstack/mcp-server"
+    tool: analyze_patterns
+    every: 10
+    phase: post-cycle
+    feed: learnings
+    timeout: 30000
+```
+
+Each provider is an MCP server that PromptWheel spawns via stdio transport and queries on cadence.
+
+**Feed modes:**
+
+| `feed` | What happens |
+|--------|-------------|
+| `proposals` | Results parsed into proposals, merged with scout output for filtering and execution |
+| `learnings` | Stored as cross-run learnings, injected into future scout prompts |
+| `nudges` | Stored as hints, consumed in the next scout cycle |
+
+**Phase options:**
+
+| `phase` | When it runs |
+|---------|-------------|
+| `pre-scout` | Before the scout phase — proposal results are available for the current cycle |
+| `post-cycle` | After ticket execution — useful for analysis and feedback |

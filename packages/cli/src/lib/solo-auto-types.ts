@@ -26,6 +26,8 @@ import type { TicketOutcome } from './run-history.js';
 import type { TraceAnalysis } from '@promptwheel/core/trace/shared';
 import type { DisplayAdapter } from './display-adapter.js';
 import type { InteractiveConsole } from './solo-stdin.js';
+import type { IntegrationConfig } from './integrations.js';
+import type { TicketProposal } from '@promptwheel/core/scout';
 
 // ── Foundational types ──────────────────────────────────────────────────────
 // Defined here (not in solo-auto-state.ts) to avoid circular imports.
@@ -113,6 +115,7 @@ export interface SessionConfig {
   guidelines: ProjectGuidelines | null;
   guidelinesOpts: { backend: GuidelinesBackend; autoCreate: boolean; customPath?: string };
   guidelinesRefreshInterval: number;
+  integrations: IntegrationConfig;
   allLearnings: Learning[];
   dedupMemory: DedupEntry[];
   codebaseIndex: CodebaseIndex | null;
@@ -177,6 +180,10 @@ export interface SessionRuntime {
   cyclesSinceLastPull: number;
   scoutRetries: number;
   scoutedDirs: string[];
+  /** Pending proposals from pre-scout integrations, consumed by scout phase */
+  _pendingIntegrationProposals: TicketProposal[];
+  /** Per-provider last-invoked cycle for cadence tracking */
+  integrationLastRun: Record<string, number>;
   drillMode: boolean;
   drillLastGeneratedAtCycle: number;
   drillTrajectoriesGenerated: number;

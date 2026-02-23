@@ -78,6 +78,13 @@ export interface RunState {
   };
   /** Per-category success/failure stats for confidence calibration */
   categoryStats?: Record<string, CategorySuccessStats>;
+  /** Per-integration provider tracking */
+  integrationStats?: Record<string, {
+    lastRunCycle: number;
+    totalRuns: number;
+    totalResults: number;
+    lastError?: string;
+  }>;
   /** Learning ROI snapshots (ring buffer, max 20) */
   learningSnapshots?: LearningSnapshot[];
 }
@@ -134,6 +141,7 @@ export function readRunState(repoRoot: string): RunState {
       recentDiffs: Array.isArray(parsed.recentDiffs) ? parsed.recentDiffs : [],
       qualitySignals: parsed.qualitySignals ?? undefined,
       categoryStats: parsed.categoryStats ?? undefined,
+      integrationStats: parsed.integrationStats ?? undefined,
       learningSnapshots: Array.isArray(parsed.learningSnapshots) ? parsed.learningSnapshots : undefined,
       formulaStats: (() => {
         const statsRaw = parsed.formulaStats ?? {};
@@ -486,4 +494,24 @@ export function snapshotLearningROI(repoRoot: string, getLearningEffectiveness: 
 export function getCategoryConfidenceAdjustment(repoRoot: string, category: string): number {
   const state = readRunState(repoRoot);
   return state.categoryStats?.[category]?.confidenceAdjustment ?? 0;
+}
+
+/**
+ * Record an integration provider invocation.
+ */
+export function recordIntegrationRun(repoRoot: string, providerName: string, resultCount: number, error?: string): Promise<void> {
+  return withRunStateLock(() => {
+    const state = readRunState(repoRoot);
+    const stats = state.integrationStats ??= {};
+    const entry = stats[providerName] ??= { lastRunCycle: 0, totalRuns: 0, totalResults: 0 };
+    entry.lastRunCycle = state.totalCycles;
+    entry.totalRuns++;
+    entry.totalResults += resultCount;
+    if (error) {
+      entry.lastError = error.slice(0, 200);
+    } else {
+      delete entry.lastError;
+    }
+    writeRunState(repoRoot, state);
+  });
 }

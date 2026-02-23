@@ -1,6 +1,6 @@
 {
   "name": "promptwheel",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "Continuous codebase improvement tool — scouts, executes, and batches into milestone PRs",
   "author": "PromptWheel",
   "license": "Apache-2.0",

@@ -68,6 +68,7 @@ import type { DisplayAdapter } from './display-adapter.js';
 import { SpinnerDisplayAdapter } from './display-adapter-spinner.js';
 import { LogDisplayAdapter } from './display-adapter-log.js';
 import { initMetrics, metric } from './metrics.js';
+import { loadIntegrations } from './integrations.js';
 
 // ── Session state ───────────────────────────────────────────────────────────
 
@@ -338,6 +339,7 @@ interface SessionData {
   scoutTimeoutMs: number;
   maxScoutFiles: number;
   activeBackendName: string;
+  integrations: import('./integrations.js').IntegrationConfig;
 }
 
 /**
@@ -501,6 +503,12 @@ async function loadSessionData(
     console.log();
   }
 
+  // Integrations
+  const integrations = loadIntegrations(repoRoot);
+  if (options.verbose && integrations.providers.length > 0) {
+    console.log(chalk.gray(`  Integrations loaded: ${integrations.providers.map(p => p.name).join(', ')}`));
+  }
+
   // Trajectories
   let activeTrajectory: Trajectory | null = null;
   let activeTrajectoryState: TrajectoryState | null = null;
@@ -540,6 +548,7 @@ async function loadSessionData(
     sectorState, tasteProfile, goals, activeGoal, activeGoalMeasurement,
     activeTrajectory, activeTrajectoryState, currentTrajectoryStep,
     batchTokenBudget, scoutConcurrency, scoutTimeoutMs, maxScoutFiles, activeBackendName,
+    integrations,
   };
 }
 
@@ -996,6 +1005,7 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     guidelines: sessionData.guidelines,
     guidelinesOpts: sessionData.guidelinesOpts,
     guidelinesRefreshInterval: sessionData.guidelinesRefreshInterval,
+    integrations: sessionData.integrations,
 
     allLearnings: sessionData.allLearnings,
     dedupMemory: sessionData.dedupMemory,
@@ -1038,6 +1048,8 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
 
     scoutRetries: 0,
     scoutedDirs: [],
+    _pendingIntegrationProposals: [],
+    integrationLastRun: {},
     drillMode,
     drillLastGeneratedAtCycle: 0,
     drillTrajectoriesGenerated: 0,

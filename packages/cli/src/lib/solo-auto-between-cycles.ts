@@ -418,9 +418,16 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     state.consecutiveLowYieldCycles++;
     const MAX_LOW_YIELD_CYCLES = state.drillMode ? 5 : 3;
     if (state.consecutiveLowYieldCycles >= MAX_LOW_YIELD_CYCLES) {
-      state.displayAdapter.log(chalk.yellow(`  ${state.consecutiveLowYieldCycles} consecutive low-yield cycles — diminishing returns, stopping`));
-      state.shutdownRequested = true;
-      if (state.shutdownReason === null) state.shutdownReason = 'low_yield';
+      // Before shutting down, check if untried lenses remain
+      if (!state.lensFullyExhausted && state.lensRotation.length > 1) {
+        state.displayAdapter.log(chalk.gray(`  Low yield under "${state.currentLens}" lens — rotating to next lens`));
+        state.consecutiveLowYieldCycles = 0;
+        // advanceLens will be triggered naturally by getNextScope on next cycle
+      } else {
+        state.displayAdapter.log(chalk.yellow(`  ${state.consecutiveLowYieldCycles} consecutive low-yield cycles across all lenses — stopping`));
+        state.shutdownRequested = true;
+        if (state.shutdownReason === null) state.shutdownReason = 'low_yield';
+      }
     } else if (state.options.verbose) {
       state.displayAdapter.log(chalk.gray(`  Low-yield cycle (${state.consecutiveLowYieldCycles}/${MAX_LOW_YIELD_CYCLES})`));
     }
@@ -467,7 +474,10 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     const metrics = computeConvergenceMetrics(state.sectorState, state.allLearnings.length, rs.recentCycles ?? [], sessionCtx, drillCtx);
     if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  ${formatConvergenceOneLiner(metrics)}`));
     if (metrics.suggestedAction === 'stop') {
-      if (state.activeTrajectory && state.activeTrajectoryState) {
+      // Don't converge-stop if untried lenses remain
+      if (!state.lensFullyExhausted && state.lensRotation.length > 1) {
+        state.displayAdapter.log(chalk.gray(`  Convergence reached for "${state.currentLens}" — untried lenses remain, continuing`));
+      } else if (state.activeTrajectory && state.activeTrajectoryState) {
         // Adaptive threshold: use historical completion rate to decide when to abandon
         // If we historically complete 80% of trajectories, a low-progress one is likely still worth finishing
         // If we historically complete 20%, cut losses earlier

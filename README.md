@@ -4,9 +4,9 @@
 [![npm](https://img.shields.io/npm/v/@promptwheel/cli)](https://www.npmjs.com/package/@promptwheel/cli)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
 
-**Point it at your codebase. It finds and fixes things. Run it for 5 minutes or 5 hours.**
+**Orchestrate AI coding agents. Plan, execute, learn, repeat.**
 
-PromptWheel scouts your codebase for improvements, executes them in parallel, and learns from each run. Every session builds on the last — sectors rotate, learnings accumulate, formulas adapt.
+PromptWheel coordinates autonomous coding agents across your codebase — executing in parallel, learning across runs, and producing draft PRs you review before merging. Every session builds on the last — sectors rotate, learnings accumulate, formulas adapt.
 
 ---
 
@@ -238,7 +238,7 @@ Optional `.promptwheel/config.json`. See [Configuration](docs/configuration.md).
 ## FAQ
 
 **How is this different from just running Claude Code?**
-PromptWheel adds continuous operation, cross-run memory, parallel execution with conflict-aware scheduling, scope enforcement, deduplication, and structured progression via trajectories and formulas.
+PromptWheel is an orchestration layer. It coordinates autonomous agents in parallel, tracks learnings across runs, enforces scope isolation, deduplicates work, and progresses through structured trajectories and formulas — producing draft PRs you review before merging.
 
 **Will it break my code?**
 Every change runs through typecheck and tests. Failed tickets are blocked, not merged. Scope enforcement sandboxes each ticket. All PRs are drafts by default.
@@ -261,5 +261,5 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>PromptWheel v0.7.5</b>
+  <b>PromptWheel v0.7.6</b>
 </p>

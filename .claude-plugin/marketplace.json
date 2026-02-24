@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "promptwheel",
-  "description": "Continuous codebase improvement — scouts, plans, executes, and creates PRs",
+  "description": "AI coding agent orchestrator — autonomous runs, human-reviewed PRs",
   "owner": {
     "name": "PromptWheel",
     "email": "support@promptwheel.com"
@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "promptwheel",
-      "description": "Continuous codebase improvement — scouts improvements, executes in parallel, batches into milestone PRs",
-      "version": "0.7.5",
+      "description": "AI coding agent orchestrator — autonomous parallel runs with cross-run memory, human-reviewed draft PRs",
+      "version": "0.7.6",
       "author": {
         "name": "PromptWheel",
         "email": "support@promptwheel.com"
@@ -22,8 +22,8 @@
         "coding",
         "automation",
         "ai",
-        "improvement",
-        "refactoring"
+        "orchestration",
+        "agents"
       ],
       "skills": [
         "./skills/run",

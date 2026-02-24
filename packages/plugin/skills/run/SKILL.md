@@ -1,6 +1,6 @@
 ---
 name: run
-description: Run PromptWheel — autonomous codebase improvement. Default is spin+drill (unattended). Use `plan` for human-in-the-loop mode.
+description: Run PromptWheel — autonomous agent orchestration with human review. Default is spin+drill. Use `plan` for human-in-the-loop mode.
 argument-hint: "[plan] [hours=N] [formula=name] [cycles=N] [deep] [parallel=N] [no-drill]"
 ---
 

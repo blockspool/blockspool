@@ -175,6 +175,12 @@ function makeState(overrides: Partial<any> = {}): any {
     integrations: { providers: [] },
     _pendingIntegrationProposals: [],
     integrationLastRun: {},
+    currentLens: 'default',
+    lensRotation: ['default'],
+    lensIndex: 0,
+    lensMatrix: new Map(),
+    lensZeroYieldPairs: new Set(),
+    lensFullyExhausted: false,
     ...overrides,
   };
 }

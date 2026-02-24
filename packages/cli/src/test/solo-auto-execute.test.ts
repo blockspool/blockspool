@@ -293,6 +293,13 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
     scoutRetries: 0,
     scoutedDirs: [],
 
+    currentLens: 'default',
+    lensRotation: ['default'],
+    lensIndex: 0,
+    lensMatrix: new Map(),
+    lensZeroYieldPairs: new Set(),
+    lensFullyExhausted: false,
+
     parallelExplicit: false,
     userScope: undefined,
     interactiveConsole: undefined,

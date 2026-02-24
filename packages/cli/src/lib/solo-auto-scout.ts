@@ -31,6 +31,7 @@ import { sleep } from './dedup.js';
 import { buildBaselineHealthBlock } from './qa-stats.js';
 import { formatTrajectoryForPrompt } from '@promptwheel/core/trajectory/shared';
 import { appendErrorLedger } from './error-ledger.js';
+import { recordLensScan, recordZeroYield } from './lens-rotation.js';
 
 export interface ScoutResult {
   proposals: TicketProposal[];
@@ -62,7 +63,11 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
 
   // No sectors need scanning — all covered and no changes detected
   if (scope === null) {
-    state.displayAdapter.log(chalk.gray('  All sectors scanned, no changes detected. Waiting for new code...'));
+    if (state.lensFullyExhausted) {
+      state.displayAdapter.log(chalk.gray(`  All sectors scanned across ${state.lensRotation.length} lens(es). Waiting for new code...`));
+    } else {
+      state.displayAdapter.log(chalk.gray('  All sectors scanned, no changes detected. Waiting for new code...'));
+    }
     // Sleep before retrying so we don't spin
     await new Promise(r => setTimeout(r, 30_000));
     return {
@@ -97,6 +102,11 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
       state.displayAdapter.log(chalk.gray(`  Time remaining: ${formatElapsed(remaining)}`));
     }
     state.displayAdapter.log('');
+  }
+
+  // Show active lens when not default
+  if (state.currentLens !== 'default') {
+    state.displayAdapter.log(chalk.cyan(`  Lens: ${state.currentLens}`));
   }
 
   await getDeduplicationContext(state.adapter, state.project.id, state.repoRoot);
@@ -279,6 +289,9 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     }
   }
 
+  // Record lens scan and zero-yield tracking
+  recordLensScan(state);
+
   // Mark sectors with no scannable files so they're never re-selected
   if (scoutResult.scannedFiles === 0 && state.sectorState && state.currentSectorId) {
     const sector = state.sectorState.sectors.find(s => s.path === state.currentSectorId);
@@ -290,6 +303,7 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   }
 
   const proposals = scoutResult.proposals;
+  recordZeroYield(state, proposals.length);
 
   if (proposals.length === 0) {
     if (scoutResult.errors.length > 0) {

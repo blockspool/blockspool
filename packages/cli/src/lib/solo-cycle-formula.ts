@@ -3,7 +3,7 @@
  */
 
 import { readRunState, isDocsAuditDue } from './run-state.js';
-import type { Formula } from './formulas.js';
+import { loadFormula, type Formula } from './formulas.js';
 
 export interface CycleFormulaContext {
   activeFormula: Formula | null;
@@ -19,6 +19,8 @@ export interface CycleFormulaContext {
   };
   config: { auto?: { docsAuditInterval?: number; docsAudit?: boolean } } | null;
   sectorProductionFileCount?: number;
+  /** Active lens from lens rotation (overrides default formula selection when set) */
+  currentLens?: string;
 }
 
 /**
@@ -53,6 +55,12 @@ export function getCycleFormula(ctx: CycleFormulaContext, cycle: number): Formul
       interval = Math.max(interval, 10);
     }
     if (config?.auto?.docsAudit !== false && isDocsAuditDue(repoRoot, interval)) return docsAuditFormula;
+  }
+
+  // Lens rotation override — when a non-default lens is active, use it
+  if (ctx.currentLens && ctx.currentLens !== 'default') {
+    const lensFormula = loadFormula(ctx.currentLens, repoRoot);
+    if (lensFormula) return lensFormula;
   }
 
   // Session arc: warmup phase → skip UCB1 deep selection

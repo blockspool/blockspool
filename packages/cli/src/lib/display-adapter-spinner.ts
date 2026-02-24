@@ -22,6 +22,12 @@ export class SpinnerDisplayAdapter implements DisplayAdapter {
   private batchProgress: BatchProgressDisplay | null = null;
   private lastProgressLine = '';
   private lastProgressTime = 0;
+  private outputFn: (msg: string) => void = (msg) => console.log(msg);
+
+  /** Redirect all output through a custom function (e.g. interactiveConsole.log). */
+  setOutputFn(fn: (msg: string) => void): void {
+    this.outputFn = fn;
+  }
 
   sessionStarted(_info: SessionInfo): void {
     // Banner is already printed by initSession — no-op here
@@ -100,7 +106,7 @@ export class SpinnerDisplayAdapter implements DisplayAdapter {
   }
 
   log(msg: string): void {
-    console.log(msg);
+    this.outputFn(msg);
   }
 
   drillStateChanged(_info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void {
@@ -114,7 +120,7 @@ export class SpinnerDisplayAdapter implements DisplayAdapter {
       if (line === this.lastProgressLine || now - this.lastProgressTime < 2000) return;
       this.lastProgressLine = line;
       this.lastProgressTime = now;
-      console.log(`\n  ${chalk.gray('───')} ${line} ${chalk.gray('───')}`);
+      this.outputFn(`\n  ${chalk.gray('───')} ${line} ${chalk.gray('───')}`);
     }
   }
 

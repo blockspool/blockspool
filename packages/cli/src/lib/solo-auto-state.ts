@@ -69,6 +69,7 @@ import { SpinnerDisplayAdapter } from './display-adapter-spinner.js';
 import { LogDisplayAdapter } from './display-adapter-log.js';
 import { initMetrics, metric } from './metrics.js';
 import { loadIntegrations } from './integrations.js';
+import { buildLensRotation, advanceLens } from './lens-rotation.js';
 
 // ── Session state ───────────────────────────────────────────────────────────
 
@@ -559,6 +560,8 @@ interface DepsResult {
   scoutBackend: ScoutBackend | undefined;
   executionBackend: ExecutionBackend | undefined;
   detectedBaseBranch: string;
+  /** Bind the display adapter so logger output routes through the interactive console. */
+  bindDisplayAdapter: (da: { log(msg: string): void }) => void;
 }
 
 /** Initialize external dependencies: project, scout deps, backends, base branch. */
@@ -572,7 +575,12 @@ async function initDependencies(
     name: path.basename(repoRoot),
     rootPath: repoRoot,
   });
-  const deps = createScoutDeps(adapter, { verbose: options.verbose });
+  // Late-bound output: routes through display adapter once state is initialized.
+  // Before state exists, falls back to console.log. The display adapter's outputFn
+  // gets redirected to the interactive console in initInteractiveConsole().
+  let stateRef: { displayAdapter: { log(msg: string): void } } | null = null;
+  const depsOutput = (msg: string) => stateRef ? stateRef.displayAdapter.log(msg) : console.log(msg);
+  const deps = createScoutDeps(adapter, { verbose: options.verbose, output: depsOutput });
 
   const { getProvider } = await import('./providers/index.js');
   let scoutBackend: ScoutBackend | undefined;
@@ -636,7 +644,10 @@ async function initDependencies(
     // Fall back to master
   }
 
-  return { project, deps, scoutBackend, executionBackend, detectedBaseBranch };
+  return {
+    project, deps, scoutBackend, executionBackend, detectedBaseBranch,
+    bindDisplayAdapter: (da: { log(msg: string): void }) => { stateRef = { displayAdapter: da }; },
+  };
 }
 
 /** Branch initialization result. */
@@ -769,6 +780,7 @@ function patchStateClosures(
     sectorProductionFileCount: state.currentSectorId
       ? state.sectorState?.sectors.find(s => s.path === state.currentSectorId)?.productionFileCount
       : undefined,
+    currentLens: state.currentLens,
   });
   state.getCycleFormula = (cycle: number) => {
     if (state.activeGoal && !state.options.formula) {
@@ -825,29 +837,35 @@ function initInteractiveConsole(state: AutoSessionState) {
       if (state.shutdownReason === null) state.shutdownReason = 'user_quit';
     },
     onStatus: () => {
+      const log = (msg: string) => state.interactiveConsole?.log(msg) ?? console.log(msg);
       const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
       const mins = Math.floor(elapsed / 60);
       const secs = elapsed % 60;
-      console.log(chalk.cyan('\n  📊 Session Status:'));
-      console.log(chalk.gray(`    Cycle: ${state.cycleCount}`));
-      console.log(chalk.gray(`    Elapsed: ${mins}m ${secs}s`));
+      log(chalk.cyan('\n  📊 Session Status:'));
+      log(chalk.gray(`    Cycle: ${state.cycleCount}`));
+      log(chalk.gray(`    Elapsed: ${mins}m ${secs}s`));
       if (state.milestoneMode) {
-        console.log(chalk.gray(`    Tickets this milestone: ${state.milestoneTicketCount}`));
-        console.log(chalk.gray(`    Milestone PRs: ${state.totalMilestonePrs}/${state.maxPrs}`));
+        log(chalk.gray(`    Tickets this milestone: ${state.milestoneTicketCount}`));
+        log(chalk.gray(`    Milestone PRs: ${state.totalMilestonePrs}/${state.maxPrs}`));
       } else if (state.deliveryMode === 'direct') {
-        console.log(chalk.gray(`    Completed tickets: ${state.completedDirectTickets.length}`));
+        log(chalk.gray(`    Completed tickets: ${state.completedDirectTickets.length}`));
       } else {
         const limit = state.maxPrs < 999 ? `/${state.maxPrs}` : '';
-        console.log(chalk.gray(`    PRs created: ${state.totalPrsCreated}${limit}`));
+        log(chalk.gray(`    PRs created: ${state.totalPrsCreated}${limit}`));
       }
-      console.log(chalk.gray(`    Failed: ${state.totalFailed}`));
+      log(chalk.gray(`    Failed: ${state.totalFailed}`));
       if (state.endTime) {
         const remaining = Math.max(0, Math.floor((state.endTime - Date.now()) / 60000));
-        console.log(chalk.gray(`    Time remaining: ${remaining}m`));
+        log(chalk.gray(`    Time remaining: ${remaining}m`));
       }
-      console.log();
     },
   });
+
+  // Route display adapter output through the interactive console
+  const da = state.displayAdapter;
+  if ('setOutputFn' in da && typeof (da as any).setOutputFn === 'function') {
+    (da as SpinnerDisplayAdapter).setOutputFn((msg) => state.interactiveConsole!.log(msg));
+  }
 }
 
 // ── Init ────────────────────────────────────────────────────────────────────
@@ -1050,6 +1068,12 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     scoutedDirs: [],
     _pendingIntegrationProposals: [],
     integrationLastRun: {},
+    currentLens: 'default',
+    lensRotation: buildLensRotation(repoRoot, resolved.activeFormula),
+    lensIndex: 0,
+    lensMatrix: new Map(),
+    lensZeroYieldPairs: new Set(),
+    lensFullyExhausted: false,
     drillMode,
     drillLastGeneratedAtCycle: 0,
     drillTrajectoriesGenerated: 0,
@@ -1095,6 +1119,9 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
         : undefined,
     });
   }
+
+  // Bind display adapter so logger output routes through it
+  depsResult.bindDisplayAdapter(state.displayAdapter);
 
   // Start interactive console
   initInteractiveConsole(state);
@@ -1176,7 +1203,21 @@ export function getNextScope(state: AutoSessionState): string | null {
       pick.sector.lastScannedCycle = state.currentSectorCycle;
     }
 
-    // All sectors scanned and no changes detected
+    // All sectors scanned under current lens — try next lens
+    if (state.lensRotation.length > 1) {
+      const advanced = advanceLens(state);
+      if (advanced) {
+        // Reset sessionScannedSectors for the new lens
+        // (but respect lensMatrix — skip sectors already scanned under new lens)
+        state.sessionScannedSectors = new Set(
+          state.lensMatrix.get(state.currentLens) ?? [],
+        );
+        // Retry sector pick with fresh scanning state
+        return getNextScope(state);
+      }
+    }
+    // Truly exhausted all lenses
+    state.lensFullyExhausted = true;
     state.currentSectorId = null;
     return null;
   }

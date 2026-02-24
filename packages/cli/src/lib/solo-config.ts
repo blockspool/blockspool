@@ -144,6 +144,13 @@ export interface AutoConfig {
       timeout?: number;
     }>;
   };
+  /** Lens rotation settings */
+  lensRotation?: {
+    /** Enable multi-lens rotation in spin mode (default: true) */
+    enabled?: boolean;
+    /** Override the default lens list. Names must match built-in or custom formula names. */
+    lenses?: string[];
+  };
   /**
    * Drill mode settings — auto-trajectory generation in spin mode.
    *
@@ -587,7 +594,7 @@ export async function getAdapter(repoRoot?: string): Promise<DatabaseAdapter> {
  */
 export function createScoutDeps(
   db: DatabaseAdapter,
-  opts: { verbose?: boolean; quiet?: boolean } = {}
+  opts: { verbose?: boolean; quiet?: boolean; output?: (msg: string) => void } = {}
 ): ScoutDeps {
   return {
     db,

@@ -180,7 +180,9 @@ function makeState(overrides: Partial<any> = {}): any {
     lensIndex: 0,
     lensMatrix: new Map(),
     lensZeroYieldPairs: new Set(),
+    lensExecutionStrikes: new Map(),
     lensFullyExhausted: false,
+    escalationCandidates: new Set(),
     ...overrides,
   };
 }

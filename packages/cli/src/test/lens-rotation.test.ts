@@ -33,7 +33,7 @@ vi.mock('../lib/formulas.js', () => ({
 // SUT imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { buildLensRotation, advanceLens, recordZeroYield, recordLensScan } from '../lib/lens-rotation.js';
+import { buildLensRotation, advanceLens, recordZeroYield, recordLensScan, recordExecutionYield } from '../lib/lens-rotation.js';
 import { readRunState } from '../lib/run-state.js';
 import { listFormulas } from '../lib/formulas.js';
 
@@ -314,5 +314,72 @@ describe('recordLensScan', () => {
 
     recordLensScan(state);
     expect(state.lensMatrix.size).toBe(0);
+  });
+});
+
+describe('recordExecutionYield', () => {
+  it('increments strike on all-fail cycle', () => {
+    const state = {
+      currentLens: 'security-audit',
+      currentSectorId: 'src/a' as string | null,
+      lensZeroYieldPairs: new Set<string>(),
+      lensExecutionStrikes: new Map<string, number>(),
+    };
+
+    recordExecutionYield(state, 0, 3); // 0 completed out of 3 executed
+    expect(state.lensExecutionStrikes.get('security-audit:src/a')).toBe(1);
+    expect(state.lensZeroYieldPairs.size).toBe(0); // not zero-yield yet
+  });
+
+  it('marks zero-yield after 2 consecutive all-fail cycles', () => {
+    const state = {
+      currentLens: 'security-audit',
+      currentSectorId: 'src/a' as string | null,
+      lensZeroYieldPairs: new Set<string>(),
+      lensExecutionStrikes: new Map<string, number>(),
+    };
+
+    recordExecutionYield(state, 0, 3); // strike 1
+    recordExecutionYield(state, 0, 2); // strike 2 → zero-yield
+    expect(state.lensExecutionStrikes.get('security-audit:src/a')).toBe(2);
+    expect(state.lensZeroYieldPairs.has('security-audit:src/a')).toBe(true);
+  });
+
+  it('resets strikes when at least one ticket succeeds', () => {
+    const state = {
+      currentLens: 'security-audit',
+      currentSectorId: 'src/a' as string | null,
+      lensZeroYieldPairs: new Set<string>(),
+      lensExecutionStrikes: new Map<string, number>([
+        ['security-audit:src/a', 1],
+      ]),
+    };
+
+    recordExecutionYield(state, 1, 3); // 1 completed
+    expect(state.lensExecutionStrikes.has('security-audit:src/a')).toBe(false);
+  });
+
+  it('does nothing when executedCount is 0', () => {
+    const state = {
+      currentLens: 'security-audit',
+      currentSectorId: 'src/a' as string | null,
+      lensZeroYieldPairs: new Set<string>(),
+      lensExecutionStrikes: new Map<string, number>(),
+    };
+
+    recordExecutionYield(state, 0, 0);
+    expect(state.lensExecutionStrikes.size).toBe(0);
+  });
+
+  it('does nothing when sectorId is null', () => {
+    const state = {
+      currentLens: 'security-audit',
+      currentSectorId: null as string | null,
+      lensZeroYieldPairs: new Set<string>(),
+      lensExecutionStrikes: new Map<string, number>(),
+    };
+
+    recordExecutionYield(state, 0, 3);
+    expect(state.lensExecutionStrikes.size).toBe(0);
   });
 });

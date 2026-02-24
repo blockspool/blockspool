@@ -1,6 +1,6 @@
 {
   "name": "@promptwheel/sqlite",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "description": "SQLite adapter for PromptWheel - zero-config local mode",
   "author": "PromptWheel",
   "homepage": "https://promptwheel.com",
@@ -39,7 +39,7 @@
   ],
   "license": "Apache-2.0",
   "dependencies": {
-    "@promptwheel/core": "^0.7.6",
+    "@promptwheel/core": "^0.7.7",
     "better-sqlite3": "^12.6.2"
   },
   "devDependencies": {
@@ -47,6 +47,6 @@
     "typescript": "^5.7.3"
   },
   "peerDependencies": {
-    "@promptwheel/core": ">=0.7.6"
+    "@promptwheel/core": ">=0.7.7"
   }
 }

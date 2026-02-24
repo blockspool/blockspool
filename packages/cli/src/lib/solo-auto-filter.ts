@@ -22,6 +22,7 @@ import {
   recordDedupEntries, getEnabledProposals,
   loadDedupMemory,
 } from './dedup-memory.js';
+import { matchAgainstMemory } from '@promptwheel/core/dedup/shared';
 // balanceProposals removed — let quality determine proposal mix organically
 import {
   getSectorCategoryAffinity, updateProposalYield,
@@ -35,6 +36,8 @@ export interface FilterResult {
   shouldRetry: boolean;
   shouldBreak: boolean;
   categoryRejected: number;
+  /** Titles hard-rejected because they repeatedly failed execution (hit_count >= 3) */
+  hardDedupRejectedTitles: string[];
 }
 
 export async function filterProposals(
@@ -241,11 +244,34 @@ export async function filterProposals(
     }
   }
 
+  // Hard dedup gate — reject proposals that match repeatedly-failed dedup memory entries.
+  // Unlike the soft prompt injection ("Do NOT propose these"), this is an absolute filter.
+  const HARD_DEDUP_HIT_THRESHOLD = 3;
+  const hardDedupRejected: string[] = [];
+  if (state.dedupMemory.length > 0) {
+    const failedMemory = state.dedupMemory.filter(
+      e => !e.completed && e.failureReason && e.hit_count >= HARD_DEDUP_HIT_THRESHOLD,
+    );
+    if (failedMemory.length > 0) {
+      for (let i = approvedProposals.length - 1; i >= 0; i--) {
+        const match = matchAgainstMemory(approvedProposals[i].title, failedMemory);
+        if (match) {
+          hardDedupRejected.push(approvedProposals[i].title);
+          if (state.options.verbose) {
+            state.displayAdapter.log(chalk.gray(`  ✗ Hard dedup: ${approvedProposals[i].title} (failed ${match.entry.hit_count}x as "${match.entry.failureReason}")`));
+          }
+          approvedProposals.splice(i, 1);
+        }
+      }
+    }
+  }
+
   pipelineCounts.dedup = approvedProposals.length;
 
-  // Bump dedup memory for rejected duplicates
-  if (rejectedDupTitles.length > 0) {
-    recordDedupEntries(state.repoRoot, rejectedDupTitles.map(t => ({ title: t, completed: false })));
+  // Bump dedup memory for rejected duplicates (including hard dedup rejects)
+  const allRejected = [...rejectedDupTitles, ...hardDedupRejected];
+  if (allRejected.length > 0) {
+    recordDedupEntries(state.repoRoot, allRejected.map(t => ({ title: t, completed: false })));
     state.dedupMemory = loadDedupMemory(state.repoRoot);
   }
 
@@ -293,6 +319,7 @@ export async function filterProposals(
     if (rejectedByCategory > 0) parts.push(`${rejectedByCategory} blocked by category`);
     if (rejectedByScope > 0) parts.push(`${rejectedByScope} out of scope`);
     if (duplicateCount > 0) parts.push(`${duplicateCount} duplicates`);
+    if (hardDedupRejected.length > 0) parts.push(`${hardDedupRejected.length} hard-deduped (repeatedly failed)`);
     const reason = parts.length > 0
       ? `No proposals approved (${parts.join(', ')})`
       : 'No proposals passed filters';
@@ -304,7 +331,7 @@ export async function filterProposals(
       state.scoutRetries++;
       if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Retrying with fresh approach (attempt ${state.scoutRetries}/${maxRetries + 1})...`));
       await sleep(1000);
-      return { toProcess: [], scope, shouldRetry: true, shouldBreak: false, categoryRejected: rejectedByCategory };
+      return { toProcess: [], scope, shouldRetry: true, shouldBreak: false, categoryRejected: rejectedByCategory, hardDedupRejectedTitles: hardDedupRejected };
     }
     state.scoutRetries = 0;
     state.scoutedDirs = [];
@@ -312,7 +339,7 @@ export async function filterProposals(
       await sleep(2000);
     }
     // Let shouldContinue() decide whether to loop or stop
-    return { toProcess: [], scope, shouldRetry: true, shouldBreak: false, categoryRejected: rejectedByCategory };
+    return { toProcess: [], scope, shouldRetry: true, shouldBreak: false, categoryRejected: rejectedByCategory, hardDedupRejectedTitles: hardDedupRejected };
   }
 
   // Batch selection
@@ -334,8 +361,9 @@ export async function filterProposals(
   recordFormulaResult(state.repoRoot, state.currentFormulaName, approvedProposals.length);
   if (state.sectorState && state.currentSectorId) updateProposalYield(state.sectorState, state.currentSectorId, approvedProposals.length);
 
-  const statsMsg = duplicateCount > 0
-    ? `Auto-approved: ${approvedProposals.length} (${duplicateCount} duplicates skipped), processing: ${toProcess.length}`
+  const totalSkipped = duplicateCount + hardDedupRejected.length;
+  const statsMsg = totalSkipped > 0
+    ? `Auto-approved: ${approvedProposals.length} (${totalSkipped} dedup-skipped${hardDedupRejected.length > 0 ? `, ${hardDedupRejected.length} hard-blocked` : ''}), processing: ${toProcess.length}`
     : `Auto-approved: ${approvedProposals.length}, processing: ${toProcess.length}`;
   state.displayAdapter.log(chalk.gray(`  ${statsMsg}`));
   state.displayAdapter.log('');
@@ -356,5 +384,5 @@ export async function filterProposals(
     state.displayAdapter.log('');
   }
 
-  return { toProcess, scope, shouldRetry: false, shouldBreak: false, categoryRejected: rejectedByCategory };
+  return { toProcess, scope, shouldRetry: false, shouldBreak: false, categoryRejected: rejectedByCategory, hardDedupRejectedTitles: hardDedupRejected };
 }

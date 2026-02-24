@@ -298,7 +298,9 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
     lensIndex: 0,
     lensMatrix: new Map(),
     lensZeroYieldPairs: new Set(),
+    lensExecutionStrikes: new Map(),
     lensFullyExhausted: false,
+    escalationCandidates: new Set(),
 
     parallelExplicit: false,
     userScope: undefined,

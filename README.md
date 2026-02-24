@@ -261,5 +261,5 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>PromptWheel v0.7.6</b>
+  <b>PromptWheel v0.7.7</b>
 </p>

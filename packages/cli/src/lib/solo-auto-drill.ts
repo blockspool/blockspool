@@ -24,7 +24,8 @@ import {
 import { runMeasurement } from './goals.js';
 import { formatTasteForPrompt } from './taste-profile.js';
 import { formatLearningsForPrompt, selectRelevant } from './learnings.js';
-import { formatDedupForPrompt } from './dedup-memory.js';
+import { formatDedupForPrompt, type DedupEntry } from './dedup-memory.js';
+import { matchAgainstMemory } from '@promptwheel/core/dedup/shared';
 import { readHints as readHintsForDrill, writeHints as writeHintsForDrill } from './solo-hints.js';
 
 /**
@@ -1018,6 +1019,86 @@ export function applyDrillDirectives(state: AutoSessionState): void {
 
 // ── Core drill logic ─────────────────────────────────────────────────────────
 
+// ---------------------------------------------------------------------------
+// Escalation — promote repeatedly-failed proposals to drill for decomposition
+// ---------------------------------------------------------------------------
+
+/**
+ * Build escalation proposals from dedup memory and inject them into the
+ * survey proposals array. Returns the number of escalation candidates injected.
+ *
+ * Escalation candidates are proposals that were hard-dedup-rejected (hit_count >= 3,
+ * failureReason set). They represent valid issues the codebase has that are too
+ * complex for a single ticket. Drill decomposes them into achievable steps.
+ */
+export function buildEscalationProposals(
+  state: AutoSessionState,
+  allProposals: TicketProposal[],
+): number {
+  if (state.escalationCandidates.size === 0) return 0;
+
+  const ESCALATION_HIT_THRESHOLD = 3;
+  const failedMemory = state.dedupMemory.filter(
+    (e: DedupEntry) => !e.completed && e.failureReason && e.hit_count >= ESCALATION_HIT_THRESHOLD,
+  );
+  if (failedMemory.length === 0) return 0;
+
+  // Match escalation candidate titles against dedup memory
+  let injected = 0;
+  for (const title of state.escalationCandidates) {
+    const match = matchAgainstMemory(title, failedMemory);
+    if (!match) continue;
+
+    // Check if this proposal is already in the survey results
+    const alreadyPresent = allProposals.some(p =>
+      p.title.toLowerCase().trim() === title.toLowerCase().trim(),
+    );
+    if (alreadyPresent) continue;
+
+    // Build a synthetic proposal with high impact (these are real issues)
+    allProposals.push({
+      id: `escalation-${Date.now()}-${injected}`,
+      title: match.entry.title,
+      description: `[ESCALATION — failed ${match.entry.hit_count}x as single ticket, reason: ${match.entry.failureReason}] This is a valid improvement that needs trajectory decomposition into smaller steps.`,
+      category: 'refactor' as import('@promptwheel/core/scout').ProposalCategory,
+      files: [],
+      allowed_paths: [],
+      confidence: 70, // moderate confidence — the issue is real but approach needs rethinking
+      impact_score: 8, // high impact — these are persistent issues worth solving
+      acceptance_criteria: [],
+      verification_commands: ['npm test'],
+      rationale: `Repeatedly failed as single ticket (${match.entry.hit_count}x, reason: ${match.entry.failureReason}). Needs decomposition.`,
+      estimated_complexity: 'complex' as const,
+    });
+    injected++;
+  }
+
+  return injected;
+}
+
+/**
+ * Format escalation context for the trajectory generation prompt.
+ * Lists the repeatedly-failed proposals with their failure reasons.
+ */
+export function formatEscalationContext(state: AutoSessionState): string {
+  if (state.escalationCandidates.size === 0) return '';
+
+  const ESCALATION_HIT_THRESHOLD = 3;
+  const failedMemory = state.dedupMemory.filter(
+    (e: DedupEntry) => !e.completed && e.failureReason && e.hit_count >= ESCALATION_HIT_THRESHOLD,
+  );
+
+  const lines: string[] = [];
+  for (const title of state.escalationCandidates) {
+    const match = matchAgainstMemory(title, failedMemory);
+    if (!match) continue;
+    const e = match.entry;
+    lines.push(`- "${e.title}" — failed ${e.hit_count}x (reason: ${e.failureReason})`);
+  }
+
+  return lines.length > 0 ? lines.join('\n') : '';
+}
+
 /**
  * Check whether drill should generate a new trajectory, and if so, do it.
  *
@@ -1059,11 +1140,26 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
   const allProposals = await runDrillSurvey(state);
   state.effectiveMinConfidence = savedConfidence;
 
+  // Escalation injection — promote repeatedly-failed proposals from dedup memory
+  // into the drill pipeline. These are valid issues the scout correctly identifies
+  // but that fail as single tickets (scope too narrow, multi-file coordination needed).
+  // Drill decomposes them into smaller, achievable steps.
+  let escalationContext: string | undefined;
+  const escalationCount = buildEscalationProposals(state, allProposals);
+  if (escalationCount > 0) {
+    state.displayAdapter.log(chalk.cyan(`  Drill: ${escalationCount} escalation candidate(s) injected from repeatedly-failed proposals`));
+    escalationContext = formatEscalationContext(state);
+  }
+
   // Adaptive thresholds — scale with historical success rate
   const { min: minProposals, max: maxProposals } = getAdaptiveProposalThresholds(state);
 
-  if (allProposals.length < minProposals) {
-    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Drill: ${allProposals.length} proposal(s) found — below threshold (${minProposals}), running normal cycle`));
+  // When we have escalation candidates, lower the minimum to allow trajectory generation
+  // even if the survey alone didn't find enough new proposals
+  const effectiveMin = escalationCount > 0 ? Math.min(minProposals, 2) : minProposals;
+
+  if (allProposals.length < effectiveMin) {
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Drill: ${allProposals.length} proposal(s) found — below threshold (${effectiveMin}), running normal cycle`));
     return 'insufficient'; // genuinely no proposals — codebase may be polished
   }
 
@@ -1367,6 +1463,7 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
       dependencyEdges,
       causalContext,
       ambitionLevel: effectiveAmbition,
+      escalationContext,
     });
 
     // Activate the generated trajectory
@@ -1399,6 +1496,11 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     }
     if (state.options.verbose && state.drillHistory.length > 0) {
       state.displayAdapter.log(chalk.gray(`    Session trajectories: ${state.drillHistory.length} previous`));
+    }
+
+    // Clear escalation candidates that were consumed by this trajectory
+    if (escalationCount > 0) {
+      state.escalationCandidates.clear();
     }
 
     return 'generated';

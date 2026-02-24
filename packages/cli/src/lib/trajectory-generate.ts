@@ -66,6 +66,8 @@ export interface GenerateFromProposalsOptions {
   causalContext?: string;
   /** Adaptive ambition level — scales first-step complexity based on track record */
   ambitionLevel?: 'conservative' | 'moderate' | 'ambitious';
+  /** Escalation context — repeatedly-failed proposals that need decomposition into smaller steps */
+  escalationContext?: string;
 }
 
 export interface GenerateResult {
@@ -158,6 +160,7 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
     dependencyEdges: opts.dependencyEdges,
     causalContext: opts.causalContext,
     ambitionLevel: opts.ambitionLevel,
+    escalationContext: opts.escalationContext,
   });
 
   // 3. Call LLM (sonnet for cost efficiency)
@@ -344,6 +347,7 @@ export function buildGenerateFromProposalsPrompt(
     dependencyEdges?: string;
     causalContext?: string;
     ambitionLevel?: 'conservative' | 'moderate' | 'ambitious';
+    escalationContext?: string;
   },
 ): string {
   const sections: string[] = [];
@@ -440,6 +444,21 @@ ${context.dependencyEdges}`);
 Recent trajectories made specific changes. Use this to BUILD ON that work — propose follow-up improvements, tests for newly added code, or fixes that are now unblocked:
 
 ${context.causalContext}`);
+  }
+
+  if (context?.escalationContext) {
+    sections.push(`## Escalation Candidates (PRIORITY — Decompose These)
+
+The following proposals have been attempted multiple times as single tickets but ALWAYS FAIL. They are valid improvements but too complex for a single-ticket approach. Your trajectory MUST decompose at least one of these into smaller, achievable steps.
+
+Strategy: Break each complex change into 2-4 incremental steps. For example, "Enforce CSRF on all endpoints" becomes:
+  1. Add CSRF middleware (1-2 files, middleware dir only)
+  2. Wire middleware into routes (route files only)
+  3. Add CSRF tests (test files only)
+
+Each step should touch a NARROW scope (2-5 files max) and be independently verifiable.
+
+${context.escalationContext}`);
   }
 
   sections.push(`## Requirements

@@ -194,8 +194,12 @@ export interface SessionRuntime {
   lensMatrix: Map<string, Set<string>>;
   /** Lens rotation: [lensName:sectorPath] pairs that produced zero proposals */
   lensZeroYieldPairs: Set<string>;
+  /** Lens rotation: [lensName:sectorPath] → consecutive all-fail execution cycles */
+  lensExecutionStrikes: Map<string, number>;
   /** Whether all lens×sector combinations are exhausted */
   lensFullyExhausted: boolean;
+  /** Titles hard-rejected by dedup gate, accumulated across cycles for drill escalation */
+  escalationCandidates: Set<string>;
   drillMode: boolean;
   drillLastGeneratedAtCycle: number;
   drillTrajectoriesGenerated: number;

@@ -32,6 +32,7 @@ import { filterProposals } from './solo-auto-filter.js';
 import { executeProposals } from './solo-auto-execute.js';
 import { finalizeSession } from './solo-auto-finalize.js';
 import { maybeDrillGenerateTrajectory, tryPreVerifyTrajectoryStep, computeAmbitionLevel } from './solo-auto-drill.js';
+import { recordExecutionYield } from './lens-rotation.js';
 import { computeCoverage } from './sectors.js';
 import type { ProgressSnapshot } from './display-adapter.js';
 
@@ -476,12 +477,21 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
     const filterResult = await filterProposals(state, scoutResult.proposals, scoutResult.scope, scoutResult.cycleFormula);
 
     if (filterResult.shouldBreak) break;
+    // Accumulate hard-dedup-rejected titles for drill escalation
+    for (const title of filterResult.hardDedupRejectedTitles) {
+      state.escalationCandidates.add(title);
+    }
     if (filterResult.shouldRetry) continue;
 
     state.displayAdapter.progressUpdate(buildProgressSnapshot(state, 'executing'));
 
     const execResult = await executeProposals(state, filterResult.toProcess);
     if (execResult.shouldBreak) break;
+
+    // Track execution yield per [lens, sector] — marks pairs where proposals
+    // are found but consistently fail (scope too narrow, multi-file coordination, etc.)
+    const completedThisCycle = state.cycleOutcomes.filter(o => o.status === 'completed').length;
+    recordExecutionYield(state, completedThisCycle, filterResult.toProcess.length);
 
     await runPostCycleMaintenance(state, filterResult.scope, scoutResult.isDocsAuditCycle);
 

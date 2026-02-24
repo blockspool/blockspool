@@ -115,6 +115,39 @@ export function recordZeroYield(state: {
 }
 
 /**
+ * Record execution yield for a [lens, sector] pair.
+ * When proposals were found but ALL failed execution (no completions),
+ * increment a strike counter. After 2 consecutive all-fail cycles on the
+ * same [lens, sector] pair, mark it as zero-yield.
+ *
+ * This catches sectors where the scout finds real issues but the agent
+ * can't land them (scope too narrow, multi-file coordination needed, etc.).
+ */
+export function recordExecutionYield(state: {
+  currentLens: string;
+  currentSectorId: string | null;
+  lensZeroYieldPairs: Set<string>;
+  lensExecutionStrikes: Map<string, number>;
+}, completedCount: number, executedCount: number): void {
+  if (!state.currentSectorId || executedCount === 0) return;
+
+  const key = `${state.currentLens}:${state.currentSectorId}`;
+
+  if (completedCount === 0) {
+    // All proposals failed — increment strike
+    const strikes = (state.lensExecutionStrikes.get(key) ?? 0) + 1;
+    state.lensExecutionStrikes.set(key, strikes);
+    if (strikes >= 2) {
+      // Two consecutive all-fail cycles → mark as zero-yield
+      state.lensZeroYieldPairs.add(key);
+    }
+  } else {
+    // At least one succeeded — reset strikes
+    state.lensExecutionStrikes.delete(key);
+  }
+}
+
+/**
  * Record that a sector was scanned under the current lens.
  */
 export function recordLensScan(state: {

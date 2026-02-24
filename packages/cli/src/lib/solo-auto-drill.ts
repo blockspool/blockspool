@@ -1062,9 +1062,7 @@ export function buildEscalationProposals(
       : entry.failureReason === 'qa_failed' ? 65
       : entry.failureReason === 'spindle_abort' ? 50
       : 60;
-    const category = entry.failureReason === 'scope_violation' ? 'refactor'
-      : entry.failureReason === 'qa_failed' ? (entry.category ?? 'refactor')
-      : 'refactor';
+    const category = 'refactor';
     const complexity = entry.failureReason === 'spindle_abort' ? 'complex'
       : entry.failureReason === 'scope_violation' ? 'moderate'
       : 'complex';
@@ -1081,7 +1079,7 @@ export function buildEscalationProposals(
       acceptance_criteria: [],
       verification_commands: ['npm test'],
       rationale: `Repeatedly failed as single ticket (${entry.hit_count}x, reason: ${entry.failureReason}). Needs decomposition.`,
-      estimated_complexity: complexity as const,
+      estimated_complexity: complexity as 'trivial' | 'simple' | 'moderate' | 'complex',
     });
     injected++;
   }

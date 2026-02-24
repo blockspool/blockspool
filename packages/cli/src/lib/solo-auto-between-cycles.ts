@@ -345,7 +345,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       pendingPrUrls: state.pendingPrUrls,
       allPrUrls: state.allPrUrls,
       ticketOutcomeSummary: state.allTicketOutcomes.map(o => ({
-        title: o.title, category: o.category, status: o.status,
+        title: o.title, category: o.category ?? '', status: o.status,
       })),
       savedAt: Date.now(),
     };

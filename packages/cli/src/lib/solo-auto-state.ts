@@ -1090,6 +1090,7 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     })(),
     lensExecutionStrikes: new Map(),
     lensFullyExhausted: false,
+    _cycleProgress: null,
     escalationCandidates: new Set(),
     drillMode,
     drillLastGeneratedAtCycle: 0,

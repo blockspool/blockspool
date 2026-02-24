@@ -516,6 +516,9 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
     const done = state.allTicketOutcomes.filter(t => t.status === 'completed').length;
     const failed = state.allTicketOutcomes.filter(t => t.status === 'failed' || t.status === 'spindle_abort').length;
     const deferred = state.allTicketOutcomes.filter(t => t.status === 'deferred').length;
+    // Update cycle progress: tickets completed this cycle vs total this cycle
+    const cycleDone = state.cycleOutcomes.length;
+    state._cycleProgress = { done: cycleDone, total: toProcess.length, label: 'tickets' };
     const snapshot: ProgressSnapshot = {
       phase: 'executing',
       cycleCount: state.cycleCount,
@@ -528,6 +531,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       sectorCoverage: state.sectorState
         ? (() => { const c = computeCoverage(state.sectorState); return { scanned: c.scannedSectors, total: c.totalSectors, percent: c.percent }; })()
         : undefined,
+      cycleProgress: state._cycleProgress,
     };
     state.displayAdapter.progressUpdate(snapshot);
   };

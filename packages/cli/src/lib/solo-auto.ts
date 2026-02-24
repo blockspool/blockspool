@@ -370,6 +370,7 @@ function buildProgressSnapshot(
     sectorCoverage: state.sectorState
       ? (() => { const c = computeCoverage(state.sectorState); return { scanned: c.scannedSectors, total: c.totalSectors, percent: c.percent }; })()
       : undefined,
+    cycleProgress: state._cycleProgress ?? undefined,
   };
 }
 
@@ -462,6 +463,8 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
       }
     }
 
+    // Reset cycle progress for the new scouting phase
+    state._cycleProgress = { done: 0, total: 0, label: 'batches' };
     state.displayAdapter.progressUpdate(buildProgressSnapshot(state, 'scouting'));
 
     const scoutResult = await runScoutPhase(state);
@@ -483,6 +486,8 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
     }
     if (filterResult.shouldRetry) continue;
 
+    // Reset cycle progress for execution phase
+    state._cycleProgress = { done: 0, total: filterResult.toProcess.length, label: 'tickets' };
     state.displayAdapter.progressUpdate(buildProgressSnapshot(state, 'executing'));
 
     const execResult = await executeProposals(state, filterResult.toProcess);
@@ -495,6 +500,8 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
 
     await runPostCycleMaintenance(state, filterResult.scope, scoutResult.isDocsAuditCycle);
 
+    // Reset progress for idle (cycle complete)
+    state._cycleProgress = null;
     state.displayAdapter.progressUpdate(buildProgressSnapshot(state, 'idle'));
   } while (shouldContinue(state));
 }

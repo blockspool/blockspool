@@ -273,6 +273,9 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
       onProgress: (progress: ScoutProgress) => {
         if (progress.batchStatuses && progress.totalBatches && progress.totalBatches > 1) {
           state.displayAdapter.scoutBatchProgress(progress.batchStatuses, progress.totalBatches, progress.proposalsFound ?? 0);
+          // Update cycle progress so the status bar reflects batch completion
+          const batchesDone = progress.batchStatuses.filter((b: { status: string }) => b.status === 'done' || b.status === 'failed').length;
+          state._cycleProgress = { done: batchesDone, total: progress.totalBatches, label: 'batches' };
         } else {
           const formatted = formatProgress(progress);
           if (formatted !== lastProgress) {

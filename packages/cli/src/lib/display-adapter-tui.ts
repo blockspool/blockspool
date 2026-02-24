@@ -22,6 +22,7 @@ export interface TuiDisplayAdapterOptions {
 export class TuiDisplayAdapter implements DisplayAdapter {
   private autoScreen: AutoScreen;
   private sessionInfo: SessionInfo | null = null;
+  private lastSnapshot: ProgressSnapshot | null = null;
 
   constructor(opts: TuiDisplayAdapterOptions) {
     this.autoScreen = new AutoScreen({
@@ -62,6 +63,14 @@ export class TuiDisplayAdapter implements DisplayAdapter {
 
   scoutBatchProgress(statuses: BatchStatus[], totalBatches: number, totalProposals: number): void {
     this.autoScreen.showScoutBatchProgress(statuses, totalBatches, totalProposals);
+    // Refresh the progress bar with updated cycle progress
+    if (this.lastSnapshot) {
+      const batchesDone = statuses.filter(b => b.status === 'done' || b.status === 'failed').length;
+      this.autoScreen.setProgress({
+        ...this.lastSnapshot,
+        cycleProgress: { done: batchesDone, total: totalBatches, label: 'batches' },
+      });
+    }
   }
 
   scoutCompleted(proposalCount: number): void {
@@ -101,6 +110,7 @@ export class TuiDisplayAdapter implements DisplayAdapter {
   }
 
   progressUpdate(snapshot: ProgressSnapshot): void {
+    this.lastSnapshot = snapshot;
     this.autoScreen.setProgress(snapshot);
   }
 

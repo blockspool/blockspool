@@ -301,6 +301,7 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
     lensZeroYieldPairs: new Set(),
     lensExecutionStrikes: new Map(),
     lensFullyExhausted: false,
+    _cycleProgress: null,
     escalationCandidates: new Set(),
 
     parallelExplicit: false,

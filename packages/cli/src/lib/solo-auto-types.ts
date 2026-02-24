@@ -198,6 +198,8 @@ export interface SessionRuntime {
   lensExecutionStrikes: Map<string, number>;
   /** Whether all lens×sector combinations are exhausted */
   lensFullyExhausted: boolean;
+  /** Per-phase progress within current cycle (for progress bar) */
+  _cycleProgress: { done: number; total: number; label: string } | null;
   /** Titles hard-rejected by dedup gate, accumulated across cycles for drill escalation */
   escalationCandidates: Set<string>;
   drillMode: boolean;

@@ -38,6 +38,12 @@ export interface ProgressSnapshot {
     total: number;
     percent: number;
   };
+  /** Per-phase progress within the current cycle (e.g. batches during scout, tickets during execute) */
+  cycleProgress?: {
+    done: number;
+    total: number;
+    label: string;
+  };
 }
 
 export interface DisplayAdapter {
@@ -96,9 +102,12 @@ export function formatCompactElapsed(ms: number): string {
 export function formatProgressLine(snapshot: ProgressSnapshot): string {
   const parts: string[] = [];
 
-  // Progress bar (if denominator available)
+  // Progress bar — prefer cycle-phase progress, fall back to time budget or sector coverage
   if (snapshot.timeBudgetMs && snapshot.timeBudgetMs > 0) {
     const pct = Math.min(100, (snapshot.elapsedMs / snapshot.timeBudgetMs) * 100);
+    parts.push(`${renderProgressBar(pct)} ${Math.round(pct)}%`);
+  } else if (snapshot.cycleProgress && snapshot.cycleProgress.total > 0) {
+    const pct = Math.min(100, (snapshot.cycleProgress.done / snapshot.cycleProgress.total) * 100);
     parts.push(`${renderProgressBar(pct)} ${Math.round(pct)}%`);
   } else if (snapshot.sectorCoverage && snapshot.sectorCoverage.total > 0) {
     parts.push(`${renderProgressBar(snapshot.sectorCoverage.percent)} ${Math.round(snapshot.sectorCoverage.percent)}%`);
@@ -109,9 +118,11 @@ export function formatProgressLine(snapshot: ProgressSnapshot): string {
     parts.push(`Cycle ${snapshot.cycleCount}`);
   }
 
-  // Time
+  // Progress detail — time budget, cycle progress, or sector coverage
   if (snapshot.timeBudgetMs && snapshot.timeBudgetMs > 0) {
     parts.push(`${formatCompactElapsed(snapshot.elapsedMs)} / ${formatCompactElapsed(snapshot.timeBudgetMs)}`);
+  } else if (snapshot.cycleProgress && snapshot.cycleProgress.total > 0) {
+    parts.push(`${snapshot.cycleProgress.done}/${snapshot.cycleProgress.total} ${snapshot.cycleProgress.label}`);
   } else if (snapshot.sectorCoverage && snapshot.sectorCoverage.total > 0) {
     parts.push(`${snapshot.sectorCoverage.scanned}/${snapshot.sectorCoverage.total} sectors`);
   } else {

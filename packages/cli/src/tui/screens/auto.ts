@@ -408,7 +408,10 @@ export class AutoScreen {
     // Dedup consecutive identical chunks (codex emits same thinking block multiple times)
     if (chunk === this.lastRawChunk && chunk.length > 20) return;
     // Filter noisy subprocess stderr (Codex internal state db errors, etc.)
-    if (chunk.includes('codex_core::') || chunk.includes('state db missing rollout path')) return;
+    // Strip ANSI first so filter works even when text contains color codes
+    // eslint-disable-next-line no-control-regex
+    const cleanChunk = chunk.replace(/\x1b\[[0-9;]*m/g, '');
+    if (cleanChunk.includes('codex_core::') || cleanChunk.includes('state db missing rollout path')) return;
     this.lastRawChunk = chunk;
     this.lastStatusLine = -1; // real output arrived, stop replacing status line
     this.writeLog(chunk);
@@ -447,7 +450,10 @@ export class AutoScreen {
     const lines = chunk.split('\n');
     const filtered: string[] = [];
     for (const line of lines) {
-      const trimmed = line.trim();
+      // Strip ANSI first so filter checks work even when text contains color codes
+      // eslint-disable-next-line no-control-regex
+      const clean = line.replace(/\x1b\[[0-9;]*m/g, '');
+      const trimmed = clean.trim();
       // Skip JSONL telemetry (lines that parse as JSON objects)
       if (trimmed.startsWith('{')) {
         try { JSON.parse(trimmed); continue; } catch { /* not JSON, keep it */ }
@@ -456,10 +462,7 @@ export class AutoScreen {
       if (trimmed.includes('codex_core::') || trimmed.includes('state db missing rollout path')) {
         continue;
       }
-      // Skip empty lines that are just ANSI escape sequences
-      // eslint-disable-next-line no-control-regex
-      const clean = line.replace(/\x1b\[[0-9;]*m/g, '');
-      if (clean.trim() || line === '') {
+      if (trimmed || line === '') {
         filtered.push(clean);
       }
     }

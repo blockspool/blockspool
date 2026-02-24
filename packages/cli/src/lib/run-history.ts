@@ -54,6 +54,8 @@ export interface TicketOutcome {
   title: string;
   category?: string;
   status: 'completed' | 'failed' | 'spindle_abort' | 'skipped' | 'no_changes' | 'deferred';
+  /** Specific failure reason (qa_failed, scope_violation, spindle_abort, agent_error, etc.) */
+  failureReason?: string;
   prUrl?: string;
   durationMs?: number;
   error?: string;

@@ -250,6 +250,8 @@ export interface SessionRuntime {
   } | null;
   /** Ratio of proposals dropped by freshness filter last generation (0-1) — bridges to cooldown */
   drillLastFreshnessDropRatio: number | null;
+  /** Last convergence suggested action — fed into trajectory generation for scope steering */
+  lastConvergenceAction?: 'continue' | 'widen_scope' | 'deepen' | 'stop';
   batchTokenBudget: number;
   scoutConcurrency: number;
   scoutTimeoutMs: number;

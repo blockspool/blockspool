@@ -267,6 +267,28 @@ export async function filterProposals(
     }
   }
 
+  // File overlap dedup — catch same issue surfacing under different lenses
+  const FILE_OVERLAP_THRESHOLD = 0.5; // >50% file overlap with non-completed entry = likely same issue
+  if (state.dedupMemory.length > 0) {
+    for (let i = approvedProposals.length - 1; i >= 0; i--) {
+      const pFiles = new Set((approvedProposals[i].files ?? approvedProposals[i].allowed_paths ?? []).filter((f: string) => !f.includes('*')));
+      if (pFiles.size === 0) continue;
+      for (const mem of state.dedupMemory) {
+        if (!mem.files?.length || mem.completed) continue;
+        const overlap = mem.files.filter(f => pFiles.has(f)).length;
+        const overlapRatio = overlap / Math.min(pFiles.size, mem.files.length);
+        if (overlapRatio >= FILE_OVERLAP_THRESHOLD) {
+          rejectedDupTitles.push(approvedProposals[i].title);
+          if (state.options.verbose) {
+            state.displayAdapter.log(chalk.gray(`  ✗ File overlap dedup: ${approvedProposals[i].title} (${Math.round(overlapRatio * 100)}% overlap with "${mem.title}")`));
+          }
+          approvedProposals.splice(i, 1);
+          break;
+        }
+      }
+    }
+  }
+
   pipelineCounts.dedup = approvedProposals.length;
 
   // Bump dedup memory for rejected duplicates (including hard dedup rejects)

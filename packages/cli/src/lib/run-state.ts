@@ -87,6 +87,23 @@ export interface RunState {
   }>;
   /** Learning ROI snapshots (ring buffer, max 20) */
   learningSnapshots?: LearningSnapshot[];
+  /** Persisted confidence calibration from last session */
+  lastEffectiveMinConfidence?: number;
+  /** Persisted drill consecutive insufficient count */
+  lastDrillConsecutiveInsufficient?: number;
+  /** Persisted lens zero-yield pairs with timestamps for TTL-based expiry */
+  lensZeroYieldPairs?: Array<{ key: string; ts: number }>;
+  /** Session crash-resume checkpoint — restored if recent enough */
+  sessionCheckpoint?: {
+    cycleCount: number;
+    totalPrsCreated: number;
+    totalFailed: number;
+    consecutiveLowYieldCycles: number;
+    pendingPrUrls: string[];
+    allPrUrls: string[];
+    ticketOutcomeSummary: Array<{ title: string; category: string; status: string }>;
+    savedAt: number;
+  };
 }
 
 const RUN_STATE_FILE = 'run-state.json';
@@ -143,6 +160,10 @@ export function readRunState(repoRoot: string): RunState {
       categoryStats: parsed.categoryStats ?? undefined,
       integrationStats: parsed.integrationStats ?? undefined,
       learningSnapshots: Array.isArray(parsed.learningSnapshots) ? parsed.learningSnapshots : undefined,
+      lastEffectiveMinConfidence: typeof parsed.lastEffectiveMinConfidence === 'number' ? parsed.lastEffectiveMinConfidence : undefined,
+      lastDrillConsecutiveInsufficient: typeof parsed.lastDrillConsecutiveInsufficient === 'number' ? parsed.lastDrillConsecutiveInsufficient : undefined,
+      lensZeroYieldPairs: Array.isArray(parsed.lensZeroYieldPairs) ? parsed.lensZeroYieldPairs : undefined,
+      sessionCheckpoint: parsed.sessionCheckpoint ?? undefined,
       formulaStats: (() => {
         const statsRaw = parsed.formulaStats ?? {};
         for (const key of Object.keys(statsRaw)) {

@@ -314,7 +314,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     recordDocsAudit(state.repoRoot);
   }
 
-  // Record cycle summary
+  // Record cycle summary + persist calibration state
   {
     const cycleSummary: CycleSummary = {
       cycle: updatedRunState.totalCycles,
@@ -325,13 +325,30 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         .map(o => ({ title: o.title, category: o.category || 'unknown' })),
       failed: state.cycleOutcomes
         .filter(o => o.status === 'failed')
-        .map(o => ({ title: o.title, reason: 'agent_error' })),
+        .map(o => ({ title: o.title, reason: o.failureReason ?? 'agent_error' })),
       noChanges: state.cycleOutcomes
         .filter(o => o.status === 'no_changes')
         .map(o => o.title),
     };
     const rs = readRunState(state.repoRoot);
     rs.recentCycles = pushCycleSummary(rs.recentCycles ?? [], cycleSummary);
+    // Persist confidence calibration, drill state, and lens zero-yield pairs for cross-session continuity
+    rs.lastEffectiveMinConfidence = state.effectiveMinConfidence;
+    rs.lastDrillConsecutiveInsufficient = state.drillConsecutiveInsufficient;
+    rs.lensZeroYieldPairs = [...state.lensZeroYieldPairs].map(key => ({ key, ts: Date.now() }));
+    // Session crash-resume checkpoint
+    rs.sessionCheckpoint = {
+      cycleCount: state.cycleCount,
+      totalPrsCreated: state.totalPrsCreated,
+      totalFailed: state.totalFailed,
+      consecutiveLowYieldCycles: state.consecutiveLowYieldCycles,
+      pendingPrUrls: state.pendingPrUrls,
+      allPrUrls: state.allPrUrls,
+      ticketOutcomeSummary: state.allTicketOutcomes.map(o => ({
+        title: o.title, category: o.category, status: o.status,
+      })),
+      savedAt: Date.now(),
+    };
     writeRunState(state.repoRoot, rs);
   }
 
@@ -414,7 +431,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
 
   // Low-yield cycle detection — primary Nash equilibrium stop signal
   const completedThisCount = state.cycleOutcomes.filter(o => o.status === 'completed').length;
-  if (completedThisCount === 0 && state.cycleCount >= 2) {
+  if (completedThisCount === 0 && state.cycleCount >= 2 && !state.currentTrajectoryStep) {
     state.consecutiveLowYieldCycles++;
     const MAX_LOW_YIELD_CYCLES = state.drillMode ? 5 : 3;
     if (state.consecutiveLowYieldCycles >= MAX_LOW_YIELD_CYCLES) {
@@ -472,6 +489,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       };
     }
     const metrics = computeConvergenceMetrics(state.sectorState, state.allLearnings.length, rs.recentCycles ?? [], sessionCtx, drillCtx);
+    state.lastConvergenceAction = metrics.suggestedAction;
     if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  ${formatConvergenceOneLiner(metrics)}`));
     if (metrics.suggestedAction === 'stop') {
       // Don't converge-stop if untried lenses remain
@@ -710,6 +728,8 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       // Run step verification commands
       let allPassed = true;
       const verificationOutputParts: string[] = [];
+      const existingOutcomes = stepState.commandOutcomes ?? [];
+      const newCommandOutcomes: NonNullable<typeof stepState.commandOutcomes> = [];
       if (step.verification_commands.length > 0) {
         for (const cmd of step.verification_commands) {
           const result = spawnSync('sh', ['-c', cmd], {
@@ -717,12 +737,19 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
             timeout: 30000,
             encoding: 'utf-8',
           });
+          const existingCmd = existingOutcomes.find(c => c.command === cmd);
           if (result.error) {
             // Timeout or spawn error
             allPassed = false;
             const reason = result.error.message?.includes('TIMEOUT') ? 'timeout (30s)' : result.error.message;
             state.displayAdapter.log(chalk.yellow(`    ✗ ${cmd} (${reason})`));
             verificationOutputParts.push(`$ ${cmd}\n${reason}`);
+            newCommandOutcomes.push({
+              command: cmd,
+              passed: false,
+              failCount: (existingCmd?.failCount ?? 0) + 1,
+              lastOutput: reason?.slice(0, 200),
+            });
           } else if (result.status !== 0) {
             allPassed = false;
             const stderr = (result.stderr || '').trim().slice(0, 500);
@@ -731,9 +758,22 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
             if (stderr) state.displayAdapter.log(chalk.gray(`      ${stderr.split('\n')[0]}`));
             else if (stdout) state.displayAdapter.log(chalk.gray(`      ${stdout.split('\n')[0]}`));
             verificationOutputParts.push(`$ ${cmd} (exit ${result.status})\n${stderr || stdout}`);
+            newCommandOutcomes.push({
+              command: cmd,
+              passed: false,
+              failCount: (existingCmd?.failCount ?? 0) + 1,
+              lastOutput: (stderr || stdout)?.slice(0, 200),
+            });
+          } else {
+            newCommandOutcomes.push({
+              command: cmd,
+              passed: true,
+              failCount: existingCmd?.failCount ?? 0,
+            });
           }
         }
       }
+      stepState.commandOutcomes = newCommandOutcomes;
 
       // Optional measurement check
       let measureMet = true;
@@ -953,7 +993,7 @@ function finishDrillTrajectory(state: AutoSessionState, outcome: 'completed' | '
   );
   state.drillGenerationTelemetry = null;
 
-  // Record learnings
+  // Record learnings — trajectory-level
   if (state.autoConf.learningsEnabled) {
     const categories = [...new Set(traj.steps.flatMap(s => s.categories ?? []))];
     const catLabel = categories.join(', ') || 'mixed';
@@ -975,6 +1015,34 @@ function finishDrillTrajectory(state: AutoSessionState, outcome: 'completed' | '
         source: { type: 'drill_stalled', detail: traj.name },
         tags: categories,
       });
+    }
+
+    // Record step-level learnings — enables scope-tagged learning for future proposals
+    for (const step of traj.steps) {
+      const stepState = trajState.stepStates[step.id];
+      if (!stepState) continue;
+
+      const stepTags = extractTags(step.scope ? [step.scope] : [], step.verification_commands ?? []);
+
+      if (stepState.status === 'completed') {
+        addLearning(state.repoRoot, {
+          text: `Trajectory step succeeded: ${step.title} (scope: ${step.scope ?? 'any'})`.slice(0, 200),
+          category: 'pattern',
+          source: { type: 'drill_completed', detail: traj.name },
+          tags: stepTags,
+        });
+      } else if (stepState.status === 'failed') {
+        addLearning(state.repoRoot, {
+          text: `Trajectory step failed: ${step.title} (scope: ${step.scope ?? 'any'})`.slice(0, 200),
+          category: 'warning',
+          source: { type: 'drill_stalled', detail: `${traj.name}/${step.id}` },
+          tags: stepTags,
+          structured: {
+            pattern_type: 'antipattern',
+            applies_to: step.scope,
+          },
+        });
+      }
     }
   }
 

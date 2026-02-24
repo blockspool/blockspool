@@ -30,7 +30,7 @@ import { formatGoalContext } from './goals.js';
 import { sleep } from './dedup.js';
 import { buildBaselineHealthBlock } from './qa-stats.js';
 import { formatTrajectoryForPrompt } from '@promptwheel/core/trajectory/shared';
-import { appendErrorLedger } from './error-ledger.js';
+import { appendErrorLedger, analyzeErrorLedger } from './error-ledger.js';
 import { recordLensScan, recordZeroYield } from './lens-rotation.js';
 
 export interface ScoutResult {
@@ -180,12 +180,39 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   const cycleCtxBlock = buildCycleContextBlock(rs0.recentCycles ?? [], rs0.recentDiffs ?? []);
   if (cycleCtxBlock) promptBuilder.addCycleContext(cycleCtxBlock);
 
+  // Session-level summary block — quick orientation for the scout
+  {
+    const completed = state.allTicketOutcomes.filter(t => t.status === 'completed').length;
+    const failed = state.allTicketOutcomes.filter(t => t.status === 'failed').length;
+    const noChanges = state.allTicketOutcomes.filter(t => t.status === 'no_changes').length;
+    if (state.cycleCount > 1) {
+      const lensInfo = state.lensRotation.length > 1
+        ? `\nActive lens: ${state.currentLens} (${state.lensIndex + 1}/${state.lensRotation.length})`
+        : '';
+      promptBuilder.addSessionSummary(
+        `<session-summary>\nSession: cycle ${state.cycleCount}, ${completed} succeeded, ${failed} failed, ${noChanges} no-changes${lensInfo}\nSession phase: ${state.sessionPhase}\n</session-summary>`,
+      );
+    }
+  }
+
   const baselineHealthBlock = buildBaselineHealthBlock(state.repoRoot, scope);
   if (baselineHealthBlock) promptBuilder.addBaselineHealth(baselineHealthBlock);
 
   if (state.scoutRetries > 0) {
     promptBuilder.addEscalation(buildScoutEscalation(state.scoutRetries, state.scoutedDirs, state.codebaseIndex, state.sectorState ?? undefined));
   }
+  // Error pattern awareness — avoid proposing work in areas that consistently fail
+  try {
+    const errorPatterns = analyzeErrorLedger(state.repoRoot, state.startTime);
+    if (errorPatterns.length > 0) {
+      const lines = errorPatterns.slice(0, 5).map(p =>
+        `- ${p.failureType} in "${p.failedCommand}" (${p.count}x)`,
+      );
+      promptBuilder.addErrorPatterns(
+        `<error-patterns>\nRecurring failures this session — avoid proposing work that hits these:\n${lines.join('\n')}\n</error-patterns>`,
+      );
+    }
+  } catch { /* non-fatal */ }
   if (state.autoConf.learningsEnabled) {
     const learningsText = formatLearningsForPrompt(selectRelevant(state.allLearnings, { paths: [scope] }), state.autoConf.learningsBudget);
     if (learningsText) promptBuilder.addLearnings(learningsText);

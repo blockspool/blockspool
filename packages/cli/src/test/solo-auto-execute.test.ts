@@ -53,6 +53,7 @@ vi.mock('../lib/learnings.js', () => ({
   formatLearningsForPrompt: vi.fn().mockReturnValue(''),
   extractTags: vi.fn().mockReturnValue([]),
   recordAccess: vi.fn(),
+  recordOutcome: vi.fn(),
 }));
 
 vi.mock('../lib/dedup.js', () => ({
@@ -482,6 +483,8 @@ describe('executeProposals', () => {
         'Broken ticket',
         false,
         'agent_error',
+        undefined,
+        ['src/utils.ts'],
       );
     });
 
@@ -591,6 +594,8 @@ describe('executeProposals', () => {
         'Already done',
         false,
         'no_changes',
+        undefined,
+        ['src/utils.ts'],
       );
     });
 

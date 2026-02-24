@@ -12,8 +12,10 @@ const BLOCK_ORDER = [
   'index',
   'dedup',
   'cycle',
+  'session',
   'baselineHealth',
   'escalation',
+  'errorPatterns',
   'learnings',
   'formula',
   'hints',
@@ -64,6 +66,11 @@ export class ScoutPromptBuilder {
     return this;
   }
 
+  addSessionSummary(content: string): this {
+    if (content) this.blocks.set('session', content);
+    return this;
+  }
+
   addBaselineHealth(content: string): this {
     if (content) this.blocks.set('baselineHealth', content);
     return this;
@@ -71,6 +78,11 @@ export class ScoutPromptBuilder {
 
   addEscalation(content: string): this {
     if (content) this.blocks.set('escalation', content);
+    return this;
+  }
+
+  addErrorPatterns(content: string): this {
+    if (content) this.blocks.set('errorPatterns', content);
     return this;
   }
 

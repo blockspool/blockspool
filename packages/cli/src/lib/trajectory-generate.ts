@@ -68,6 +68,10 @@ export interface GenerateFromProposalsOptions {
   ambitionLevel?: 'conservative' | 'moderate' | 'ambitious';
   /** Escalation context — repeatedly-failed proposals that need decomposition into smaller steps */
   escalationContext?: string;
+  /** Convergence signal — hints about whether to widen scope, deepen, or keep short */
+  convergenceHint?: string;
+  /** Current session phase — cooldown triggers shorter trajectories */
+  sessionPhase?: string;
 }
 
 export interface GenerateResult {
@@ -161,6 +165,8 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
     causalContext: opts.causalContext,
     ambitionLevel: opts.ambitionLevel,
     escalationContext: opts.escalationContext,
+    convergenceHint: opts.convergenceHint,
+    sessionPhase: opts.sessionPhase,
   });
 
   // 3. Call LLM (sonnet for cost efficiency)
@@ -255,10 +261,12 @@ export function formatProposalsForTrajectoryPrompt(
     const score = (impact * (p.confidence / 100)).toFixed(1);
     const files = p.files.length > 0 ? p.files.join(', ') : p.allowed_paths.join(', ');
     const suggestedScope = computeSuggestedScope(p.files);
+    const ac = p.acceptance_criteria?.length ? `\n   Acceptance: ${p.acceptance_criteria.join('; ')}` : '';
+    const vc = p.verification_commands?.length ? `\n   Verification: ${p.verification_commands.join(', ')}` : '';
     return `${i + 1}. [${p.category}] ${p.title} (score: ${score}, complexity: ${p.estimated_complexity})
    Files: ${files}${suggestedScope ? `\n   Suggested scope: ${suggestedScope}` : ''}
    ${p.description}
-   Rationale: ${p.rationale}`;
+   Rationale: ${p.rationale}${ac}${vc}`;
   }).join('\n\n');
 }
 
@@ -348,6 +356,8 @@ export function buildGenerateFromProposalsPrompt(
     causalContext?: string;
     ambitionLevel?: 'conservative' | 'moderate' | 'ambitious';
     escalationContext?: string;
+    convergenceHint?: string;
+    sessionPhase?: string;
   },
 ): string {
   const sections: string[] = [];
@@ -459,6 +469,18 @@ Strategy: Break each complex change into 2-4 incremental steps. For example, "En
 Each step should touch a NARROW scope (2-5 files max) and be independently verifiable.
 
 ${context.escalationContext}`);
+  }
+
+  if (context?.sessionPhase === 'cooldown') {
+    sections.push(`## Session Phase Warning
+
+**SESSION ENDING SOON:** Keep trajectory SHORT (2-3 steps) and HIGH-CONFIDENCE. Avoid ambitious multi-file changes.`);
+  }
+
+  if (context?.convergenceHint) {
+    sections.push(`## System Convergence Signal
+
+${context.convergenceHint}`);
   }
 
   sections.push(`## Requirements

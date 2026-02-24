@@ -183,6 +183,9 @@ function makeState(overrides: Partial<any> = {}): any {
     lensExecutionStrikes: new Map(),
     lensFullyExhausted: false,
     escalationCandidates: new Set(),
+    drillConsecutiveInsufficient: 0,
+    lastConvergenceAction: undefined,
+    currentTrajectoryStep: null,
     ...overrides,
   };
 }

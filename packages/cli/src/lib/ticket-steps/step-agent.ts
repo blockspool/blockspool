@@ -20,7 +20,7 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
 
   await ctx.markStep('agent', 'started');
 
-  const prompt = buildTicketPrompt(ticket, opts.guidelinesContext, opts.learningsContext, opts.metadataContext, { confidence: opts.confidence, complexity: opts.complexity });
+  const prompt = buildTicketPrompt(ticket, opts.guidelinesContext, opts.learningsContext, opts.metadataContext, { confidence: opts.confidence, complexity: opts.complexity, formulaHint: opts.formulaHint, rationale: opts.rationale, acceptanceCriteria: opts.acceptanceCriteria, retryContext: opts.retryContext });
   ctx.execBackend = opts.executionBackend ?? new ClaudeExecutionBackend();
 
   const claudeResult = await ctx.execBackend.run({

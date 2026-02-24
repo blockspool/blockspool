@@ -12,11 +12,13 @@ import { shouldContinue } from './solo-auto-state.js';
 import { soloRunTicket, captureQaBaseline, baselineToPassFail } from './solo-ticket.js';
 import { getPromptwheelDir } from './solo-config.js';
 import { formatGuidelinesForPrompt } from './guidelines.js';
-import { selectRelevant, formatLearningsForPrompt, extractTags, addLearning, confirmLearning, recordAccess, type StructuredKnowledge } from './learnings.js';
+import { selectRelevant, formatLearningsForPrompt, extractTags, addLearning, confirmLearning, recordAccess, recordApplication, type StructuredKnowledge } from './learnings.js';
 import { classifyFailure } from './failure-classifier.js';
 import { normalizeQaConfig } from './solo-utils.js';
+import { computeTicketTimeout } from './solo-auto-utils.js';
 import { recordPrFiles } from './file-cooldown.js';
 import { recordDedupEntry } from './dedup-memory.js';
+import { recordOutcome as recordLearningOutcome } from './learnings.js';
 import { recordFormulaTicketOutcome, pushRecentDiff, recordQualitySignal, recordCategoryOutcome, deferProposal } from './run-state.js';
 import { recordTicketOutcome } from './sectors.js';
 import { appendErrorLedger } from './error-ledger.js';
@@ -51,6 +53,10 @@ export interface ProposalResult {
     qaMs?: number;
     gitMs?: number;
   };
+  /** Learning IDs injected into this ticket — used for recordOutcome */
+  injectedLearningIds?: string[];
+  /** Actual failure reason from the ticket result */
+  failureReason?: string;
 }
 
 /**
@@ -93,14 +99,17 @@ export async function processOneProposal(
       })
     : [];
   const ticketLearningsBlock = formatLearningsForPrompt(ticketLearnings, state.autoConf.learningsBudget);
-  if (ticketLearnings.length > 0) {
-    recordAccess(state.repoRoot, ticketLearnings.map(l => l.id));
+  const injectedLearningIds = ticketLearnings.map(l => l.id);
+  if (injectedLearningIds.length > 0) {
+    recordAccess(state.repoRoot, injectedLearningIds);
   }
 
   let currentTicket = ticket;
   let currentRun = run;
   let retryCount = 0;
   let wasRetried = false;
+  let lastError: string | undefined;
+  let lastFailureReason: string | undefined;
   const maxScopeRetries = 2;
 
   while (retryCount <= maxScopeRetries) {
@@ -116,7 +125,7 @@ export async function processOneProposal(
         skipQa: false,
         createPr: state.deliveryMode !== 'direct' && !state.milestoneMode,
         draftPr: state.useDraft,
-        timeoutMs: 0,
+        timeoutMs: computeTicketTimeout(proposal, state.autoConf),
         verbose: state.options.verbose ?? false,
         onProgress: (msg) => {
           state.displayAdapter.ticketProgress(currentTicket.id, msg);
@@ -131,7 +140,15 @@ export async function processOneProposal(
         qaRetryWithTestFix: ['refactor', 'perf', 'types'].includes(proposal.category),
         confidence: proposal.confidence,
         complexity: proposal.estimated_complexity,
+        rationale: proposal.rationale,
+        acceptanceCriteria: proposal.acceptance_criteria,
+        retryContext: retryCount > 0 ? {
+          attempt: retryCount,
+          previousError: (lastError ?? '').slice(0, 500),
+          failureReason: lastFailureReason ?? 'unknown',
+        } : undefined,
         qaBaseline: cycleQaBaseline ?? undefined,
+        formulaHint: state.currentFormulaName !== 'default' ? state.currentFormulaName : undefined,
         ...(state.milestoneMode && state.milestoneBranch ? {
           baseBranch: state.milestoneBranch,
           skipPush: true,
@@ -175,7 +192,7 @@ export async function processOneProposal(
         await runs.markSuccess(state.adapter, currentRun.id);
         await tickets.updateStatus(state.adapter, currentTicket.id, 'done');
         state.displayAdapter.ticketDone(currentTicket.id, false, '— No changes needed');
-        return { success: false, noChanges: true };
+        return { success: false, noChanges: true, injectedLearningIds };
       }
 
       if (result.success) {
@@ -185,7 +202,7 @@ export async function processOneProposal(
             await runs.markSuccess(state.adapter, currentRun.id);
             await tickets.updateStatus(state.adapter, currentTicket.id, 'done');
             state.displayAdapter.ticketDone(currentTicket.id, false, '— No changes needed');
-            return { success: false, noChanges: true };
+            return { success: false, noChanges: true, injectedLearningIds };
           }
           const mergeResult = await mergeTicketToMilestone(
             state.repoRoot,
@@ -216,7 +233,7 @@ export async function processOneProposal(
             }
           }
           if (result.traceAnalysis) state.allTraceAnalyses.push(result.traceAnalysis);
-          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming };
+          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds };
         }
 
         await runs.markSuccess(state.adapter, currentRun.id, { prUrl: result.prUrl });
@@ -238,6 +255,8 @@ export async function processOneProposal(
           if (!mergeResult.success) {
             // Retry against updated direct branch (another ticket changed the same files)
             if (retryCount < maxScopeRetries) {
+              lastError = 'Merge conflict with direct branch';
+              lastFailureReason = 'git_error';
               retryCount++;
               wasRetried = true;
               state.displayAdapter.ticketProgress(currentTicket.id, `Merge conflict, re-running against updated branch (${retryCount}/${maxScopeRetries})...`);
@@ -275,7 +294,7 @@ export async function processOneProposal(
           });
           if (result.traceAnalysis) state.allTraceAnalyses.push(result.traceAnalysis);
           state.displayAdapter.ticketDone(currentTicket.id, true, 'Committed to direct branch');
-          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming };
+          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds };
         }
 
         // Auto-merge
@@ -290,8 +309,10 @@ export async function processOneProposal(
           recordPrFiles(state.repoRoot, result.prUrl, proposal.files ?? proposal.allowed_paths ?? []);
         }
         if (result.traceAnalysis) state.allTraceAnalyses.push(result.traceAnalysis);
-        return { success: true, prUrl: result.prUrl, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming };
+        return { success: true, prUrl: result.prUrl, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds };
       } else if (result.scopeExpanded && retryCount < maxScopeRetries) {
+        lastError = result.error;
+        lastFailureReason = result.failureReason ?? 'scope_violation';
         retryCount++;
         wasRetried = true;
         state.displayAdapter.ticketProgress(currentTicket.id, `Scope expanded, retrying (${retryCount}/${maxScopeRetries})...`);
@@ -373,7 +394,7 @@ export async function processOneProposal(
           } catch { /* non-fatal */ }
         }
         state.displayAdapter.ticketDone(currentTicket.id, false, `Failed: ${failReason}`);
-        return { success: false };
+        return { success: false, injectedLearningIds, failureReason: result.failureReason ?? 'agent_error' };
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -396,11 +417,11 @@ export async function processOneProposal(
         });
       } catch { /* non-fatal */ }
       state.displayAdapter.ticketDone(currentTicket.id, false, `Error: ${errorMsg}`);
-      return { success: false };
+      return { success: false, injectedLearningIds, failureReason: 'agent_error' };
     }
   }
 
-  return { success: false };
+  return { success: false, injectedLearningIds };
 }
 
 export async function executeProposals(state: AutoSessionState, toProcess: TicketProposal[]): Promise<ExecuteResult> {
@@ -525,7 +546,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       return;
     }
     if (result.noChanges) {
-      recordDedupEntry(state.repoRoot, proposal.title, false, 'no_changes');
+      recordDedupEntry(state.repoRoot, proposal.title, false, 'no_changes', undefined, proposal.files ?? proposal.allowed_paths);
       const outcome: TicketOutcome = { id: '', title: proposal.title, category: proposal.category, status: 'no_changes' };
       state.allTicketOutcomes.push(outcome);
       state.cycleOutcomes.push(outcome);
@@ -536,7 +557,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       state.totalPrsCreated++;
       if (result.prUrl) state.allPrUrls.push(result.prUrl);
       if (result.prUrl) state.pendingPrUrls.push(result.prUrl);
-      recordDedupEntry(state.repoRoot, proposal.title, true, undefined, otherTitles);
+      recordDedupEntry(state.repoRoot, proposal.title, true, undefined, otherTitles, proposal.files ?? proposal.allowed_paths);
       if (state.sectorState && state.currentSectorId) recordTicketOutcome(state.sectorState, state.currentSectorId, true, proposal.category);
       recordFormulaTicketOutcome(state.repoRoot, state.currentFormulaName, true);
       recordCategoryOutcome(state.repoRoot, proposal.category, true);
@@ -566,12 +587,20 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
           ? { cochange_files: changedFiles.filter(f => !f.includes('*')), pattern_type: 'dependency' }
           : undefined;
         addLearning(state.repoRoot, {
-          text: `${proposal.category} succeeded: ${proposal.title}`.slice(0, 200),
+          text: `${proposal.category}: ${proposal.title} [${changedFiles.length} files${proposal.rationale ? ', ' + proposal.rationale.slice(0, 80) : ''}]`.slice(0, 200),
           category: 'pattern',
           source: { type: 'ticket_success', detail: proposal.category },
           tags: extractTags(changedFiles, []),
           structured,
         });
+      }
+      // Record learning application — track that injected learnings were actually used
+      if (result.injectedLearningIds?.length) {
+        recordApplication(state.repoRoot, result.injectedLearningIds);
+      }
+      // Record learning outcome — learnings injected into this ticket succeeded
+      if (result.injectedLearningIds?.length) {
+        recordLearningOutcome(state.repoRoot, result.injectedLearningIds, true);
       }
       const outcome: TicketOutcome = {
         id: '', title: proposal.title, category: proposal.category, status: 'completed', prUrl: result.prUrl,
@@ -582,11 +611,15 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       state.cycleOutcomes.push(outcome);
     } else {
       state.totalFailed++;
-      recordDedupEntry(state.repoRoot, proposal.title, false, 'agent_error');
+      recordDedupEntry(state.repoRoot, proposal.title, false, (result.failureReason as any) ?? 'agent_error', undefined, proposal.files ?? proposal.allowed_paths);
       if (state.sectorState && state.currentSectorId) recordTicketOutcome(state.sectorState, state.currentSectorId, false, proposal.category);
       recordFormulaTicketOutcome(state.repoRoot, state.currentFormulaName, false);
       recordCategoryOutcome(state.repoRoot, proposal.category, false);
-      const outcome: TicketOutcome = { id: '', title: proposal.title, category: proposal.category, status: 'failed' };
+      // Record learning outcome — learnings injected into this ticket failed
+      if (result.injectedLearningIds?.length) {
+        recordLearningOutcome(state.repoRoot, result.injectedLearningIds, false);
+      }
+      const outcome: TicketOutcome = { id: '', title: proposal.title, category: proposal.category, status: 'failed', failureReason: result.failureReason };
       state.allTicketOutcomes.push(outcome);
       state.cycleOutcomes.push(outcome);
     }

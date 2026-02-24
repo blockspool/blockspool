@@ -7,7 +7,7 @@ import type { tickets } from '@promptwheel/core/repos';
 /**
  * Build the prompt for Claude from a ticket
  */
-export function buildTicketPrompt(ticket: NonNullable<Awaited<ReturnType<typeof tickets.getById>>>, guidelinesContext?: string, learningsContext?: string, metadataContext?: string, opts?: { confidence?: number; complexity?: string }): string {
+export function buildTicketPrompt(ticket: NonNullable<Awaited<ReturnType<typeof tickets.getById>>>, guidelinesContext?: string, learningsContext?: string, metadataContext?: string, opts?: { confidence?: number; complexity?: string; formulaHint?: string; rationale?: string; acceptanceCriteria?: string[]; retryContext?: { attempt: number; previousError: string; failureReason: string } }): string {
   const parts: string[] = [];
 
   // Planning preamble for uncertain or complex changes
@@ -38,12 +38,31 @@ export function buildTicketPrompt(ticket: NonNullable<Awaited<ReturnType<typeof 
     parts.push(learningsContext, '');
   }
 
+  if (opts?.retryContext) {
+    parts.push(
+      `## Previous Attempt (${opts.retryContext.attempt})`,
+      `Failed with: ${opts.retryContext.failureReason}`,
+      `Error: ${opts.retryContext.previousError}`,
+      'Avoid repeating the same approach. Address the root cause.',
+      '',
+    );
+  }
+
   parts.push(
     `# Task: ${ticket.title}`,
     '',
     ticket.description ?? '',
     '',
   );
+
+  if (opts?.rationale) {
+    parts.push('## Rationale', opts.rationale, '');
+  }
+  if (opts?.acceptanceCriteria?.length) {
+    parts.push('## Acceptance Criteria');
+    for (const c of opts.acceptanceCriteria) parts.push(`- ${c}`);
+    parts.push('');
+  }
 
   if (ticket.allowedPaths.length > 0) {
     parts.push('## Allowed Paths');
@@ -74,6 +93,11 @@ export function buildTicketPrompt(ticket: NonNullable<Awaited<ReturnType<typeof 
   parts.push('2. Implement the required changes');
   parts.push('3. Keep changes minimal and focused');
   parts.push('4. Do NOT run test/build/lint commands — QA is automated after you finish');
+
+  if (opts?.formulaHint) {
+    parts.push('');
+    parts.push(`This task was identified by a ${opts.formulaHint} scan. Keep that perspective in mind.`);
+  }
 
   return parts.join('\n');
 }

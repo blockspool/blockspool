@@ -515,6 +515,7 @@ export type AmbitionLevel = 'conservative' | 'moderate' | 'ambitious';
  */
 export function computeAmbitionLevel(state: AutoSessionState): AmbitionLevel {
   if (state.drillHistory.length < 3) return 'conservative';
+  if (state.sessionPhase === 'cooldown') return 'conservative';
   const drillConf = state.autoConf.drill;
   const metrics = computeDrillMetrics(state.drillHistory);
 
@@ -608,7 +609,7 @@ export function computeArcGuidance(
 ): string | undefined {
   if (state.drillHistory.length < 2) return undefined;
 
-  const MAX_SIGNALS = 2;
+  const MAX_SIGNALS = 3;
   const recentWindow = state.drillHistory.slice(-5);
   const parts: string[] = [];
 
@@ -1056,20 +1057,31 @@ export function buildEscalationProposals(
     );
     if (alreadyPresent) continue;
 
-    // Build a synthetic proposal with high impact (these are real issues)
+    // Build a synthetic proposal with failure-type-driven attributes
+    const confidence = entry.failureReason === 'scope_violation' ? 80
+      : entry.failureReason === 'qa_failed' ? 65
+      : entry.failureReason === 'spindle_abort' ? 50
+      : 60;
+    const category = entry.failureReason === 'scope_violation' ? 'refactor'
+      : entry.failureReason === 'qa_failed' ? (entry.category ?? 'refactor')
+      : 'refactor';
+    const complexity = entry.failureReason === 'spindle_abort' ? 'complex'
+      : entry.failureReason === 'scope_violation' ? 'moderate'
+      : 'complex';
+
     allProposals.push({
       id: `escalation-${Date.now()}-${injected}`,
       title: entry.title,
       description: `[ESCALATION — failed ${entry.hit_count}x as single ticket, reason: ${entry.failureReason}] This is a valid improvement that needs trajectory decomposition into smaller steps.`,
-      category: 'refactor' as import('@promptwheel/core/scout').ProposalCategory,
+      category: category as import('@promptwheel/core/scout').ProposalCategory,
       files: [],
       allowed_paths: [],
-      confidence: 70, // moderate confidence — the issue is real but approach needs rethinking
+      confidence,
       impact_score: 8, // high impact — these are persistent issues worth solving
       acceptance_criteria: [],
       verification_commands: ['npm test'],
       rationale: `Repeatedly failed as single ticket (${entry.hit_count}x, reason: ${entry.failureReason}). Needs decomposition.`,
-      estimated_complexity: 'complex' as const,
+      estimated_complexity: complexity as const,
     });
     injected++;
   }
@@ -1432,6 +1444,17 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
       : arcGuidance;
   }
 
+  // Build convergence hint for trajectory generation
+  let convergenceHint: string | undefined;
+  if (state.lastConvergenceAction && state.lastConvergenceAction !== 'continue') {
+    const hints: Record<string, string> = {
+      widen_scope: 'Convergence analysis suggests WIDENING SCOPE — current areas are well-covered. Explore new sectors, less-touched categories, or broader architectural improvements.',
+      deepen: 'Convergence analysis suggests DEEPENING — surface-level issues are addressed. Focus on deeper refactors, multi-file architectural improvements, or comprehensive test coverage.',
+      stop: 'Convergence analysis suggests the codebase is well-polished. If generating a trajectory, keep it SHORT (2-3 steps) and focus only on high-impact remaining work.',
+    };
+    convergenceHint = hints[state.lastConvergenceAction];
+  }
+
   state.displayAdapter.log(chalk.cyan(`  Drill: generating trajectory from ${proposals.length} proposal(s)...`));
   if (state.options.verbose && effectiveAmbition !== 'moderate') {
     state.displayAdapter.log(chalk.gray(`    Ambition: ${effectiveAmbition}${effectiveAmbition !== baseAmbition ? ` (adjusted from ${baseAmbition})` : ''}`));
@@ -1465,6 +1488,8 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
       causalContext,
       ambitionLevel: effectiveAmbition,
       escalationContext,
+      convergenceHint,
+      sessionPhase: state.sessionPhase,
     });
 
     // Activate the generated trajectory

@@ -27,6 +27,8 @@ export interface DedupEntry extends CoreDedupEntry {
   failureReason?: 'qa_failed' | 'scope_violation' | 'spindle_abort' | 'agent_error' | 'no_changes';
   /** Titles of proposals that were in the same batch (dependency tracking) */
   relatedTitles?: string[];
+  /** Primary files targeted by this proposal (top 10, no globs) */
+  files?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -102,10 +104,14 @@ export function recordDedupEntry(
   completed: boolean,
   failureReason?: 'qa_failed' | 'scope_violation' | 'spindle_abort' | 'agent_error' | 'no_changes',
   relatedTitles?: string[],
+  files?: string[],
 ): void {
   const entries = readEntries(projectRoot);
   const now = new Date().toISOString();
   const normalized = title.toLowerCase().trim();
+
+  // Normalize files: top 10, no globs
+  const normalizedFiles = files?.filter(f => !f.includes('*')).slice(0, 10);
 
   const existing = entries.find(e => e.title.toLowerCase().trim() === normalized);
   if (existing) {
@@ -115,6 +121,7 @@ export function recordDedupEntry(
     if (completed) existing.completed = true;
     if (failureReason) existing.failureReason = failureReason;
     if (relatedTitles?.length) existing.relatedTitles = relatedTitles;
+    if (normalizedFiles?.length) existing.files = normalizedFiles;
 
     // Instrument: duplicate detected
     metric('dedup', 'duplicate_found', { hitCount: existing.hit_count, completed });
@@ -128,6 +135,7 @@ export function recordDedupEntry(
       completed,
       failureReason,
       relatedTitles,
+      files: normalizedFiles,
     });
   }
 

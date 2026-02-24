@@ -784,7 +784,8 @@ function patchStateClosures(
   });
   state.getCycleFormula = (cycle: number) => {
     if (state.activeGoal && !state.options.formula) {
-      return state.activeGoal;
+      // Every 4th cycle, let lens rotation run to prevent tunnel vision
+      if (cycle % 4 !== 0) return state.activeGoal;
     }
     return getCycleFormulaImpl(stateFormulaCtx(), cycle);
   };
@@ -1012,7 +1013,13 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     currentSectorCycle: 0,
     sessionScannedSectors: new Set(),
 
-    effectiveMinConfidence: autoConf.minConfidence ?? 20,
+    effectiveMinConfidence: (() => {
+      const rs = readRunState(repoRoot);
+      const persisted = rs.lastEffectiveMinConfidence;
+      const configured = autoConf.minConfidence ?? 20;
+      return (persisted !== undefined && persisted >= configured && persisted <= 80)
+        ? persisted : configured;
+    })(),
     consecutiveLowYieldCycles: 0,
 
     sessionPhase,
@@ -1072,7 +1079,15 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     lensRotation: buildLensRotation(repoRoot, resolved.activeFormula),
     lensIndex: 0,
     lensMatrix: new Map(),
-    lensZeroYieldPairs: new Set(),
+    lensZeroYieldPairs: (() => {
+      const rs = readRunState(repoRoot);
+      const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+      return new Set(
+        (rs.lensZeroYieldPairs ?? [])
+          .filter((p: { ts: number }) => Date.now() - p.ts < SEVEN_DAYS)
+          .map((p: { key: string }) => p.key),
+      );
+    })(),
     lensExecutionStrikes: new Map(),
     lensFullyExhausted: false,
     escalationCandidates: new Set(),
@@ -1084,7 +1099,7 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     drillCoveredCategories: new Map(),
     drillCoveredScopes: new Map(),
     drillLastSurveyTimestamp: null,
-    drillConsecutiveInsufficient: 0,
+    drillConsecutiveInsufficient: readRunState(repoRoot).lastDrillConsecutiveInsufficient ?? 0,
     drillGenerationTelemetry: null,
     drillLastFreshnessDropRatio: null,
 
@@ -1101,6 +1116,21 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
 
   // Redirect shutdown handler to state
   shutdownRef = state;
+
+  // Restore from crash-resume checkpoint if recent enough (< 30 min)
+  {
+    const rs = readRunState(repoRoot);
+    const cp = rs.sessionCheckpoint;
+    if (cp && Date.now() - cp.savedAt < 30 * 60 * 1000) {
+      state.cycleCount = cp.cycleCount;
+      state.totalPrsCreated = cp.totalPrsCreated;
+      state.totalFailed = cp.totalFailed;
+      state.consecutiveLowYieldCycles = cp.consecutiveLowYieldCycles;
+      state.pendingPrUrls = [...cp.pendingPrUrls];
+      state.allPrUrls = [...cp.allPrUrls];
+      console.log(chalk.yellow(`Resuming from checkpoint: cycle ${cp.cycleCount}, ${cp.totalPrsCreated} PRs`));
+    }
+  }
 
   // Patch closures that need state reference
   patchStateClosures(state, shutdownRef);

@@ -52,6 +52,13 @@ export interface StepState {
   consecutiveFailures?: number;
   /** Total verification failures (never resets) — detects flaky tests */
   totalFailures?: number;
+  /** Per-command verification outcomes — enables flakiness detection */
+  commandOutcomes?: Array<{
+    command: string;
+    passed: boolean;
+    failCount: number;
+    lastOutput?: string;
+  }>;
 }
 
 export interface TrajectoryState {
@@ -223,6 +230,10 @@ export function formatTrajectoryForPrompt(
     }
     if (stepState.consecutiveFailures && stepState.consecutiveFailures >= 2) {
       lines.push(`**Warning:** This step has failed ${stepState.consecutiveFailures} consecutive times. Try a different approach.`);
+    }
+    const flaky = stepState.commandOutcomes?.filter(c => c.failCount > 0 && c.failCount < (stepState.totalFailures ?? 0));
+    if (flaky?.length) {
+      lines.push(`**Flaky commands:** ${flaky.map(c => c.command).join(', ')}`);
     }
   }
   lines.push('');

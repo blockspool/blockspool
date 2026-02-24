@@ -1566,7 +1566,7 @@ describe('computeArcGuidance', () => {
     expect(guidance).toContain('Active goal targets "security"');
   });
 
-  it('caps signals at 2 even when many would fire', () => {
+  it('caps signals at 3 even when many would fire', () => {
     // Setup that triggers: blended (stalls+momentum), phase rotation, goal
     const history = [
       makeEntry({ outcome: 'stalled', categories: ['fix'] }),
@@ -1580,7 +1580,7 @@ describe('computeArcGuidance', () => {
     expect(guidance).toBeDefined();
     // Count distinct signals (separated by newlines)
     const signals = guidance!.split('\n').filter(s => s.trim().length > 0);
-    expect(signals.length).toBeLessThanOrEqual(2);
+    expect(signals.length).toBeLessThanOrEqual(3);
   });
 
   it('no phase oscillation: foundation-heavy window with some polish does not trigger foundation shift', () => {

@@ -129,6 +129,14 @@ export interface RunTicketOptions {
   qaBaseline?: Map<string, boolean>;
   /** Stream raw agent output chunks for live TUI display */
   onRawOutput?: (chunk: string) => void;
+  /** Formula that generated this ticket — provides execution context */
+  formulaHint?: string;
+  /** Scout rationale explaining why this change is needed */
+  rationale?: string;
+  /** Acceptance criteria from the scout proposal */
+  acceptanceCriteria?: string[];
+  /** Context from a previous failed attempt — helps agent avoid repeating mistakes */
+  retryContext?: { attempt: number; previousError: string; failureReason: string };
 }
 
 /**

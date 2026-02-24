@@ -65,6 +65,16 @@ export async function scoutAllSectors(state: AutoSessionState): Promise<ScoutAll
 
     state.displayAdapter.log(chalk.gray(`  [${sectorsScanned}/${totalSectors}] ${scope}`));
 
+    // Update progress bar during multi-sector survey
+    state._cycleProgress = { done: sectorsScanned - 1, total: totalSectors, label: 'sectors' };
+    state.displayAdapter.progressUpdate({
+      phase: 'scouting',
+      cycleCount: state.cycleCount,
+      ticketsDone: 0, ticketsFailed: 0, ticketsDeferred: 0, ticketsActive: 0,
+      elapsedMs: Date.now() - state.startTime,
+      cycleProgress: state._cycleProgress,
+    });
+
     const scoutResult = await runScoutPhase(state, scope);
     if (scoutResult.shouldBreak) break;
 

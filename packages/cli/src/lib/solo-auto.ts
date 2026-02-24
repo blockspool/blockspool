@@ -463,8 +463,8 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
       }
     }
 
-    // Reset cycle progress for the new scouting phase
-    state._cycleProgress = { done: 0, total: 0, label: 'batches' };
+    // Reset cycle progress — null until batch data arrives, so sectorCoverage is the fallback
+    state._cycleProgress = null;
     state.displayAdapter.progressUpdate(buildProgressSnapshot(state, 'scouting'));
 
     const scoutResult = await runScoutPhase(state);

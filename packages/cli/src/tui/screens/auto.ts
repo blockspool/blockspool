@@ -407,6 +407,8 @@ export class AutoScreen {
     if (!entry) return;
     // Dedup consecutive identical chunks (codex emits same thinking block multiple times)
     if (chunk === this.lastRawChunk && chunk.length > 20) return;
+    // Filter noisy subprocess stderr (Codex internal state db errors, etc.)
+    if (chunk.includes('codex_core::') || chunk.includes('state db missing rollout path')) return;
     this.lastRawChunk = chunk;
     this.lastStatusLine = -1; // real output arrived, stop replacing status line
     this.writeLog(chunk);
@@ -441,7 +443,7 @@ export class AutoScreen {
 
   appendScoutOutput(chunk: string): void {
     this.writeLog(chunk);
-    // Filter out JSONL telemetry lines and strip ANSI from remaining text
+    // Filter out JSONL telemetry lines, noisy subprocess stderr, and strip ANSI
     const lines = chunk.split('\n');
     const filtered: string[] = [];
     for (const line of lines) {
@@ -449,6 +451,10 @@ export class AutoScreen {
       // Skip JSONL telemetry (lines that parse as JSON objects)
       if (trimmed.startsWith('{')) {
         try { JSON.parse(trimmed); continue; } catch { /* not JSON, keep it */ }
+      }
+      // Skip noisy subprocess stderr (Codex internal state db errors, etc.)
+      if (trimmed.includes('codex_core::') || trimmed.includes('state db missing rollout path')) {
+        continue;
       }
       // Skip empty lines that are just ANSI escape sequences
       // eslint-disable-next-line no-control-regex

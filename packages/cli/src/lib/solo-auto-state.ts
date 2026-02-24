@@ -830,6 +830,9 @@ function patchStateClosures(
 /** Start the interactive console (spin mode only, not in daemon mode). */
 function initInteractiveConsole(state: AutoSessionState) {
   if (state.runMode !== 'spin' || state.options.daemon) return;
+  // TUI has its own input handling — skip the raw stdin listener to avoid conflicts
+  const isTui = state.options.tui !== false && !state.options.dryRun && process.stdout.isTTY;
+  if (isTui) return;
 
   state.interactiveConsole = startInteractiveConsole({
     repoRoot: state.repoRoot,
@@ -887,19 +890,25 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     currentlyProcessing: false,
   };
 
+  // Track whether TUI is active — set below after display adapter is created
+  let tuiActive = false;
+
   const shutdownHandler = () => {
     if (shutdownRef.shutdownRequested) {
-      console.log(chalk.red('\nForce quit. Exiting immediately.'));
+      if (!tuiActive) console.log(chalk.red('\nForce quit. Exiting immediately.'));
       process.exit(1);
     }
     shutdownRef.shutdownRequested = true;
     if ('shutdownReason' in shutdownRef && shutdownRef.shutdownReason === null) {
       (shutdownRef as any).shutdownReason = 'user_signal';
     }
-    if (shutdownRef.currentlyProcessing) {
-      console.log(chalk.yellow('\nShutdown requested. Finishing current ticket then finalizing...'));
-    } else {
-      console.log(chalk.yellow('\nShutdown requested. Finalizing session...'));
+    // TUI handles its own shutdown display — don't write raw console output
+    if (!tuiActive) {
+      if (shutdownRef.currentlyProcessing) {
+        console.log(chalk.yellow('\nShutdown requested. Finishing current ticket then finalizing...'));
+      } else {
+        console.log(chalk.yellow('\nShutdown requested. Finalizing session...'));
+      }
     }
   };
 
@@ -944,6 +953,7 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     const useTui = options.tui !== false && !options.dryRun && process.stdout.isTTY;
     displayAdapter = new SpinnerDisplayAdapter();
     if (useTui) {
+      tuiActive = true;
       const { TuiDisplayAdapter } = await import('./display-adapter-tui.js');
       displayAdapter = new TuiDisplayAdapter({
         repoRoot,

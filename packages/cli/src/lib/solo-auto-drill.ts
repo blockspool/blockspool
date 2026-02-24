@@ -1048,6 +1048,7 @@ export function buildEscalationProposals(
   for (const title of state.escalationCandidates) {
     const match = matchAgainstMemory(title, failedMemory);
     if (!match) continue;
+    const entry = match.entry as DedupEntry;
 
     // Check if this proposal is already in the survey results
     const alreadyPresent = allProposals.some(p =>
@@ -1058,8 +1059,8 @@ export function buildEscalationProposals(
     // Build a synthetic proposal with high impact (these are real issues)
     allProposals.push({
       id: `escalation-${Date.now()}-${injected}`,
-      title: match.entry.title,
-      description: `[ESCALATION — failed ${match.entry.hit_count}x as single ticket, reason: ${match.entry.failureReason}] This is a valid improvement that needs trajectory decomposition into smaller steps.`,
+      title: entry.title,
+      description: `[ESCALATION — failed ${entry.hit_count}x as single ticket, reason: ${entry.failureReason}] This is a valid improvement that needs trajectory decomposition into smaller steps.`,
       category: 'refactor' as import('@promptwheel/core/scout').ProposalCategory,
       files: [],
       allowed_paths: [],
@@ -1067,7 +1068,7 @@ export function buildEscalationProposals(
       impact_score: 8, // high impact — these are persistent issues worth solving
       acceptance_criteria: [],
       verification_commands: ['npm test'],
-      rationale: `Repeatedly failed as single ticket (${match.entry.hit_count}x, reason: ${match.entry.failureReason}). Needs decomposition.`,
+      rationale: `Repeatedly failed as single ticket (${entry.hit_count}x, reason: ${entry.failureReason}). Needs decomposition.`,
       estimated_complexity: 'complex' as const,
     });
     injected++;
@@ -1092,7 +1093,7 @@ export function formatEscalationContext(state: AutoSessionState): string {
   for (const title of state.escalationCandidates) {
     const match = matchAgainstMemory(title, failedMemory);
     if (!match) continue;
-    const e = match.entry;
+    const e = match.entry as DedupEntry;
     lines.push(`- "${e.title}" — failed ${e.hit_count}x (reason: ${e.failureReason})`);
   }
 

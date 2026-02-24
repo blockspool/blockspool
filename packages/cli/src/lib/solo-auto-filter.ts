@@ -20,7 +20,7 @@ import {
 } from './dedup.js';
 import {
   recordDedupEntries, getEnabledProposals,
-  loadDedupMemory,
+  loadDedupMemory, type DedupEntry,
 } from './dedup-memory.js';
 import { matchAgainstMemory } from '@promptwheel/core/dedup/shared';
 // balanceProposals removed — let quality determine proposal mix organically
@@ -256,9 +256,10 @@ export async function filterProposals(
       for (let i = approvedProposals.length - 1; i >= 0; i--) {
         const match = matchAgainstMemory(approvedProposals[i].title, failedMemory);
         if (match) {
+          const entry = match.entry as DedupEntry;
           hardDedupRejected.push(approvedProposals[i].title);
           if (state.options.verbose) {
-            state.displayAdapter.log(chalk.gray(`  ✗ Hard dedup: ${approvedProposals[i].title} (failed ${match.entry.hit_count}x as "${match.entry.failureReason}")`));
+            state.displayAdapter.log(chalk.gray(`  ✗ Hard dedup: ${approvedProposals[i].title} (failed ${entry.hit_count}x as "${entry.failureReason}")`));
           }
           approvedProposals.splice(i, 1);
         }

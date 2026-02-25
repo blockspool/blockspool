@@ -467,15 +467,12 @@ export class AutoScreen {
     if (!entry) return;
     // Dedup consecutive identical chunks (codex emits same thinking block multiple times)
     if (chunk === this.lastRawChunk && chunk.length > 20) return;
-    // Filter noisy subprocess stderr (Codex internal state db errors, etc.)
-    // Strip ANSI first so filter works even when text contains color codes
-    // eslint-disable-next-line no-control-regex
-    const cleanChunk = chunk.replace(/\x1b\[[0-9;]*m/g, '');
-    if (cleanChunk.includes('codex_core::') || cleanChunk.includes('state db missing rollout path')) return;
     this.lastRawChunk = chunk;
     this.lastStatusLine = -1; // real output arrived, stop replacing status line
     this.writeLog(chunk);
-    this.appendToUnifiedLog(chunk);
+    // Filter JSONL telemetry, noisy subprocess stderr, and strip ANSI
+    const output = this.filterRawOutput(chunk);
+    if (output) this.appendToUnifiedLog(output);
   }
 
   markTicketDone(id: string, success: boolean, msg: string): void {
@@ -506,11 +503,15 @@ export class AutoScreen {
 
   appendScoutOutput(chunk: string): void {
     this.writeLog(chunk);
-    // Filter out JSONL telemetry lines, noisy subprocess stderr, and strip ANSI
+    const output = this.filterRawOutput(chunk);
+    if (output) this.appendToUnifiedLog(output);
+  }
+
+  /** Filter JSONL telemetry, ANSI codes, and noisy subprocess stderr from raw CLI output. */
+  private filterRawOutput(chunk: string): string {
     const lines = chunk.split('\n');
     const filtered: string[] = [];
     for (const line of lines) {
-      // Strip ANSI first so filter checks work even when text contains color codes
       // eslint-disable-next-line no-control-regex
       const clean = line.replace(/\x1b\[[0-9;]*m/g, '');
       const trimmed = clean.trim();
@@ -518,7 +519,7 @@ export class AutoScreen {
       if (trimmed.startsWith('{')) {
         try { JSON.parse(trimmed); continue; } catch { /* not JSON, keep it */ }
       }
-      // Skip noisy subprocess stderr (Codex internal state db errors, etc.)
+      // Skip noisy subprocess stderr
       if (trimmed.includes('codex_core::') || trimmed.includes('state db missing rollout path')) {
         continue;
       }
@@ -527,9 +528,7 @@ export class AutoScreen {
       }
     }
     const output = filtered.join('\n');
-    if (output.trim()) {
-      this.appendToUnifiedLog(output);
-    }
+    return output.trim() ? output : '';
   }
 
   showScoutBatchProgress(statuses: Array<{ index: number; status: string; proposals?: number }>, totalBatches: number, totalProposals: number): void {

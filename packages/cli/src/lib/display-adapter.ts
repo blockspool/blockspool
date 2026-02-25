@@ -124,15 +124,13 @@ export function formatCompactElapsed(ms: number): string {
 export function formatProgressLine(snapshot: ProgressSnapshot): string {
   const parts: string[] = [];
 
-  // Progress bar — prefer cycle-phase progress, fall back to time budget or sector coverage
+  // Progress bar — time budget or cycle-phase progress only (sector coverage is in the map)
   if (snapshot.timeBudgetMs && snapshot.timeBudgetMs > 0) {
     const pct = Math.min(100, (snapshot.elapsedMs / snapshot.timeBudgetMs) * 100);
     parts.push(`${renderProgressBar(pct)} ${Math.round(pct)}%`);
   } else if (snapshot.cycleProgress && snapshot.cycleProgress.total > 0) {
     const pct = Math.min(100, (snapshot.cycleProgress.done / snapshot.cycleProgress.total) * 100);
     parts.push(`${renderProgressBar(pct)} ${Math.round(pct)}%`);
-  } else if (snapshot.sectorCoverage && snapshot.sectorCoverage.total > 0) {
-    parts.push(`${renderProgressBar(snapshot.sectorCoverage.percent)} ${Math.round(snapshot.sectorCoverage.percent)}%`);
   }
 
   // Cycle
@@ -140,13 +138,11 @@ export function formatProgressLine(snapshot: ProgressSnapshot): string {
     parts.push(`Cycle ${snapshot.cycleCount}`);
   }
 
-  // Progress detail — time budget, cycle progress, or sector coverage
+  // Progress detail — time budget or cycle progress; otherwise elapsed time
   if (snapshot.timeBudgetMs && snapshot.timeBudgetMs > 0) {
     parts.push(`${formatCompactElapsed(snapshot.elapsedMs)} / ${formatCompactElapsed(snapshot.timeBudgetMs)}`);
   } else if (snapshot.cycleProgress && snapshot.cycleProgress.total > 0) {
     parts.push(`${snapshot.cycleProgress.done}/${snapshot.cycleProgress.total} ${snapshot.cycleProgress.label}`);
-  } else if (snapshot.sectorCoverage && snapshot.sectorCoverage.total > 0) {
-    parts.push(`${snapshot.sectorCoverage.scanned}/${snapshot.sectorCoverage.total} sectors`);
   } else {
     parts.push(formatCompactElapsed(snapshot.elapsedMs));
   }

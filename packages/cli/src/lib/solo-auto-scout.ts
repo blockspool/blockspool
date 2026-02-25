@@ -371,8 +371,9 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
           stepState.status = 'failed';
           stepState.failureReason = 'no files match scope';
           state.displayAdapter.log(chalk.yellow(`  Trajectory step "${state.currentTrajectoryStep.title}" failed — no files match scope "${scope}"`));
-          const { getTrajectoryNextStep, saveTrajectoryState } = await import('@promptwheel/core/trajectory/shared');
-          const next = getTrajectoryNextStep(state.activeTrajectory!, state.activeTrajectoryState.stepStates);
+          const { getNextStep } = await import('@promptwheel/core/trajectory/shared');
+          const { saveTrajectoryState } = await import('./trajectory.js');
+          const next = getNextStep(state.activeTrajectory!, state.activeTrajectoryState.stepStates);
           state.currentTrajectoryStep = next;
           if (next) {
             state.activeTrajectoryState.currentStepId = next.id;
@@ -383,14 +384,18 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
           } else {
             state.displayAdapter.log(chalk.yellow(`  Trajectory "${state.activeTrajectory!.name}" ended (no remaining steps)`));
             if (state.drillMode) {
-              const { finishDrillTrajectory } = await import('./solo-auto-drill.js');
-              try { finishDrillTrajectory(state, 'stalled'); } catch { /* non-fatal */ }
+              const { recordDrillTrajectoryOutcome } = await import('./solo-auto-drill.js');
+              const traj = state.activeTrajectory!;
+              const stepStates = state.activeTrajectoryState.stepStates;
+              const stepsCompleted = Object.values(stepStates).filter(s => s.status === 'completed').length;
+              const stepsFailed = Object.values(stepStates).filter(s => s.status === 'failed').length;
+              try { recordDrillTrajectoryOutcome(state, traj.name, traj.description, traj.steps.length, stepsCompleted, stepsFailed, 'stalled', traj.steps); } catch { /* non-fatal */ }
             }
             state.activeTrajectory = null;
             state.activeTrajectoryState = null;
             state.currentTrajectoryStep = null;
           }
-          saveTrajectoryState(state.repoRoot, state.activeTrajectoryState!);
+          if (state.activeTrajectoryState) saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
         }
       }
       return { proposals: [], scoutResult, scope, cycleFormula, isDeepCycle, isDocsAuditCycle, shouldRetry: false, shouldBreak: false };

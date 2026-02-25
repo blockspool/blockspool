@@ -1496,16 +1496,42 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     convergenceHint = hints[state.lastConvergenceAction];
   }
 
+  // Filter proposals referencing empty sectors (0 files on disk).
+  // These produce trajectory steps that always fail with "no files found".
+  const emptySectorPaths = new Set(
+    (state.sectorState?.sectors ?? [])
+      .filter(s => s.fileCount === 0)
+      .map(s => s.path),
+  );
+  let preFiltered = proposals;
+  if (emptySectorPaths.size > 0) {
+    const before = preFiltered.length;
+    preFiltered = preFiltered.filter(p => {
+      if (p.files.length === 0) return true;
+      // Drop if ALL files fall under an empty sector
+      const allEmpty = p.files.every(f => {
+        for (const sp of emptySectorPaths) {
+          if (f === sp || f.startsWith(sp + '/')) return true;
+        }
+        return false;
+      });
+      return !allEmpty;
+    });
+    if (preFiltered.length < before) {
+      state.displayAdapter.log(chalk.gray(`  Drill: dropped ${before - preFiltered.length} proposal(s) targeting empty sectors`));
+    }
+  }
+
   // Filter test-only files from proposals before trajectory generation.
   // The scout excludes test files by default, so trajectory steps scoped to
   // test files will always fail with "no files found matching scope".
   const { isNonProductionFile } = await import('@promptwheel/core/codebase-index/shared');
   const testsEnabled = state.options.tests === true;
-  const filteredProposals = testsEnabled ? proposals : proposals
+  const filteredProposals = testsEnabled ? preFiltered : preFiltered
     .map(p => ({ ...p, files: p.files.filter(f => !isNonProductionFile(f)) }))
     .filter(p => p.files.length > 0 || (p.allowed_paths && p.allowed_paths.length > 0));
-  if (!testsEnabled && filteredProposals.length < proposals.length) {
-    state.displayAdapter.log(chalk.gray(`  Drill: dropped ${proposals.length - filteredProposals.length} test-only proposal(s)`));
+  if (!testsEnabled && filteredProposals.length < preFiltered.length) {
+    state.displayAdapter.log(chalk.gray(`  Drill: dropped ${preFiltered.length - filteredProposals.length} test-only proposal(s)`));
   }
 
   state.displayAdapter.log(chalk.cyan(`  Drill: generating trajectory from ${filteredProposals.length} proposal(s)...`));

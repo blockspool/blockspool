@@ -230,6 +230,10 @@ export function mergeSectors(fresh: Sector[], previous: Sector[]): Sector[] {
   return fresh.map(s => {
     const prev = prevByPath.get(s.path);
     if (!prev) return s;
+    // If sector now has 0 files, don't carry forward stale scan stats —
+    // this prevents empty sectors from accumulating scan counts and
+    // being repeatedly selected by pickNextSector.
+    if (s.fileCount === 0) return s;
     const fileCountChanged = prev.fileCount > 0 && Math.abs(s.fileCount - prev.fileCount) / prev.fileCount > 0.2;
     return {
       ...s,

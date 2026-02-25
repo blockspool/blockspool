@@ -259,6 +259,16 @@ describe('mergeSectors', () => {
     const merged = mergeSectors(fresh, previous);
     expect(merged[0].polishedAt).toBe(1000);
   });
+
+  it('resets scan stats when sector becomes empty (fileCount=0)', () => {
+    const fresh = [makeSector({ path: 'packages/postgres/src', fileCount: 0 })];
+    const previous = [makeSector({ path: 'packages/postgres/src', fileCount: 5, scanCount: 110, proposalYield: 0.5, successCount: 7 })];
+    const merged = mergeSectors(fresh, previous);
+    expect(merged[0].fileCount).toBe(0);
+    expect(merged[0].scanCount).toBe(0); // reset, not carried from previous
+    expect(merged[0].successCount).toBe(0);
+    expect(merged[0].proposalYield).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

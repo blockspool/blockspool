@@ -15,7 +15,7 @@ import { formatProgress } from './solo-config.js';
 import { consumePendingHints } from './solo-hints.js';
 import { formatGuidelinesForPrompt } from './guidelines.js';
 import { selectRelevant, formatLearningsForPrompt, extractTags, addLearning } from './learnings.js';
-import { formatIndexForPrompt } from './codebase-index.js';
+import { formatIndexForPrompt, formatAnalysisForPrompt } from './codebase-index.js';
 import { formatDedupForPrompt } from './dedup-memory.js';
 import { buildScoutEscalation } from './wave-scheduling.js';
 import { ScoutPromptBuilder } from './scout-prompt-builder.js';
@@ -173,6 +173,10 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     );
   }
   if (state.codebaseIndex) promptBuilder.addCodebaseIndex(formatIndexForPrompt(state.codebaseIndex, state.cycleCount));
+  if (state.codebaseIndex) {
+    const analysisBlock = formatAnalysisForPrompt(state.codebaseIndex, state.cycleCount);
+    if (analysisBlock) promptBuilder.addAnalysis(analysisBlock);
+  }
   const dedupPrefix = formatDedupForPrompt(state.dedupMemory);
   if (dedupPrefix) promptBuilder.addDedupMemory(dedupPrefix);
 

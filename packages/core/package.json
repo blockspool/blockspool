@@ -1,6 +1,6 @@
 {
   "name": "@promptwheel/core",
-  "version": "0.7.15",
+  "version": "0.7.16",
   "description": "Core business logic and database adapter interface for PromptWheel",
   "author": "PromptWheel",
   "homepage": "https://promptwheel.com",
@@ -103,6 +103,18 @@
     "./trajectory/shared": {
       "types": "./dist/trajectory/shared.d.ts",
       "import": "./dist/trajectory/shared.js"
+    },
+    "./codebase-index/ast-analysis": {
+      "types": "./dist/codebase-index/ast-analysis.d.ts",
+      "import": "./dist/codebase-index/ast-analysis.js"
+    }
+  },
+  "peerDependencies": {
+    "@ast-grep/napi": ">=0.25.0"
+  },
+  "peerDependenciesMeta": {
+    "@ast-grep/napi": {
+      "optional": true
     }
   },
   "files": [

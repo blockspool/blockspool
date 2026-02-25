@@ -31,6 +31,16 @@ export interface Sector {
   mergeCount?: number;
   closedCount?: number;
   categoryStats?: Record<string, { success: number; failure: number }>;
+  /** Number of modules that import this module (from graph analysis). */
+  fanIn?: number;
+  /** Number of modules this module imports (from graph analysis). */
+  fanOut?: number;
+  /** True if this module is a hub (fan_in >= 3). */
+  isHub?: boolean;
+  /** Number of potentially dead exports in this module. */
+  deadExportCount?: number;
+  /** Martin instability metric: Ce / (Ca + Ce). 0=stable, 1=unstable. */
+  instability?: number;
 }
 
 export interface SectorState {
@@ -46,6 +56,8 @@ export interface CodebaseModuleLike {
   purpose?: string;
   production?: boolean;
   classification_confidence?: string;
+  fan_in?: number;
+  fan_out?: number;
 }
 
 export interface CoverageMetrics {
@@ -144,10 +156,46 @@ export function buildSectors(modules: CodebaseModuleLike[]): Sector[] {
       proposalYield: 0,
       successCount: 0,
       failureCount: 0,
+      fanIn: m.fan_in,
+      fanOut: m.fan_out,
+      isHub: (m.fan_in ?? 0) >= 3,
     });
   }
 
   return sectors;
+}
+
+/**
+ * Enrich sectors with analysis data from the codebase index.
+ * Populates `deadExportCount` and `instability` from dead_exports and coupling metrics.
+ */
+export function enrichSectorsWithAnalysis(
+  sectors: Sector[],
+  deadExports?: Array<{ module: string }>,
+  edges?: Record<string, string[]>,
+  reverseEdges?: Record<string, string[]>,
+): void {
+  // Count dead exports per module
+  if (deadExports && deadExports.length > 0) {
+    const countByModule = new Map<string, number>();
+    for (const d of deadExports) {
+      countByModule.set(d.module, (countByModule.get(d.module) ?? 0) + 1);
+    }
+    for (const s of sectors) {
+      const count = countByModule.get(s.path);
+      if (count !== undefined) s.deadExportCount = count;
+    }
+  }
+
+  // Compute instability per sector
+  if (edges && reverseEdges) {
+    for (const s of sectors) {
+      const ca = (reverseEdges[s.path] ?? []).length;
+      const ce = (edges[s.path] ?? []).length;
+      const total = ca + ce;
+      if (total > 0) s.instability = ce / total;
+    }
+  }
 }
 
 /** Normalize fields on a parsed sector (for loading from JSON). */
@@ -233,10 +281,12 @@ export function getSectorMinConfidence(sector: Sector, base: number): number {
  * 3. Temporal decay (>7 days, older first)
  * 4. Low-confidence sectors first
  * 5. Barren deprioritization (scanCount > 2 && yield < 0.5)
- * 6. High failure rate deprioritization
- * 7. Higher proposalYield first
- * 8. Higher successCount first
- * 9. Alphabetical
+ * 6. Hub modules first (high fan-in → more proposals likely)
+ * 7. Dead export boost (easy cleanup wins)
+ * 8. High failure rate deprioritization
+ * 9. Higher proposalYield first
+ * 10. Higher successCount first
+ * 11. Alphabetical
  *
  * @param now - current timestamp in ms (defaults to Date.now()). Pass explicitly for testability.
  */
@@ -292,15 +342,23 @@ export function pickNextSector(
     const aBarren = a.scanCount > BARREN_MIN_SCANS && a.proposalYield < BARREN_YIELD_THRESHOLD ? 1 : 0;
     const bBarren = b.scanCount > BARREN_MIN_SCANS && b.proposalYield < BARREN_YIELD_THRESHOLD ? 1 : 0;
     if (aBarren !== bBarren) return aBarren - bBarren;
-    // 6. High failure rate deprioritization
+    // 6. Hub modules first (high fan-in → more proposals likely)
+    const aHub = a.isHub ? 1 : 0;
+    const bHub = b.isHub ? 1 : 0;
+    if (aHub !== bHub) return bHub - aHub;
+    // 7. Dead export boost (easy cleanup wins)
+    const aDead = a.deadExportCount ?? 0;
+    const bDead = b.deadExportCount ?? 0;
+    if (aDead !== bDead) return bDead - aDead;
+    // 8. High failure rate deprioritization
     const aFail = a.failureCount >= HIGH_FAILURE_MIN && a.failureCount / (a.failureCount + a.successCount) > HIGH_FAILURE_RATE ? 1 : 0;
     const bFail = b.failureCount >= HIGH_FAILURE_MIN && b.failureCount / (b.failureCount + b.successCount) > HIGH_FAILURE_RATE ? 1 : 0;
     if (aFail !== bFail) return aFail - bFail;
-    // 7. Higher proposalYield first
+    // 9. Higher proposalYield first
     if (a.proposalYield !== b.proposalYield) return b.proposalYield - a.proposalYield;
-    // 8. Higher successCount first (tiebreaker)
+    // 10. Higher successCount first (tiebreaker)
     if (a.successCount !== b.successCount) return b.successCount - a.successCount;
-    // 9. Alphabetical
+    // 11. Alphabetical
     return a.path.localeCompare(b.path);
   });
 

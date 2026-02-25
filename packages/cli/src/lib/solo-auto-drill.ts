@@ -1111,6 +1111,35 @@ export function formatEscalationContext(state: AutoSessionState): string {
 }
 
 /**
+ * Build compact analysis context string from codebase index for trajectory generation.
+ * Includes dead exports, structural issues, and coupling extremes.
+ */
+function buildAnalysisContext(state: AutoSessionState): string | undefined {
+  const idx = state.codebaseIndex;
+  if (!idx) return undefined;
+
+  const parts: string[] = [];
+
+  if (idx.dead_exports && idx.dead_exports.length > 0) {
+    const byModule = new Map<string, string[]>();
+    for (const d of idx.dead_exports) {
+      const names = byModule.get(d.module) ?? [];
+      names.push(d.name);
+      byModule.set(d.module, names);
+    }
+    const lines = Array.from(byModule.entries()).map(([m, names]) => `${m}: ${names.join(', ')}`);
+    parts.push(`Dead exports (${idx.dead_exports.length}): ${lines.join('; ')}`);
+  }
+
+  if (idx.structural_issues && idx.structural_issues.length > 0) {
+    const lines = idx.structural_issues.map(i => `${i.kind}: ${i.module} (${i.detail})`);
+    parts.push(`Structural issues: ${lines.join('; ')}`);
+  }
+
+  return parts.length > 0 ? parts.join('\n') : undefined;
+}
+
+/**
  * Check whether drill should generate a new trajectory, and if so, do it.
  *
  * Returns a result code so the caller knows whether to restart the loop
@@ -1345,7 +1374,7 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     goalContext = `Goal: "${state.activeGoal.name}" — current: ${m.current ?? 'unmeasured'}, target: ${arrow} ${state.activeGoal.measure.target} (gap: ${m.gapPercent}%)`;
   }
 
-  // Extract dependency subgraph for proposal files
+  // Extract dependency subgraph for proposal files (includes reverse edges + hub labels)
   let dependencyEdges: string | undefined;
   if (state.codebaseIndex?.dependency_edges) {
     const proposalModules = new Set<string>();
@@ -1356,16 +1385,30 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
         proposalModules.add(dir);
       }
     }
-    // Extract edges where either source or target is in proposal modules
-    const edges: string[] = [];
+    // Extract forward edges where either source or target is in proposal modules
+    const edgeLines: string[] = [];
     for (const [mod, deps] of Object.entries(state.codebaseIndex.dependency_edges)) {
       const relevantDeps = deps.filter(d => proposalModules.has(d) || proposalModules.has(mod));
       if (relevantDeps.length > 0 && (proposalModules.has(mod) || relevantDeps.some(d => proposalModules.has(d)))) {
-        edges.push(`${mod} → ${relevantDeps.join(', ')}`);
+        edgeLines.push(`${mod} → imports: ${relevantDeps.join(', ')}`);
       }
     }
-    if (edges.length > 0 && edges.length <= 30) {
-      dependencyEdges = edges.join('\n');
+    // Include reverse edges (who depends on proposal modules)
+    const reverseEdges = state.codebaseIndex.reverse_edges ?? {};
+    for (const mod of proposalModules) {
+      const dependents = reverseEdges[mod];
+      if (dependents && dependents.length > 0) {
+        edgeLines.push(`${mod} ← imported by: ${dependents.join(', ')}`);
+      }
+    }
+    // Annotate hub modules for ordering guidance
+    const hubs = state.codebaseIndex.graph_metrics?.hub_modules ?? [];
+    const relevantHubs = hubs.filter(h => proposalModules.has(h));
+    if (relevantHubs.length > 0) {
+      edgeLines.push(`Hub modules (fix leaves before hubs): ${relevantHubs.join(', ')}`);
+    }
+    if (edgeLines.length > 0 && edgeLines.length <= 40) {
+      dependencyEdges = edgeLines.join('\n');
     }
   }
 
@@ -1456,10 +1499,10 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
   // Filter test-only files from proposals before trajectory generation.
   // The scout excludes test files by default, so trajectory steps scoped to
   // test files will always fail with "no files found matching scope".
-  const isTestFile = (f: string) => /\.(test|spec)\.[^/]+$/.test(f) || f.includes('__tests__/');
+  const { isNonProductionFile } = await import('@promptwheel/core/codebase-index/shared');
   const testsEnabled = state.options.tests === true;
   const filteredProposals = testsEnabled ? proposals : proposals
-    .map(p => ({ ...p, files: p.files.filter(f => !isTestFile(f)) }))
+    .map(p => ({ ...p, files: p.files.filter(f => !isNonProductionFile(f)) }))
     .filter(p => p.files.length > 0 || (p.allowed_paths && p.allowed_paths.length > 0));
   if (!testsEnabled && filteredProposals.length < proposals.length) {
     state.displayAdapter.log(chalk.gray(`  Drill: dropped ${proposals.length - filteredProposals.length} test-only proposal(s)`));
@@ -1500,6 +1543,7 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
       escalationContext,
       convergenceHint,
       sessionPhase: state.sessionPhase,
+      analysisContext: buildAnalysisContext(state),
     });
 
     // Activate the generated trajectory

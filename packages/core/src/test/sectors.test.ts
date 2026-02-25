@@ -16,6 +16,7 @@ import {
   recordMergeOutcome,
   getSectorCategoryAffinity,
   suggestScopeAdjustment,
+  enrichSectorsWithAnalysis,
   EMA_OLD_WEIGHT,
   OUTCOME_DECAY_INTERVAL,
   OUTCOME_DECAY_FACTOR,
@@ -765,5 +766,132 @@ describe('suggestScopeAdjustment', () => {
     ]);
     // All non-production → fewer than 3 scanned production → stable
     expect(suggestScopeAdjustment(state)).toBe('stable');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enrichSectorsWithAnalysis
+// ---------------------------------------------------------------------------
+
+describe('enrichSectorsWithAnalysis', () => {
+  it('populates deadExportCount from dead exports list', () => {
+    const sectors = [
+      makeSector({ path: 'src/utils' }),
+      makeSector({ path: 'src/api' }),
+      makeSector({ path: 'src/lib' }),
+    ];
+    const deadExports = [
+      { module: 'src/utils' },
+      { module: 'src/utils' },
+      { module: 'src/utils' },
+      { module: 'src/api' },
+    ];
+    enrichSectorsWithAnalysis(sectors, deadExports);
+    expect(sectors[0].deadExportCount).toBe(3);
+    expect(sectors[1].deadExportCount).toBe(1);
+    expect(sectors[2].deadExportCount).toBeUndefined();
+  });
+
+  it('computes instability from edges and reverse edges', () => {
+    const sectors = [
+      makeSector({ path: 'src/utils' }),   // Ca=2, Ce=0 → I=0
+      makeSector({ path: 'src/api' }),     // Ca=0, Ce=2 → I=1
+      makeSector({ path: 'src/lib' }),     // Ca=1, Ce=1 → I=0.5
+      makeSector({ path: 'src/orphan' }),  // Ca=0, Ce=0 → undefined
+    ];
+    const edges: Record<string, string[]> = {
+      'src/api': ['src/utils', 'src/lib'],
+      'src/lib': ['src/utils'],
+    };
+    const reverseEdges: Record<string, string[]> = {
+      'src/utils': ['src/api', 'src/lib'],
+      'src/lib': ['src/api'],
+    };
+    enrichSectorsWithAnalysis(sectors, undefined, edges, reverseEdges);
+    expect(sectors[0].instability).toBe(0);      // 0 / (2 + 0)
+    expect(sectors[1].instability).toBe(1);      // 2 / (0 + 2)
+    expect(sectors[2].instability).toBe(0.5);    // 1 / (1 + 1)
+    expect(sectors[3].instability).toBeUndefined();
+  });
+
+  it('handles empty inputs gracefully', () => {
+    const sectors = [makeSector({ path: 'src/a' })];
+    enrichSectorsWithAnalysis(sectors);
+    expect(sectors[0].deadExportCount).toBeUndefined();
+    expect(sectors[0].instability).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pickNextSector — hub module and dead export boost
+// ---------------------------------------------------------------------------
+
+describe('pickNextSector hub/dead-export boost', () => {
+  it('prefers hub modules over non-hub at same priority', () => {
+    const state = makeState([
+      makeSector({
+        path: 'src/leaf',
+        scanCount: 1,
+        production: true,
+        isHub: false,
+        proposalYield: 1.0,
+      }),
+      makeSector({
+        path: 'src/hub',
+        scanCount: 1,
+        production: true,
+        isHub: true,
+        proposalYield: 1.0,
+      }),
+    ]);
+    const result = pickNextSector(state, 5);
+    expect(result).not.toBeNull();
+    expect(result!.sector.path).toBe('src/hub');
+  });
+
+  it('prefers sectors with more dead exports at same priority', () => {
+    const state = makeState([
+      makeSector({
+        path: 'src/clean',
+        scanCount: 1,
+        production: true,
+        deadExportCount: 0,
+        proposalYield: 1.0,
+      }),
+      makeSector({
+        path: 'src/dead',
+        scanCount: 1,
+        production: true,
+        deadExportCount: 5,
+        proposalYield: 1.0,
+      }),
+    ]);
+    const result = pickNextSector(state, 5);
+    expect(result).not.toBeNull();
+    expect(result!.sector.path).toBe('src/dead');
+  });
+
+  it('hub boost ranks below barren deprioritization', () => {
+    // A hub with barren yield should still be deprioritized
+    const state = makeState([
+      makeSector({
+        path: 'src/barren-hub',
+        scanCount: 5,
+        production: true,
+        isHub: true,
+        proposalYield: 0.1, // below BARREN_YIELD_THRESHOLD
+      }),
+      makeSector({
+        path: 'src/normal',
+        scanCount: 1,
+        production: true,
+        isHub: false,
+        proposalYield: 1.0,
+      }),
+    ]);
+    const result = pickNextSector(state, 10);
+    expect(result).not.toBeNull();
+    // Normal should win because barren-hub is deprioritized despite isHub
+    expect(result!.sector.path).toBe('src/normal');
   });
 });

@@ -17,11 +17,34 @@ export interface CodebaseIndex {
   built_at: string;
   modules: ModuleEntry[];
   dependency_edges: Record<string, string[]>; // module → modules it imports from
+  /** Reverse dependency map: module → modules that import it. Populated by graph analysis. */
+  reverse_edges?: Record<string, string[]>;
+  /** Detected circular dependency chains. Each array is a cycle path. Populated by graph analysis. */
+  dependency_cycles?: string[][];
+  /** Aggregate graph topology metrics. Populated by graph analysis. */
+  graph_metrics?: GraphMetrics;
   untested_modules: string[];
   large_files: LargeFileEntry[];              // >300 LOC
   entrypoints: string[];
   /** mtimes of files sampled for import scanning — used for change detection. Not included in prompt. */
   sampled_file_mtimes: Record<string, number>;
+  /** Which analysis backend was used: 'regex' (default) or 'ast-grep' (when available). */
+  analysis_backend?: 'regex' | 'ast-grep';
+  /** Potentially unused exports detected by cross-module matching. AST-only. */
+  dead_exports?: DeadExportEntry[];
+  /** Structural anti-patterns detected in the dependency graph. */
+  structural_issues?: StructuralIssue[];
+  /** TypeScript-specific semantic analysis results. ts-morph only. */
+  typescript_analysis?: TypeScriptAnalysis;
+}
+
+export interface GraphMetrics {
+  /** Modules with 3+ dependents (high fan-in). */
+  hub_modules: string[];
+  /** Modules with zero incoming or outgoing edges. */
+  orphan_modules: string[];
+  /** Modules that only import (no dependents). */
+  leaf_modules: string[];
 }
 
 export type ClassificationConfidence = 'high' | 'medium' | 'low';
@@ -34,6 +57,57 @@ export interface ModuleEntry {
   production: boolean; // false for tests, config, fixtures, docs, scripts, generated, etc.
   /** How confident the classifier is. 'low' means no signals matched — assumed production. */
   classification_confidence: ClassificationConfidence;
+  /** Number of modules that import this module. */
+  fan_in?: number;
+  /** Number of modules this module imports. */
+  fan_out?: number;
+  /** Total number of exported symbols across all files in this module. AST-only. */
+  export_count?: number;
+  /** Up to 20 exported symbol names (for cross-module matching). AST-only. */
+  exported_names?: string[];
+  /** Average cyclomatic complexity across files in this module. AST-only. */
+  avg_complexity?: number;
+}
+
+// ---------------------------------------------------------------------------
+// AST analysis types
+// ---------------------------------------------------------------------------
+
+export interface ExportEntry {
+  name: string;
+  kind: 'function' | 'class' | 'variable' | 'type' | 'interface' | 'enum' | 'other';
+}
+
+export interface AstAnalysisResult {
+  imports: string[];
+  exports: ExportEntry[];
+  complexity: number;
+}
+
+export interface DeadExportEntry {
+  module: string;
+  name: string;
+  kind: string;
+}
+
+export interface StructuralIssue {
+  kind: 'circular-dep' | 'god-module' | 'excessive-fan-out' | 'barrel-only' | 'orphan';
+  module: string;
+  detail: string;
+  severity: 'info' | 'warning';
+}
+
+export interface TypeScriptAnalysis {
+  /** Total count of `any` type annotations across analyzed files. */
+  any_count: number;
+  /** Top propagation paths where `any` types spread through the codebase. Max 10. */
+  any_propagation_paths: Array<{ source: string; reaches: string[]; length: number }>;
+  /** Function-level call edges from analyzed files. Max 100. */
+  call_graph_edges: Array<{ caller: string; callee: string }>;
+  /** Public export count per module (module path → count). */
+  api_surface: Record<string, number>;
+  /** Count of unchecked type assertions (`as X`, non-null `!`). */
+  unchecked_type_assertions: number;
 }
 
 export interface LargeFileEntry {
@@ -92,6 +166,26 @@ export const CHUNK_SIZE = 15;
 
 /** File-name patterns that indicate non-production files (even within production modules). */
 export const NON_PROD_FILE_RE = /\.(test|spec|e2e|integration|stories|story)\./i;
+
+/**
+ * Polyglot non-production file-name patterns beyond the dot-delimited convention.
+ * Covers Go (_test.go), Python (test_*.py, conftest.py), Ruby (_spec.rb),
+ * Java/Kotlin (*Test.java), C# (*Tests.cs), Elixir (_test.exs), PHP (*Test.php),
+ * Swift (*Tests.swift).
+ */
+const LANG_TEST_FILE_RE = /(?:_test\.go|_test\.exs?|_spec\.rb|(?:^|[/\\])test_[^/\\]+\.py|(?:^|[/\\])conftest\.py|Test(?:s)?\.(?:java|kt|kts|scala|cs|php|swift))$/;
+
+/** Directory segments that indicate non-production context. */
+const TEST_DIR_RE = /(?:^|[/\\])(?:__tests__|__fixtures__|__mocks__|testdata|test_helpers|fixtures|tests?|specs?)(?:[/\\]|$)/;
+
+/**
+ * Check whether a file path looks like a non-production file (test, spec, fixture, story, etc.).
+ * Combines the dot-delimited convention (.test., .spec.) with language-specific naming patterns
+ * and directory-based detection.
+ */
+export function isNonProductionFile(filePath: string): boolean {
+  return NON_PROD_FILE_RE.test(filePath) || LANG_TEST_FILE_RE.test(filePath) || TEST_DIR_RE.test(filePath);
+}
 
 /**
  * Polyglot test-content patterns — matches test framework calls across languages.
@@ -320,6 +414,115 @@ export function resolveImportToModule(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Graph algorithms — pure functions for dependency graph analysis
+// ---------------------------------------------------------------------------
+
+/**
+ * Invert the dependency edge map: for each "A imports B" edge, produce "B is imported by A".
+ */
+export function computeReverseEdges(edges: Record<string, string[]>): Record<string, string[]> {
+  const reverse: Record<string, string[]> = {};
+  for (const [source, targets] of Object.entries(edges)) {
+    for (const target of targets) {
+      (reverse[target] ??= []).push(source);
+    }
+  }
+  return reverse;
+}
+
+/**
+ * Detect dependency cycles using iterative DFS with explicit stacks (no recursion).
+ * Returns an array of cycles, each represented as a path array (e.g., ["a", "b", "a"]).
+ * Caps at 10 cycles to avoid blowing up on highly cyclical graphs.
+ */
+export function detectCycles(edges: Record<string, string[]>): string[][] {
+  const MAX_CYCLES = 10;
+  const cycles: string[][] = [];
+  const allNodes = new Set<string>([
+    ...Object.keys(edges),
+    ...Object.values(edges).flat(),
+  ]);
+
+  const visited = new Set<string>();
+  const finished = new Set<string>();
+
+  for (const startNode of allNodes) {
+    if (visited.has(startNode) || cycles.length >= MAX_CYCLES) continue;
+
+    // Iterative DFS — stack entries: [node, index into adjacency list]
+    const stack: Array<[string, number]> = [[startNode, 0]];
+    const pathSet = new Set<string>([startNode]);
+    const pathList: string[] = [startNode];
+    visited.add(startNode);
+
+    while (stack.length > 0 && cycles.length < MAX_CYCLES) {
+      const [node, idx] = stack[stack.length - 1];
+      const neighbors = edges[node] ?? [];
+
+      if (idx >= neighbors.length) {
+        // Done with this node — backtrack
+        stack.pop();
+        pathSet.delete(node);
+        pathList.pop();
+        finished.add(node);
+        continue;
+      }
+
+      // Advance to next neighbor
+      stack[stack.length - 1] = [node, idx + 1];
+      const neighbor = neighbors[idx];
+
+      if (pathSet.has(neighbor)) {
+        // Found a cycle — extract the cycle path
+        const cycleStart = pathList.indexOf(neighbor);
+        const cyclePath = [...pathList.slice(cycleStart), neighbor];
+        // Deduplicate: normalize cycle by starting from the lexicographically smallest node
+        const minIdx = cyclePath.slice(0, -1).reduce(
+          (mi, _n, i, arr) => arr[i] < arr[mi] ? i : mi, 0,
+        );
+        const normalized = [...cyclePath.slice(minIdx, -1), ...cyclePath.slice(0, minIdx), cyclePath.slice(minIdx, -1)[0]];
+        const key = normalized.join(' → ');
+        if (!cycles.some(c => c.join(' → ') === key)) {
+          cycles.push(normalized);
+        }
+      } else if (!visited.has(neighbor)) {
+        visited.add(neighbor);
+        pathSet.add(neighbor);
+        pathList.push(neighbor);
+        stack.push([neighbor, 0]);
+      }
+    }
+  }
+
+  return cycles;
+}
+
+/**
+ * Compute aggregate graph topology metrics from module list and edges.
+ * Hub: fan_in >= 3. Leaf: fan_out > 0 but fan_in === 0. Orphan: fan_in === 0 and fan_out === 0.
+ */
+export function computeGraphMetrics(
+  modules: ModuleEntry[],
+  edges: Record<string, string[]>,
+  reverseEdges: Record<string, string[]>,
+): GraphMetrics {
+  const hub_modules: string[] = [];
+  const orphan_modules: string[] = [];
+  const leaf_modules: string[] = [];
+
+  for (const mod of modules) {
+    const fanIn = (reverseEdges[mod.path] ?? []).length;
+    const fanOut = (edges[mod.path] ?? []).length;
+
+    if (fanIn >= 3) hub_modules.push(mod.path);
+    if (fanIn === 0 && fanOut === 0) orphan_modules.push(mod.path);
+    else if (fanIn === 0 && fanOut > 0) leaf_modules.push(mod.path);
+  }
+
+  return { hub_modules, orphan_modules, leaf_modules };
+}
+
 /**
  * Format a codebase index for injection into a scout prompt.
  *
@@ -349,7 +552,11 @@ export function formatIndexForPrompt(index: CodebaseIndex, scoutCycle: number): 
   for (const mod of focusModules) {
     const deps = dependency_edges[mod.path];
     const depStr = deps ? ` → imports: ${deps.join(', ')}` : '';
-    parts.push(`${mod.path}/ — ${mod.file_count} files (${mod.purpose})${depStr}`);
+    // Append AST-derived export/complexity when available
+    const astSuffix = mod.export_count !== null && mod.export_count !== undefined
+      ? ` | ${mod.export_count} exports${mod.avg_complexity !== null && mod.avg_complexity !== undefined ? ` (complexity: ${mod.avg_complexity.toFixed(1)})` : ''}`
+      : '';
+    parts.push(`${mod.path}/ — ${mod.file_count} files (${mod.purpose})${depStr}${astSuffix}`);
   }
 
   if (otherModules.length > 0) {
@@ -374,6 +581,29 @@ export function formatIndexForPrompt(index: CodebaseIndex, scoutCycle: number): 
     parts.push('');
     parts.push('### Entrypoints');
     parts.push(entrypoints.join(', '));
+  }
+
+  // Graph insights — compact section from dependency graph analysis
+  const graphLines: string[] = [];
+  if (index.graph_metrics) {
+    const { hub_modules, orphan_modules } = index.graph_metrics;
+    if (hub_modules.length > 0) {
+      graphLines.push(`Hub modules (3+ dependents): ${hub_modules.join(', ')}`);
+    }
+    if (orphan_modules.length > 0) {
+      graphLines.push(`Orphan modules (no dependencies): ${orphan_modules.slice(0, 10).join(', ')}`);
+    }
+  }
+  if (index.dependency_cycles && index.dependency_cycles.length > 0) {
+    const formatted = index.dependency_cycles
+      .slice(0, 5)
+      .map(c => c.join(' → '));
+    graphLines.push(`Circular dependencies: ${formatted.join('; ')}`);
+  }
+  if (graphLines.length > 0) {
+    parts.push('');
+    parts.push('### Dependency Graph Insights');
+    parts.push(graphLines.join('\n'));
   }
 
   return parts.join('\n');

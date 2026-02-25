@@ -89,6 +89,12 @@ export async function runDoctorChecks(options: {
   // 10. SQLite native module
   checks.push(await checkSqliteModule());
 
+  // 11. Optional: ast-grep for AST-level codebase analysis
+  checks.push(await checkAstGrep());
+
+  // 12. Optional: ts-morph for TypeScript deep analysis
+  checks.push(await checkTsMorph(options.repoRoot));
+
   // Determine capabilities
   const hasGit = checks.find(c => c.name === 'git')?.status === 'pass';
   const isRepo = checks.find(c => c.name === 'git-repo')?.status === 'pass';
@@ -380,6 +386,51 @@ async function checkSqliteModule(): Promise<CheckResult> {
     return createCheckResult('sqlite', 'fail', 'SQLite native module failed to load', {
       fix: 'Try: npm rebuild better-sqlite3. If that fails, ensure you have build tools (python, c++ compiler)',
       details: message,
+    });
+  }
+}
+
+/**
+ * Check: @ast-grep/napi available (optional, enables AST-level codebase analysis)
+ */
+async function checkAstGrep(): Promise<CheckResult> {
+  try {
+    const moduleName = '@ast-grep/napi';
+    await import(/* webpackIgnore: true */ moduleName);
+    return createCheckResult('ast-grep', 'pass', '@ast-grep/napi available (AST analysis enabled)', {
+      details: 'Enables export detection, cyclomatic complexity, and import extraction via AST parsing',
+    });
+  } catch {
+    return createCheckResult('ast-grep', 'warn', '@ast-grep/napi not installed (optional)', {
+      fix: 'Install for enhanced analysis: npm install @ast-grep/napi',
+      details: 'Without ast-grep, codebase indexing uses regex-based heuristics (still functional)',
+    });
+  }
+}
+
+/**
+ * Check: ts-morph available (optional, enables TypeScript deep analysis)
+ * Only relevant for TypeScript projects.
+ */
+async function checkTsMorph(repoRoot?: string): Promise<CheckResult> {
+  const cwd = repoRoot ?? process.cwd();
+  const tsconfigPath = path.join(cwd, 'tsconfig.json');
+
+  // Skip check for non-TypeScript projects
+  if (!fs.existsSync(tsconfigPath)) {
+    return createCheckResult('ts-morph', 'pass', 'ts-morph check skipped (not a TypeScript project)');
+  }
+
+  try {
+    const moduleName = 'ts-morph';
+    await import(/* webpackIgnore: true */ moduleName);
+    return createCheckResult('ts-morph', 'pass', 'ts-morph available (TypeScript deep analysis enabled)', {
+      details: 'Enables `any` propagation tracking, call graph analysis, and API surface detection',
+    });
+  } catch {
+    return createCheckResult('ts-morph', 'warn', 'ts-morph not installed (optional)', {
+      fix: 'Install for TypeScript deep analysis: npm install ts-morph',
+      details: 'Without ts-morph, TypeScript-specific analysis (any tracking, call graphs) is skipped',
     });
   }
 }

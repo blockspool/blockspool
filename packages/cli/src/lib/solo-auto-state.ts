@@ -50,7 +50,7 @@ import {
 import { detectProjectMetadata, formatMetadataForPrompt } from './project-metadata/index.js';
 import { DEFAULT_AUTO_CONFIG } from './solo-config.js';
 import {
-  loadOrBuildSectors, pickNextSector,
+  loadOrBuildSectors, pickNextSector, enrichSectorsWithAnalysis,
   type SectorState,
 } from './sectors.js';
 import { loadTasteProfile } from './taste-profile.js';
@@ -326,6 +326,9 @@ interface SessionData {
   dedupMemory: DedupEntry[];
   codebaseIndex: CodebaseIndex | null;
   excludeDirs: string[];
+  /** Loaded ast-grep module for AST-level analysis, or undefined if unavailable. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  astGrepModule?: any;
   metadataBlock: string | null;
   sectorState: SectorState | null;
   tasteProfile: ReturnType<typeof loadTasteProfile>;
@@ -433,11 +436,43 @@ async function loadSessionData(
   // Codebase index
   const excludeDirs = ['node_modules', 'dist', 'build', '.git', '.promptwheel', 'coverage', '__pycache__'];
   let codebaseIndex: CodebaseIndex | null = null;
+  // Try to load ast-grep for AST-level analysis (optional)
+  let astGrepModule: unknown = null;
   try {
-    codebaseIndex = buildCodebaseIndex(repoRoot, excludeDirs, true);
-    if (options.verbose) console.log(chalk.gray(`  Codebase index: ${codebaseIndex.modules.length} modules, ${codebaseIndex.untested_modules.length} untested, ${codebaseIndex.large_files.length} hotspots`));
+    const moduleName = '@ast-grep/napi';
+    astGrepModule = await import(/* webpackIgnore: true */ moduleName);
+  } catch {
+    // ast-grep not installed — regex fallback
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    codebaseIndex = buildCodebaseIndex(repoRoot, excludeDirs, true, (astGrepModule ?? undefined) as any);
+    if (options.verbose) console.log(chalk.gray(`  Codebase index: ${codebaseIndex.modules.length} modules, ${codebaseIndex.untested_modules.length} untested, ${codebaseIndex.large_files.length} hotspots${codebaseIndex.analysis_backend === 'ast-grep' ? ' (AST)' : ''}`));
   } catch {
     // Non-fatal
+  }
+
+  // TypeScript deep analysis (optional, only on initial build)
+  if (codebaseIndex && !codebaseIndex.typescript_analysis) {
+    try {
+      const { loadTsAnalysisCache, saveTsAnalysisCache } = await import('./ts-analysis-cache.js');
+      // Try cache first
+      const cached = loadTsAnalysisCache(repoRoot);
+      if (cached) {
+        codebaseIndex.typescript_analysis = cached;
+        if (options.verbose) console.log(chalk.gray(`  TypeScript analysis (cached): ${cached.any_count} any, ${cached.unchecked_type_assertions} assertions`));
+      } else {
+        const { analyzeTypeScript } = await import('./ts-analysis.js');
+        const tsResult = await analyzeTypeScript(repoRoot, codebaseIndex.modules, 30_000);
+        if (tsResult) {
+          codebaseIndex.typescript_analysis = tsResult;
+          saveTsAnalysisCache(repoRoot, tsResult, codebaseIndex.modules.length);
+          if (options.verbose) console.log(chalk.gray(`  TypeScript analysis: ${tsResult.any_count} any, ${tsResult.unchecked_type_assertions} assertions`));
+        }
+      }
+    } catch {
+      // Non-fatal — ts-morph not available or analysis failed
+    }
   }
 
   // Project metadata
@@ -464,6 +499,13 @@ async function loadSessionData(
   if (codebaseIndex) {
     try {
       sectorState = loadOrBuildSectors(repoRoot, codebaseIndex.modules);
+      // Enrich sectors with analysis data (dead exports, instability)
+      enrichSectorsWithAnalysis(
+        sectorState.sectors,
+        codebaseIndex.dead_exports,
+        codebaseIndex.dependency_edges,
+        codebaseIndex.reverse_edges,
+      );
       if (options.verbose) console.log(chalk.gray(`  Sectors loaded: ${sectorState.sectors.length} sector(s)`));
     } catch {
       // Non-fatal
@@ -545,7 +587,7 @@ async function loadSessionData(
 
   return {
     deepFormula, docsAuditFormula, guidelines, guidelinesOpts, guidelinesRefreshInterval,
-    allLearnings, dedupMemory, codebaseIndex, excludeDirs, metadataBlock,
+    allLearnings, dedupMemory, codebaseIndex, excludeDirs, astGrepModule: astGrepModule ?? undefined, metadataBlock,
     sectorState, tasteProfile, goals, activeGoal, activeGoalMeasurement,
     activeTrajectory, activeTrajectoryState, currentTrajectoryStep,
     batchTokenBudget, scoutConcurrency, scoutTimeoutMs, maxScoutFiles, activeBackendName,

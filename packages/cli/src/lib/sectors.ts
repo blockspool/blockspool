@@ -31,6 +31,7 @@ export {
   recordMergeOutcome,
   getSectorCategoryAffinity,
   suggestScopeAdjustment,
+  enrichSectorsWithAnalysis,
 } from '@promptwheel/core/sectors/shared';
 
 // Import for local use

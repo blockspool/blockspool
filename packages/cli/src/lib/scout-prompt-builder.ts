@@ -10,6 +10,7 @@ const BLOCK_ORDER = [
   'goal',
   'trajectory',
   'index',
+  'analysis',
   'dedup',
   'cycle',
   'session',
@@ -53,6 +54,11 @@ export class ScoutPromptBuilder {
 
   addCodebaseIndex(content: string): this {
     if (content) this.blocks.set('index', content);
+    return this;
+  }
+
+  addAnalysis(content: string): this {
+    if (content) this.blocks.set('analysis', content);
     return this;
   }
 

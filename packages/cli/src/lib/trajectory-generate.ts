@@ -72,6 +72,8 @@ export interface GenerateFromProposalsOptions {
   convergenceHint?: string;
   /** Current session phase — cooldown triggers shorter trajectories */
   sessionPhase?: string;
+  /** Codebase analysis context — dead exports, structural issues, coupling metrics */
+  analysisContext?: string;
 }
 
 export interface GenerateResult {
@@ -83,7 +85,13 @@ export interface GenerateResult {
 export async function generateTrajectory(opts: GenerateOptions): Promise<GenerateResult> {
   // 1. Build codebase context
   const excludeDirs = ['node_modules', 'dist', 'build', '.git', '.promptwheel', 'coverage', '__pycache__'];
-  const codebaseIndex = buildCodebaseIndex(opts.repoRoot, excludeDirs, true);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let astGrepModule: any;
+  try {
+    const moduleName = '@ast-grep/napi';
+    astGrepModule = await import(/* webpackIgnore: true */ moduleName);
+  } catch { /* optional */ }
+  const codebaseIndex = buildCodebaseIndex(opts.repoRoot, excludeDirs, true, astGrepModule);
   const projectMeta = detectProjectMetadata(opts.repoRoot);
 
   const indexBlock = formatIndexForPrompt(codebaseIndex, 0);
@@ -142,7 +150,13 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
   let metaBlock: string;
   try {
     const excludeDirs = ['node_modules', 'dist', 'build', '.git', '.promptwheel', 'coverage', '__pycache__'];
-    const codebaseIndex = buildCodebaseIndex(opts.repoRoot, excludeDirs, true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let astGrepMod: any;
+    try {
+      const moduleName = '@ast-grep/napi';
+      astGrepMod = await import(/* webpackIgnore: true */ moduleName);
+    } catch { /* optional */ }
+    const codebaseIndex = buildCodebaseIndex(opts.repoRoot, excludeDirs, true, astGrepMod);
     const projectMeta = detectProjectMetadata(opts.repoRoot);
     indexBlock = formatIndexForPrompt(codebaseIndex, 0);
     metaBlock = formatMetadataForPrompt(projectMeta);
@@ -167,6 +181,7 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
     escalationContext: opts.escalationContext,
     convergenceHint: opts.convergenceHint,
     sessionPhase: opts.sessionPhase,
+    analysisContext: opts.analysisContext,
   });
 
   // 3. Call LLM (sonnet for cost efficiency)
@@ -358,6 +373,7 @@ export function buildGenerateFromProposalsPrompt(
     escalationContext?: string;
     convergenceHint?: string;
     sessionPhase?: string;
+    analysisContext?: string;
   },
 ): string {
   const sections: string[] = [];
@@ -446,6 +462,14 @@ ${context.metricsHint}`);
 Use this to order trajectory steps correctly — modules that are imported by others should be fixed first:
 
 ${context.dependencyEdges}`);
+  }
+
+  if (context?.analysisContext) {
+    sections.push(`## Codebase Analysis
+
+Static analysis of the codebase. Dead exports are high-confidence cleanup targets. Order steps to fix leaf modules before hubs. Structural issues indicate areas needing attention:
+
+${context.analysisContext}`);
   }
 
   if (context?.causalContext) {

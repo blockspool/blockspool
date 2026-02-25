@@ -24,7 +24,7 @@ import { removePrEntries } from './file-cooldown.js';
 import { recordFormulaMergeOutcome } from './run-state.js';
 import { updatePrOutcome } from './pr-outcomes.js';
 import {
-  recordMergeOutcome, saveSectors, refreshSectors,
+  recordMergeOutcome, saveSectors, refreshSectors, enrichSectorsWithAnalysis,
   suggestScopeAdjustment,
 } from './sectors.js';
 import { loadDedupMemory } from './dedup-memory.js';
@@ -606,7 +606,8 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
   // Refresh codebase index
   if (state.codebaseIndex && hasStructuralChanges(state.codebaseIndex, state.repoRoot)) {
     try {
-      state.codebaseIndex = refreshCodebaseIndex(state.codebaseIndex, state.repoRoot, state.excludeDirs);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      state.codebaseIndex = refreshCodebaseIndex(state.codebaseIndex, state.repoRoot, state.excludeDirs, true, (state as any).astGrepModule);
       if (state.options.verbose) {
         state.displayAdapter.log(chalk.gray(`  Codebase index refreshed: ${state.codebaseIndex.modules.length} modules`));
       }
@@ -615,6 +616,13 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
           state.repoRoot,
           state.sectorState,
           state.codebaseIndex.modules,
+        );
+        // Re-enrich sectors with updated analysis data (dead exports, instability)
+        enrichSectorsWithAnalysis(
+          state.sectorState.sectors,
+          state.codebaseIndex.dead_exports,
+          state.codebaseIndex.dependency_edges,
+          state.codebaseIndex.reverse_edges,
         );
         if (state.options.verbose) {
           state.displayAdapter.log(chalk.gray(`  Sectors refreshed: ${state.sectorState.sectors.length} sector(s)`));

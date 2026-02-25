@@ -14,6 +14,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
+// Re-export AST analysis types
+export { type AstGrepModule } from './ast-analysis.js';
+export { mapExtensionToLang, analyzeFileAst } from './ast-analysis.js';
+
 // Re-export everything from shared (pure algorithms + types + constants)
 export {
   type CodebaseIndex,
@@ -21,6 +25,12 @@ export {
   type ModuleEntry,
   type LargeFileEntry,
   type ClassifyResult,
+  type GraphMetrics,
+  type ExportEntry,
+  type AstAnalysisResult,
+  type DeadExportEntry,
+  type StructuralIssue,
+  type TypeScriptAnalysis,
   SOURCE_EXTENSIONS,
   PURPOSE_HINT,
   NON_PRODUCTION_PURPOSES,
@@ -32,17 +42,30 @@ export {
   extractImports,
   resolveImportToModule,
   formatIndexForPrompt,
+  computeReverseEdges,
+  detectCycles,
+  computeGraphMetrics,
 } from './shared.js';
 
 // Import for local use
-import type { CodebaseIndex, ModuleEntry, LargeFileEntry } from './shared.js';
+import type { CodebaseIndex, ModuleEntry, LargeFileEntry, ExportEntry } from './shared.js';
 import {
   SOURCE_EXTENSIONS,
   sampleEvenly,
   classifyModule,
   extractImports,
   resolveImportToModule,
+  computeReverseEdges,
+  detectCycles,
+  computeGraphMetrics,
 } from './shared.js';
+import type { AstGrepModule as AstGrepModuleType } from './ast-analysis.js';
+import { analyzeFileAst, mapExtensionToLang } from './ast-analysis.js';
+import { loadAstCache, saveAstCache, isEntryCurrent, type AstCache } from './ast-cache.js';
+import { detectDeadExports, detectStructuralIssues } from './dead-code.js';
+
+// Re-export format-analysis
+export { formatAnalysisForPrompt } from './format-analysis.js';
 
 // ---------------------------------------------------------------------------
 // I/O helpers
@@ -106,6 +129,7 @@ export function buildCodebaseIndex(
   projectRoot: string,
   excludeDirs: string[] = [],
   useGitTracking = true,
+  astGrepModule?: AstGrepModuleType | null,
 ): CodebaseIndex {
   const excludeSet = new Set(excludeDirs.map(d => d.toLowerCase()));
 
@@ -247,6 +271,73 @@ export function buildCodebaseIndex(
     mod.classification_confidence = confidence;
   }
 
+  // Step 2c: AST analysis — when ast-grep is available, extract exports and complexity
+  let analysisBackend: 'regex' | 'ast-grep' = 'regex';
+  if (astGrepModule) {
+    analysisBackend = 'ast-grep';
+    const astCache = loadAstCache(projectRoot);
+    const updatedCache: AstCache = { ...astCache };
+    const allCurrentFiles = new Set<string>();
+
+    // Per-module: aggregate exports and complexity from individual files
+    for (const mod of modules) {
+      const files = sourceFilesByModule.get(mod.path) ?? [];
+      const moduleExports: ExportEntry[] = [];
+      let totalComplexity = 0;
+      let filesAnalyzed = 0;
+
+      for (const filePath of files) {
+        const relFile = path.relative(projectRoot, filePath);
+        allCurrentFiles.add(relFile);
+        const ext = path.extname(filePath);
+        const langKey = mapExtensionToLang(ext);
+        if (!langKey) continue;
+
+        // Check cache first
+        let stat: fs.Stats;
+        try { stat = fs.statSync(filePath); } catch { continue; }
+        const cached = updatedCache[relFile];
+        if (isEntryCurrent(cached, stat.mtimeMs, stat.size)) {
+          moduleExports.push(...cached.exports);
+          totalComplexity += cached.complexity;
+          filesAnalyzed++;
+          continue;
+        }
+
+        // Read full file content for AST analysis
+        try {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          const result = analyzeFileAst(content, filePath, langKey, astGrepModule);
+          if (result) {
+            moduleExports.push(...result.exports);
+            totalComplexity += result.complexity;
+            filesAnalyzed++;
+            // Update cache
+            updatedCache[relFile] = {
+              mtime: stat.mtimeMs,
+              size: stat.size,
+              imports: result.imports,
+              exports: result.exports,
+              complexity: result.complexity,
+            };
+          }
+        } catch {
+          // File read error — skip this file for AST analysis
+        }
+      }
+
+      // Populate module-level AST metrics
+      if (filesAnalyzed > 0) {
+        mod.export_count = moduleExports.length;
+        mod.exported_names = moduleExports.slice(0, 20).map(e => e.name);
+        mod.avg_complexity = totalComplexity / filesAnalyzed;
+      }
+    }
+
+    // Save updated cache (pruning stale entries)
+    saveAstCache(projectRoot, updatedCache, allCurrentFiles);
+  }
+
   // Step 3: Test coverage — find untested modules
   const untestedModules: string[] = [];
 
@@ -339,14 +430,54 @@ export function buildCodebaseIndex(
     }
   }
 
+  // Step 6: Graph analysis — reverse edges, cycle detection, topology metrics
+  const reverseEdges = computeReverseEdges(dependencyEdges);
+  const dependencyCycles = detectCycles(dependencyEdges);
+  const graphMetrics = computeGraphMetrics(modules, dependencyEdges, reverseEdges);
+
+  // Populate per-module fan_in / fan_out
+  for (const mod of modules) {
+    mod.fan_in = (reverseEdges[mod.path] ?? []).length;
+    mod.fan_out = (dependencyEdges[mod.path] ?? []).length;
+  }
+
+  // Step 7: Dead code + structural analysis
+  // Dead exports require AST data (exportsByModule). Structural issues use graph metrics.
+  let deadExports: import('./shared.js').DeadExportEntry[] | undefined;
+
+  if (analysisBackend === 'ast-grep') {
+    // Build per-module export/import maps from AST cache
+    const exportsByModule: Record<string, ExportEntry[]> = {};
+    const importsByModule: Record<string, string[]> = {};
+    for (const mod of modules) {
+      if (mod.exported_names && mod.exported_names.length > 0) {
+        // Reconstruct ExportEntry from module data (kind is lost, use 'other')
+        exportsByModule[mod.path] = mod.exported_names.map(name => ({ name, kind: 'other' as const }));
+      }
+      // Use dependency edges as import proxy
+      const deps = dependencyEdges[mod.path];
+      if (deps) importsByModule[mod.path] = deps;
+    }
+    deadExports = detectDeadExports(modules, dependencyEdges, exportsByModule, importsByModule);
+  }
+
+  // Structural issues only need graph data (no AST required)
+  const structuralIssues = detectStructuralIssues(modules, dependencyEdges, reverseEdges, dependencyCycles, entrypoints);
+
   return {
     built_at: new Date().toISOString(),
     modules,
     dependency_edges: dependencyEdges,
+    reverse_edges: reverseEdges,
+    dependency_cycles: dependencyCycles,
+    graph_metrics: graphMetrics,
     untested_modules: untestedModules,
     large_files: largeFiles,
     entrypoints,
     sampled_file_mtimes: sampledFileMtimes,
+    analysis_backend: analysisBackend,
+    dead_exports: deadExports,
+    structural_issues: structuralIssues,
   };
 }
 
@@ -359,8 +490,9 @@ export function refreshCodebaseIndex(
   projectRoot: string,
   excludeDirs: string[] = [],
   useGitTracking = true,
+  astGrepModule?: AstGrepModuleType | null,
 ): CodebaseIndex {
-  return buildCodebaseIndex(projectRoot, excludeDirs, useGitTracking);
+  return buildCodebaseIndex(projectRoot, excludeDirs, useGitTracking, astGrepModule);
 }
 
 // ---------------------------------------------------------------------------

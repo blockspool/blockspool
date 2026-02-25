@@ -360,6 +360,35 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     if (scoutResult.scannedFiles === 0) {
       state.scoutRetries = 0;
       state.scoutedDirs = [];
+      // If a trajectory step targets a scope with no files, fail it immediately
+      if (state.currentTrajectoryStep && state.activeTrajectoryState) {
+        const stepState = state.activeTrajectoryState.stepStates[state.currentTrajectoryStep.id];
+        if (stepState) {
+          stepState.status = 'failed';
+          stepState.failureReason = 'no files match scope';
+          state.displayAdapter.log(chalk.yellow(`  Trajectory step "${state.currentTrajectoryStep.title}" failed — no files match scope "${scope}"`));
+          const { getTrajectoryNextStep, saveTrajectoryState } = await import('@promptwheel/core/trajectory/shared');
+          const next = getTrajectoryNextStep(state.activeTrajectory!, state.activeTrajectoryState.stepStates);
+          state.currentTrajectoryStep = next;
+          if (next) {
+            state.activeTrajectoryState.currentStepId = next.id;
+            if (state.activeTrajectoryState.stepStates[next.id]) {
+              state.activeTrajectoryState.stepStates[next.id].status = 'active';
+            }
+            state.displayAdapter.log(chalk.cyan(`  -> Skipping to next step: ${next.title}`));
+          } else {
+            state.displayAdapter.log(chalk.yellow(`  Trajectory "${state.activeTrajectory!.name}" ended (no remaining steps)`));
+            if (state.drillMode) {
+              const { finishDrillTrajectory } = await import('./solo-auto-drill.js');
+              try { finishDrillTrajectory(state, 'stalled'); } catch { /* non-fatal */ }
+            }
+            state.activeTrajectory = null;
+            state.activeTrajectoryState = null;
+            state.currentTrajectoryStep = null;
+          }
+          saveTrajectoryState(state.repoRoot, state.activeTrajectoryState!);
+        }
+      }
       return { proposals: [], scoutResult, scope, cycleFormula, isDeepCycle, isDocsAuditCycle, shouldRetry: false, shouldBreak: false };
     }
 

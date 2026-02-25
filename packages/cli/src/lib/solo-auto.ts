@@ -47,7 +47,7 @@ export async function runAutoWorkMode(options: {
 }): Promise<void> {
   const parallelCount = Math.max(1, parseInt(options.parallel || '1', 10));
 
-  console.log(chalk.blue('🧵 PromptWheel Auto - Work Mode'));
+  console.log(chalk.blue('🛞 PromptWheel Auto - Work Mode'));
   console.log(chalk.gray(`  Parallel workers: ${parallelCount}`));
   console.log();
 

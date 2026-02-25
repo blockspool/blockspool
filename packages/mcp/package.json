@@ -1,6 +1,6 @@
 {
   "name": "@promptwheel/mcp",
-  "version": "0.7.18",
+  "version": "0.7.19",
   "description": "PromptWheel MCP server - stateful tool provider for Claude Code",
   "author": "PromptWheel",
   "homepage": "https://promptwheel.com",

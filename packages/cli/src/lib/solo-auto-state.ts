@@ -749,7 +749,7 @@ function printSessionHeader(
   const initialCategories = getCycleCategories(getCycleFormula(1));
 
   {
-    console.log(chalk.blue(`🧵 PromptWheel Auto v${CLI_VERSION}`));
+    console.log(chalk.blue(`🛞 PromptWheel Auto v${CLI_VERSION}`));
     console.log();
     if (runMode === 'spin') {
       const drillLabel = drillMode ? ' + Drill' : '';

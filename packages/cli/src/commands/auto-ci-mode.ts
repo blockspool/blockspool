@@ -19,7 +19,7 @@ export async function handleCiMode(options: {
   verbose?: boolean;
   branch?: string;
 }): Promise<void> {
-  console.log(chalk.blue('🧵 PromptWheel Auto - CI Fix'));
+  console.log(chalk.blue('🛞 PromptWheel Auto - CI Fix'));
   console.log();
 
   const git = createGitService();

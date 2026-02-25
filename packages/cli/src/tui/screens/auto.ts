@@ -468,11 +468,13 @@ export class AutoScreen {
     // Dedup consecutive identical chunks (codex emits same thinking block multiple times)
     if (chunk === this.lastRawChunk && chunk.length > 20) return;
     this.lastRawChunk = chunk;
-    this.lastStatusLine = -1; // real output arrived, stop replacing status line
     this.writeLog(chunk);
     // Filter JSONL telemetry, noisy subprocess stderr, and strip ANSI
     const output = this.filterRawOutput(chunk);
-    if (output) this.appendToUnifiedLog(output);
+    if (output) {
+      this.lastStatusLine = -1; // real output arrived, stop replacing status line
+      this.appendToUnifiedLog(output);
+    }
   }
 
   markTicketDone(id: string, success: boolean, msg: string): void {
@@ -523,6 +525,12 @@ export class AutoScreen {
       if (trimmed.includes('codex_core::') || trimmed.includes('state db missing rollout path')) {
         continue;
       }
+      // Skip Codex phase output (emitted by codex.ts backend as formatted lines)
+      if (/^\[(?:Thinking|Running|Starting command|Reading|Writing|Searching|Tool|Completing)\]/.test(trimmed)) continue;
+      // Skip slot-prefixed variants: [1] Thinking: ..., [2] Running...
+      if (/^\[\d+\]\s+(?:Thinking|Running|Starting command|Reading|Writing|Starting)/.test(trimmed)) continue;
+      // Skip bare phase lines without brackets
+      if (/^(?:Thinking|Running)[:.]/.test(trimmed)) continue;
       if (trimmed || line === '') {
         filtered.push(clean);
       }

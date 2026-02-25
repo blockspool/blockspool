@@ -355,6 +355,14 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
       state.displayAdapter.scoutCompleted(0);
     }
     state.scoutedDirs.push(scope);
+
+    // No files matched scope at all — don't retry, there's nothing to find
+    if (scoutResult.scannedFiles === 0) {
+      state.scoutRetries = 0;
+      state.scoutedDirs = [];
+      return { proposals: [], scoutResult, scope, cycleFormula, isDeepCycle, isDocsAuditCycle, shouldRetry: false, shouldBreak: false };
+    }
+
     // CLI gets more retries than MCP plugin since it's a longer-running standalone process
     const maxRetries = SCOUT_DEFAULTS.MAX_SCOUT_RETRIES + 2;
     if (state.scoutRetries < maxRetries) {

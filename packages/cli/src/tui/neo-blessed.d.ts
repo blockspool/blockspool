@@ -99,8 +99,9 @@ declare module 'neo-blessed' {
       scroll(offset: number): void;
       scrollTo(index: number): void;
       getScrollHeight(): number;
-      height: number;
-      width: number;
+      top: number | string;
+      height: number | string;
+      width: number | string;
     }
 
     interface ListElement extends BoxElement {

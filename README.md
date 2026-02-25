@@ -73,22 +73,22 @@ Track what works             Formulas adapt (UCB1)        Category confidence tu
 For structured multi-step improvements, define a trajectory:
 
 ```yaml
-# .promptwheel/trajectories/harden-auth.yaml
-name: harden-auth
-description: Security hardening for auth module
+# .promptwheel/trajectories/harden-api.yaml
+name: harden-api
+description: Security hardening for API layer
 steps:
   - id: input-validation
-    title: Add input validation to all auth endpoints
-    scope: "src/auth/**"
+    title: Add input validation to all API endpoints
+    scope: "src/api/**"
     categories: [security]
     acceptance_criteria:
       - All endpoints validate input before processing
     verification_commands:
-      - npm test -- src/auth
+      - npm test -- src/api
 
   - id: rate-limiting
     title: Add rate limiting to login and reset endpoints
-    scope: "src/auth/**,src/middleware/**"
+    scope: "src/api/**,src/middleware/**"
     depends_on: [input-validation]
     acceptance_criteria:
       - Login endpoint rate-limited to 5 attempts per minute
@@ -261,5 +261,5 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>PromptWheel v0.7.11</b>
+  <b>PromptWheel v0.7.12</b>
 </p>

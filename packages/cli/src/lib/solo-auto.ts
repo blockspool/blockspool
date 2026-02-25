@@ -439,7 +439,24 @@ function buildSectorMapData(
     };
   }
 
-  return { sectors, coverage, lens, drill };
+  // Aggregate stats from raw sector data
+  const prodSectors = state.sectorState.sectors.filter(s => s.production);
+  let totalScans = 0, totalSuccesses = 0, totalFailures = 0;
+  let yieldSum = 0, yieldCount = 0;
+  for (const s of prodSectors) {
+    totalScans += s.scanCount;
+    totalSuccesses += s.successCount;
+    totalFailures += s.failureCount;
+    if (s.scanCount > 0) { yieldSum += s.proposalYield; yieldCount++; }
+  }
+  const totals = {
+    totalScans,
+    totalTickets: totalSuccesses + totalFailures,
+    totalSuccesses,
+    avgYield: yieldCount > 0 ? yieldSum / yieldCount : 0,
+  };
+
+  return { sectors, coverage, lens, drill, totals };
 }
 
 /**

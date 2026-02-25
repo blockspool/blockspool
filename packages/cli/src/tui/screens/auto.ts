@@ -83,11 +83,13 @@ export class AutoScreen {
   private lastProgress: ProgressSnapshot | null = null;
 
   private sectorOverlay: Widgets.BoxElement;
-  private sectorOverlayVisible = false;
+  private splitMapPane: Widgets.BoxElement;
+  private viewMode: 'log' | 'split' | 'map' = 'log';
   private lastSectorData: SectorMapData | null = null;
 
   private headerTimer: ReturnType<typeof setInterval> | null = null;
   private destroyed = false;
+  private shuttingDown = false;
   private logStream: WriteStream | null = null;
 
   constructor(private opts: AutoScreenOptions) {
@@ -176,7 +178,7 @@ export class AutoScreen {
       content: ' {cyan-fg}>{/cyan-fg}',
     });
 
-    // Sector map overlay (hidden by default, toggle with 's')
+    // Sector map overlay (full-screen map view, hidden by default)
     this.sectorOverlay = blessed.box({
       parent: this.screen,
       top: 4,
@@ -190,7 +192,28 @@ export class AutoScreen {
       mouse: true,
       keys: true,
       hidden: true,
-      label: ' Sector Map (s to close) ',
+      label: ' Sector Map (Tab to rotate) ',
+      style: {
+        border: { fg: 'cyan' },
+        fg: 'white',
+      },
+    });
+
+    // Split-view map pane (bottom portion in split mode, hidden by default)
+    this.splitMapPane = blessed.box({
+      parent: this.screen,
+      top: 4,
+      left: 0,
+      width: '100%',
+      height: '100%-7',
+      border: { type: 'line' },
+      tags: true,
+      scrollable: true,
+      alwaysScroll: true,
+      mouse: true,
+      keys: true,
+      hidden: true,
+      label: ' Sector Map ',
       style: {
         border: { fg: 'cyan' },
         fg: 'white',
@@ -200,6 +223,7 @@ export class AutoScreen {
     this.setupKeys();
     this.updateHeader();
     this.updateTicketBar();
+    this.updateHint();
 
     // Refresh header + progress bar every second
     this.headerTimer = setInterval(() => {
@@ -211,17 +235,27 @@ export class AutoScreen {
     // Handle resize
     this.screen.on('resize', () => {
       this.updateTicketBar();
-      this.screen.render();
+      this.layoutViews();
     });
 
     this.screen.render();
   }
 
   private setupKeys(): void {
-    // Tab: cycle through tickets (jump to bookmark)
+    // Tab: cycle view mode (log → split → map → log)
     this.screen.key('tab', () => {
+      this.cycleView();
+    });
+
+    // [/]: navigate tickets (replaces Tab's old ticket-cycling role)
+    this.screen.key('[', () => {
       if (this.tickets.length === 0) return;
-      this.selectedIndex = (this.selectedIndex + 1) % this.tickets.length;
+      this.selectedIndex = Math.max(this.selectedIndex - 1, 0);
+      this.jumpToTicket(this.selectedIndex);
+    });
+    this.screen.key(']', () => {
+      if (this.tickets.length === 0) return;
+      this.selectedIndex = Math.min(this.selectedIndex + 1, this.tickets.length - 1);
       this.jumpToTicket(this.selectedIndex);
     });
 
@@ -264,18 +298,6 @@ export class AutoScreen {
       this.screen.render();
     });
 
-    // s: toggle sector map overlay
-    this.screen.key('s', () => {
-      this.toggleSectorOverlay();
-    });
-
-    // Escape: close sector map overlay if visible
-    this.screen.key('escape', () => {
-      if (this.sectorOverlayVisible) {
-        this.toggleSectorOverlay();
-      }
-    });
-
     // Ctrl+C: first graceful, second force-quit
     let ctrlCCount = 0;
     this.screen.key(['C-c'], () => {
@@ -284,6 +306,7 @@ export class AutoScreen {
         this.destroy();
         process.exit(1);
       }
+      this.shuttingDown = true;
       this.inputBar.setContent(' {red-fg}Shutdown requested. Press Ctrl+C again to force quit.{/red-fg}');
       this.screen.render();
       this.opts.onQuit?.();
@@ -390,15 +413,15 @@ export class AutoScreen {
   }
 
   private refreshProgressBar(): void {
-    if (!this.lastProgress || this.destroyed) return;
+    if (!this.lastProgress || this.destroyed || this.shuttingDown) return;
     // Update elapsed time in real-time from stored snapshot's start reference
     const liveSnapshot: ProgressSnapshot = {
       ...this.lastProgress,
       elapsedMs: Date.now() - (this.startTime || Date.now()),
     };
     const line = formatProgressLine(liveSnapshot);
-    // Strip ANSI for tags:true inputBar
-    this.inputBar.setContent(` ${line}`);
+    const viewLabel = this.viewMode === 'log' ? 'Log' : this.viewMode === 'split' ? 'Split' : 'Map';
+    this.inputBar.setContent(` ${line} {gray-fg}[${viewLabel}]{/gray-fg}`);
     this.screen.render();
   }
 
@@ -556,41 +579,100 @@ export class AutoScreen {
 
   updateSectorMap(data: SectorMapData): void {
     this.lastSectorData = data;
-    if (this.sectorOverlayVisible) {
+    if (this.viewMode === 'map') {
       this.renderSectorOverlay();
+      this.screen.render();
+    } else if (this.viewMode === 'split') {
+      this.renderSplitMapContent();
       this.screen.render();
     }
   }
 
-  private toggleSectorOverlay(): void {
-    this.sectorOverlayVisible = !this.sectorOverlayVisible;
-    if (this.sectorOverlayVisible) {
-      this.renderSectorOverlay();
-      this.sectorOverlay.show();
-      this.sectorOverlay.focus();
-      this.sectorOverlay.setFront();
-    } else {
-      this.sectorOverlay.hide();
-      this.mainPane.focus();
+  private cycleView(): void {
+    const modes: Array<'log' | 'split' | 'map'> = ['log', 'split', 'map'];
+    const i = modes.indexOf(this.viewMode);
+    this.viewMode = modes[(i + 1) % modes.length];
+    this.layoutViews();
+    this.updateHint();
+  }
+
+  private layoutViews(): void {
+    const available = (this.screen.height as number) - 7; // header(1) + ticketBar(3) + inputBar(3)
+    const top = 4; // below header + ticketBar
+
+    switch (this.viewMode) {
+      case 'log':
+        this.mainPane.top = top;
+        this.mainPane.height = available;
+        this.mainPane.show();
+        this.splitMapPane.hide();
+        this.sectorOverlay.hide();
+        this.mainPane.focus();
+        break;
+
+      case 'split': {
+        const logH = Math.ceil(available * 0.6);
+        const mapH = available - logH;
+        this.mainPane.top = top;
+        this.mainPane.height = logH;
+        this.mainPane.show();
+        this.splitMapPane.top = top + logH;
+        this.splitMapPane.height = mapH;
+        this.renderSplitMapContent();
+        this.splitMapPane.show();
+        this.sectorOverlay.hide();
+        this.mainPane.focus();
+        break;
+      }
+
+      case 'map':
+        this.mainPane.hide();
+        this.splitMapPane.hide();
+        this.sectorOverlay.top = top;
+        this.sectorOverlay.height = available;
+        this.renderSectorOverlay();
+        this.sectorOverlay.show();
+        this.sectorOverlay.focus();
+        this.sectorOverlay.setFront();
+        break;
     }
+
     this.screen.render();
   }
 
-  private renderSectorOverlay(): void {
+  private updateHint(): void {
+    if (this.lastProgress || this.shuttingDown) return; // progress bar / shutdown message takes priority
+    const viewLabel = this.viewMode === 'log' ? 'Log' : this.viewMode === 'split' ? 'Split' : 'Map';
+    this.inputBar.setContent(` {gray-fg}Tab: rotate view (${viewLabel}) │ [/]: tickets │ j/k: nav │ G: follow{/gray-fg}`);
+    this.screen.render();
+  }
+
+  private buildSectorMapContent(): string[] {
     const data = this.lastSectorData;
     if (!data) {
-      this.sectorOverlay.setContent(' {gray-fg}No sector data yet — waiting for first scout cycle...{/gray-fg}');
-      return;
+      return [' {gray-fg}No sector data yet — waiting for first scout cycle...{/gray-fg}'];
     }
 
     const lines: string[] = [];
-
-    // Coverage
     const cov = data.coverage;
-    lines.push(` {bold}Coverage:{/bold} ${cov.scannedSectors}/${cov.totalSectors} sectors (${cov.scannedFiles}/${cov.totalFiles} files, ${cov.percent}%)`);
+    const tot = data.totals;
+    const lens = data.lens;
+
+    // ── Summary header ──────────────────────────────────────────────
+    const polished = data.sectors.filter(s => s.status === 'polished').length;
+    const hitRate = tot.totalTickets > 0 ? Math.round((tot.totalSuccesses / tot.totalTickets) * 100) : 0;
+
+    lines.push(` {bold}Survey:{/bold} ${cov.scannedSectors}/${cov.totalSectors} sectors surveyed │ ${cov.scannedFiles}/${cov.totalFiles} files │ ${polished} exhausted`);
+    lines.push(` {bold}Yield:{/bold}  ${tot.totalScans} scans │ ${tot.totalTickets} tickets │ ${hitRate}% hit rate │ avg ${tot.avgYield.toFixed(1)}/scan`);
+
+    // Momentum: filled dots based on average yield across scanned sectors
+    const dots = 5;
+    const filled = Math.min(dots, Math.round(tot.avgYield * (dots / 3))); // 3.0 yield = full
+    const momentum = '{yellow-fg}' + '●'.repeat(filled) + '{/yellow-fg}' + '{gray-fg}' + '○'.repeat(dots - filled) + '{/gray-fg}';
+    const momentumLabel = filled === 0 ? 'stalled' : filled <= 2 ? 'prospecting' : filled <= 4 ? 'productive' : 'rich vein';
+    lines.push(` {bold}Momentum:{/bold} ${momentum} ${momentumLabel}`);
 
     // Lens
-    const lens = data.lens;
     const lensPct = Math.round(lens.matrixCoverage * 100);
     const lensBar = renderProgressBar(lensPct, 12);
     lines.push(` {bold}Lens:{/bold} ${lens.current} (${lens.index + 1}/${lens.total}) ${lensBar} ${lensPct}%`);
@@ -605,7 +687,7 @@ export class AutoScreen {
 
     lines.push('');
 
-    // Table header — adapt path width to terminal size
+    // ── Sector table ────────────────────────────────────────────────
     const screenWidth = (this.screen.width as number) || 80;
     const fixedCols = 4 + 6 + 6 + 6 + 8; // St + Files + Scans + Yield + Success + spacing
     const pathW = Math.min(50, Math.max(20, screenWidth - fixedCols - 6));
@@ -613,7 +695,7 @@ export class AutoScreen {
     lines.push(`{bold}${hdr}{/bold}`);
     lines.push(' ' + '─'.repeat(hdr.length - 1));
 
-    // Sort: current first → scanning → scanned → pending → polished
+    // Sort: current first → scanning → scanned → pending → exhausted
     const statusOrder: Record<string, number> = { scanning: 0, scanned: 1, pending: 2, polished: 3 };
     const sorted = [...data.sectors].sort((a, b) => {
       if (a.isCurrent && !b.isCurrent) return -1;
@@ -642,7 +724,15 @@ export class AutoScreen {
       }
     }
 
-    this.sectorOverlay.setContent(lines.join('\n'));
+    return lines;
+  }
+
+  private renderSplitMapContent(): void {
+    this.splitMapPane.setContent(this.buildSectorMapContent().join('\n'));
+  }
+
+  private renderSectorOverlay(): void {
+    this.sectorOverlay.setContent(this.buildSectorMapContent().join('\n'));
   }
 
   destroy(): void {

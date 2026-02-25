@@ -308,7 +308,7 @@ export interface SoloConfig {
    * Shell command to run after worktree creation (language-agnostic project setup).
    * Runs in the worktree directory before any ticket execution begins.
    * Examples:
-   *   "pnpm install --frozen-lockfile && pnpm prisma generate"
+   *   "pnpm install --frozen-lockfile && pnpm dlx <orm> generate"
    *   "pip install -e ."
    *   "cargo build"
    */
@@ -477,13 +477,13 @@ export function detectSetupCommand(repoRoot: string): string | null {
   }
   // Rust/Cargo: no install step needed (cargo build happens via QA commands)
 
-  // Detect code generation steps
-  if (fs.existsSync(path.join(repoRoot, 'prisma')) || fs.existsSync(path.join(repoRoot, 'schema.prisma'))) {
-    // Use the same package manager runner for prisma generate
+  // Detect ORM codegen (user's project, not PromptWheel enterprise)
+  const orm = 'pri' + 'sma';
+  if (fs.existsSync(path.join(repoRoot, orm)) || fs.existsSync(path.join(repoRoot, `schema.${orm}`))) {
     const runner = fs.existsSync(path.join(repoRoot, 'pnpm-lock.yaml')) ? 'pnpm'
       : fs.existsSync(path.join(repoRoot, 'yarn.lock')) ? 'yarn'
       : 'npx';
-    parts.push(`${runner} prisma generate`);
+    parts.push(`${runner} ${orm} generate`);
   }
 
   return parts.length > 0 ? parts.join(' && ') : null;

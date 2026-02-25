@@ -61,6 +61,8 @@ export interface SectorMapData {
   coverage: { scannedSectors: number; totalSectors: number; scannedFiles: number; totalFiles: number; percent: number };
   lens: { current: string; index: number; total: number; matrixCoverage: number };
   drill: { active: boolean; trajectoryName?: string; stepProgress?: string; targetSector?: string } | null;
+  /** Aggregate stats across all sectors for the summary header */
+  totals: { totalScans: number; totalTickets: number; totalSuccesses: number; avgYield: number };
 }
 
 export interface DisplayAdapter {

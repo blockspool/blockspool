@@ -368,7 +368,7 @@ function buildProgressSnapshot(
     elapsedMs: Date.now() - state.startTime,
     timeBudgetMs: state.totalMinutes ? state.totalMinutes * 60_000 : undefined,
     sectorCoverage: state.sectorState
-      ? (() => { const c = computeCoverage(state.sectorState); return { scanned: c.scannedSectors, total: c.totalSectors, percent: c.percent }; })()
+      ? (() => { const c = computeCoverage(state.sectorState); return { scanned: c.scannedSectors, total: c.totalSectors, percent: c.sectorPercent }; })()
       : undefined,
     cycleProgress: state._cycleProgress ?? undefined,
   };

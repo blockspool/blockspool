@@ -1453,14 +1453,26 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     convergenceHint = hints[state.lastConvergenceAction];
   }
 
-  state.displayAdapter.log(chalk.cyan(`  Drill: generating trajectory from ${proposals.length} proposal(s)...`));
+  // Filter test-only files from proposals before trajectory generation.
+  // The scout excludes test files by default, so trajectory steps scoped to
+  // test files will always fail with "no files found matching scope".
+  const isTestFile = (f: string) => /\.(test|spec)\.[^/]+$/.test(f) || f.includes('__tests__/');
+  const testsEnabled = state.options.tests === true;
+  const filteredProposals = testsEnabled ? proposals : proposals
+    .map(p => ({ ...p, files: p.files.filter(f => !isTestFile(f)) }))
+    .filter(p => p.files.length > 0 || (p.allowed_paths && p.allowed_paths.length > 0));
+  if (!testsEnabled && filteredProposals.length < proposals.length) {
+    state.displayAdapter.log(chalk.gray(`  Drill: dropped ${proposals.length - filteredProposals.length} test-only proposal(s)`));
+  }
+
+  state.displayAdapter.log(chalk.cyan(`  Drill: generating trajectory from ${filteredProposals.length} proposal(s)...`));
   if (state.options.verbose && effectiveAmbition !== 'moderate') {
     state.displayAdapter.log(chalk.gray(`    Ambition: ${effectiveAmbition}${effectiveAmbition !== baseAmbition ? ` (adjusted from ${baseAmbition})` : ''}`));
   }
 
   try {
     const result = await generateTrajectoryFromProposals({
-      proposals: proposals.map(p => ({
+      proposals: filteredProposals.map(p => ({
         title: p.title,
         description: p.description,
         category: p.category,

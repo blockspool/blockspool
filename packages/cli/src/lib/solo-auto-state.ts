@@ -1100,6 +1100,7 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     })(),
     lensExecutionStrikes: new Map(),
     lensFullyExhausted: false,
+    lensRotationsCompleted: 0,
     _cycleProgress: null,
     escalationCandidates: new Set(),
     drillMode,
@@ -1201,13 +1202,19 @@ export function shouldContinue(state: AutoSessionState): boolean {
 
 /**
  * Check if a sector has files modified since its last scan.
- * Uses `git diff --name-only` against the sector's scope.
+ * Checks HEAD plus PromptWheel's direct branch so our own commits
+ * are detected without scanning every branch in the repo.
  */
 function sectorHasChanges(repoRoot: string, sector: { path: string; lastScannedAt: number }): boolean {
   if (sector.lastScannedAt === 0) return true; // never scanned = always scan
   try {
     const sinceDate = new Date(sector.lastScannedAt).toISOString();
-    const result = spawnSync('git', ['log', '--since', sinceDate, '--name-only', '--pretty=format:', '--', `${sector.path}/**`], {
+    // Check HEAD and promptwheel-direct branch for changes
+    const result = spawnSync('git', [
+      'log', 'HEAD', '--glob=refs/heads/promptwheel-*',
+      '--since', sinceDate, '--name-only', '--pretty=format:',
+      '--', `${sector.path}/**`,
+    ], {
       cwd: repoRoot,
       encoding: 'utf-8',
       timeout: 5000,
@@ -1219,7 +1226,7 @@ function sectorHasChanges(repoRoot: string, sector: { path: string; lastScannedA
   }
 }
 
-export function getNextScope(state: AutoSessionState): string | null {
+export function getNextScope(state: AutoSessionState, _depth = 0): string | null {
   if (state.userScope) return state.userScope;
   if (state.sectorState) {
     const rs = readRunState(state.repoRoot);
@@ -1256,11 +1263,26 @@ export function getNextScope(state: AutoSessionState): string | null {
           state.lensMatrix.get(state.currentLens) ?? [],
         );
         // Retry sector pick with fresh scanning state
-        return getNextScope(state);
+        return getNextScope(state, _depth + 1);
       }
     }
-    // Truly exhausted all lenses
-    state.lensFullyExhausted = true;
+
+    // All lenses exhausted for this rotation — reset for a fresh pass.
+    // Clear lensMatrix and sessionScannedSectors so each lens×sector
+    // pair is eligible again. This lets spin mode keep producing work
+    // instead of entering a permanent idle state.
+    state.lensRotationsCompleted++;
+    state.lensFullyExhausted = true;  // signals shutdown logic that a full rotation completed
+    state.lensMatrix.clear();
+    state.sessionScannedSectors.clear();
+    state.lensIndex = 0;
+    state.currentLens = state.lensRotation[0];
+    // Pick the first sector of the fresh rotation immediately
+    // (avoid a wasted 30s idle cycle). Guard against infinite recursion
+    // in case all sectors are exhausted even after reset.
+    if (_depth === 0) {
+      return getNextScope(state, 1);
+    }
     state.currentSectorId = null;
     return null;
   }

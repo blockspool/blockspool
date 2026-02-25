@@ -1,6 +1,6 @@
 {
   "name": "promptwheel",
-  "version": "0.7.10",
+  "version": "0.7.11",
   "description": "AI coding agent orchestrator — autonomous runs, human-reviewed PRs",
   "author": "PromptWheel",
   "license": "Apache-2.0",

@@ -46,6 +46,23 @@ export interface ProgressSnapshot {
   };
 }
 
+export interface SectorMapRow {
+  path: string;
+  fileCount: number;
+  scans: number;
+  yield: number;        // proposalYield EMA
+  successRate: number;   // 0-1
+  status: 'scanning' | 'scanned' | 'polished' | 'pending';
+  isCurrent: boolean;
+}
+
+export interface SectorMapData {
+  sectors: SectorMapRow[];
+  coverage: { scannedSectors: number; totalSectors: number; scannedFiles: number; totalFiles: number; percent: number };
+  lens: { current: string; index: number; total: number; matrixCoverage: number };
+  drill: { active: boolean; trajectoryName?: string; stepProgress?: string; targetSector?: string } | null;
+}
+
 export interface DisplayAdapter {
   // Session lifecycle
   sessionStarted(info: SessionInfo): void;
@@ -70,6 +87,9 @@ export interface DisplayAdapter {
 
   // Drill state
   drillStateChanged(info: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null): void;
+
+  // Sector map overlay
+  sectorMapUpdate(data: SectorMapData): void;
 
   // Progress status bar
   progressUpdate(snapshot: ProgressSnapshot): void;

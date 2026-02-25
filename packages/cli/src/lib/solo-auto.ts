@@ -34,7 +34,7 @@ import { finalizeSession } from './solo-auto-finalize.js';
 import { maybeDrillGenerateTrajectory, tryPreVerifyTrajectoryStep, computeAmbitionLevel } from './solo-auto-drill.js';
 import { recordExecutionYield } from './lens-rotation.js';
 import { computeCoverage } from './sectors.js';
-import type { ProgressSnapshot } from './display-adapter.js';
+import type { ProgressSnapshot, SectorMapData, SectorMapRow } from './display-adapter.js';
 
 /**
  * Run auto work mode - process ready tickets in parallel
@@ -374,6 +374,74 @@ function buildProgressSnapshot(
   };
 }
 
+function buildSectorMapData(
+  state: import('./solo-auto-state.js').AutoSessionState,
+): SectorMapData | null {
+  if (!state.sectorState) return null;
+
+  const sectors: SectorMapRow[] = state.sectorState.sectors
+    .filter(s => s.production)
+    .map(s => {
+      const total = s.successCount + s.failureCount;
+      let status: SectorMapRow['status'];
+      if (s.path === state.currentSectorId) status = 'scanning';
+      else if (s.polishedAt && s.polishedAt > 0) status = 'polished';
+      else if (s.scanCount > 0) status = 'scanned';
+      else status = 'pending';
+
+      return {
+        path: s.path,
+        fileCount: s.productionFileCount,
+        scans: s.scanCount,
+        yield: s.proposalYield,
+        successRate: total > 0 ? s.successCount / total : 0,
+        status,
+        isCurrent: s.path === state.currentSectorId,
+      };
+    });
+
+  const cov = computeCoverage(state.sectorState);
+  const coverage = {
+    scannedSectors: cov.scannedSectors,
+    totalSectors: cov.totalSectors,
+    scannedFiles: cov.scannedFiles,
+    totalFiles: cov.totalFiles,
+    percent: cov.percent,
+  };
+
+  // Lens matrix coverage: covered pairs / (lenses × production sectors)
+  const productionSectors = sectors.length;
+  const totalPairs = state.lensRotation.length * productionSectors;
+  let coveredPairs = 0;
+  for (const scanned of state.lensMatrix.values()) {
+    coveredPairs += scanned.size;
+  }
+  const lens = {
+    current: state.currentLens,
+    index: state.lensIndex,
+    total: state.lensRotation.length,
+    matrixCoverage: totalPairs > 0 ? coveredPairs / totalPairs : 0,
+  };
+
+  // Drill info
+  let drill: SectorMapData['drill'] = null;
+  if (state.drillMode) {
+    const traj = state.activeTrajectory;
+    const trajState = state.activeTrajectoryState;
+    const step = state.currentTrajectoryStep;
+    drill = {
+      active: !!traj,
+      trajectoryName: traj?.name,
+      stepProgress: traj && trajState
+        ? `${Object.values(trajState.stepStates).filter(s => s.status === 'completed').length}/${traj.steps.length}`
+        : undefined,
+      targetSector: step?.scope,
+    };
+  }
+
+  return { sectors, coverage, lens, drill };
+}
+
 /**
  * Spin mode — scout, fix, repeat until stopped.
  * Runs until Ctrl+C, --hours expires, or cycle/PR limits are hit.
@@ -468,6 +536,11 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
     state.displayAdapter.progressUpdate(buildProgressSnapshot(state, 'scouting'));
 
     const scoutResult = await runScoutPhase(state);
+
+    // Push sector map after scout
+    const smdAfterScout = buildSectorMapData(state);
+    if (smdAfterScout) state.displayAdapter.sectorMapUpdate(smdAfterScout);
+
     if (scoutResult.shouldBreak) break;
     if (scoutResult.shouldRetry) continue;
 
@@ -499,6 +572,10 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
     recordExecutionYield(state, completedThisCycle, filterResult.toProcess.length);
 
     await runPostCycleMaintenance(state, filterResult.scope, scoutResult.isDocsAuditCycle);
+
+    // Push sector map after post-cycle maintenance
+    const smdAfterCycle = buildSectorMapData(state);
+    if (smdAfterCycle) state.displayAdapter.sectorMapUpdate(smdAfterCycle);
 
     // Reset progress for idle (cycle complete)
     state._cycleProgress = null;

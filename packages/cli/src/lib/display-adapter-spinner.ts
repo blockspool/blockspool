@@ -113,6 +113,10 @@ export class SpinnerDisplayAdapter implements DisplayAdapter {
     // No-op for spinner mode
   }
 
+  sectorMapUpdate(_data: import('./display-adapter.js').SectorMapData): void {
+    // No-op for spinner mode
+  }
+
   progressUpdate(snapshot: ProgressSnapshot): void {
     if (process.stdout.isTTY) {
       const line = formatProgressLine(snapshot);

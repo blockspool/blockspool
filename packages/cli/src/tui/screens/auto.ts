@@ -30,7 +30,7 @@ import { createWriteStream, mkdirSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { TicketOutputBuffer } from '../ticket-output-buffer.js';
-import { formatProgressLine, type ProgressSnapshot } from '../../lib/display-adapter.js';
+import { formatProgressLine, renderProgressBar, type ProgressSnapshot, type SectorMapData } from '../../lib/display-adapter.js';
 
 export type TicketStatus = 'running' | 'done' | 'failed' | 'pending';
 
@@ -81,6 +81,10 @@ export class AutoScreen {
 
   private drillInfo: { active: boolean; trajectoryName?: string; trajectoryProgress?: string; ambitionLevel?: string } | null = null;
   private lastProgress: ProgressSnapshot | null = null;
+
+  private sectorOverlay: Widgets.BoxElement;
+  private sectorOverlayVisible = false;
+  private lastSectorData: SectorMapData | null = null;
 
   private headerTimer: ReturnType<typeof setInterval> | null = null;
   private destroyed = false;
@@ -172,6 +176,27 @@ export class AutoScreen {
       content: ' {cyan-fg}>{/cyan-fg}',
     });
 
+    // Sector map overlay (hidden by default, toggle with 's')
+    this.sectorOverlay = blessed.box({
+      parent: this.screen,
+      top: 4,
+      left: 0,
+      width: '100%',
+      height: '100%-7',
+      border: { type: 'line' },
+      tags: true,
+      scrollable: true,
+      alwaysScroll: true,
+      mouse: true,
+      keys: true,
+      hidden: true,
+      label: ' Sector Map (s to close) ',
+      style: {
+        border: { fg: 'cyan' },
+        fg: 'white',
+      },
+    });
+
     this.setupKeys();
     this.updateHeader();
     this.updateTicketBar();
@@ -237,6 +262,18 @@ export class AutoScreen {
       this.following = true;
       this.mainPane.setScrollPerc(100);
       this.screen.render();
+    });
+
+    // s: toggle sector map overlay
+    this.screen.key('s', () => {
+      this.toggleSectorOverlay();
+    });
+
+    // Escape: close sector map overlay if visible
+    this.screen.key('escape', () => {
+      if (this.sectorOverlayVisible) {
+        this.toggleSectorOverlay();
+      }
     });
 
     // Ctrl+C: first graceful, second force-quit
@@ -515,6 +552,97 @@ export class AutoScreen {
   private writeLog(msg: string): void {
     // eslint-disable-next-line no-control-regex
     this.logStream?.write(msg.replace(/\x1b\[[0-9;]*m/g, ''));
+  }
+
+  updateSectorMap(data: SectorMapData): void {
+    this.lastSectorData = data;
+    if (this.sectorOverlayVisible) {
+      this.renderSectorOverlay();
+      this.screen.render();
+    }
+  }
+
+  private toggleSectorOverlay(): void {
+    this.sectorOverlayVisible = !this.sectorOverlayVisible;
+    if (this.sectorOverlayVisible) {
+      this.renderSectorOverlay();
+      this.sectorOverlay.show();
+      this.sectorOverlay.focus();
+      this.sectorOverlay.setFront();
+    } else {
+      this.sectorOverlay.hide();
+      this.mainPane.focus();
+    }
+    this.screen.render();
+  }
+
+  private renderSectorOverlay(): void {
+    const data = this.lastSectorData;
+    if (!data) {
+      this.sectorOverlay.setContent(' {gray-fg}No sector data yet — waiting for first scout cycle...{/gray-fg}');
+      return;
+    }
+
+    const lines: string[] = [];
+
+    // Coverage
+    const cov = data.coverage;
+    lines.push(` {bold}Coverage:{/bold} ${cov.scannedSectors}/${cov.totalSectors} sectors (${cov.scannedFiles}/${cov.totalFiles} files, ${cov.percent}%)`);
+
+    // Lens
+    const lens = data.lens;
+    const lensPct = Math.round(lens.matrixCoverage * 100);
+    const lensBar = renderProgressBar(lensPct, 12);
+    lines.push(` {bold}Lens:{/bold} ${lens.current} (${lens.index + 1}/${lens.total}) ${lensBar} ${lensPct}%`);
+
+    // Drill
+    if (data.drill?.active) {
+      const name = data.drill.trajectoryName ? `"${data.drill.trajectoryName}"` : 'idle';
+      const step = data.drill.stepProgress ? ` step ${data.drill.stepProgress}` : '';
+      const target = data.drill.targetSector ? ` → ${data.drill.targetSector}` : '';
+      lines.push(` {bold}Drill:{/bold} ${name}${step}${target}`);
+    }
+
+    lines.push('');
+
+    // Table header — adapt path width to terminal size
+    const screenWidth = (this.screen.width as number) || 80;
+    const fixedCols = 4 + 6 + 6 + 6 + 8; // St + Files + Scans + Yield + Success + spacing
+    const pathW = Math.min(50, Math.max(20, screenWidth - fixedCols - 6));
+    const hdr = ` ${'St'} ${'Path'.padEnd(pathW)} ${'Files'.padStart(5)} ${'Scans'.padStart(5)} ${'Yield'.padStart(5)} ${'Success'.padStart(7)}`;
+    lines.push(`{bold}${hdr}{/bold}`);
+    lines.push(' ' + '─'.repeat(hdr.length - 1));
+
+    // Sort: current first → scanning → scanned → pending → polished
+    const statusOrder: Record<string, number> = { scanning: 0, scanned: 1, pending: 2, polished: 3 };
+    const sorted = [...data.sectors].sort((a, b) => {
+      if (a.isCurrent && !b.isCurrent) return -1;
+      if (!a.isCurrent && b.isCurrent) return 1;
+      return (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
+    });
+
+    for (const row of sorted) {
+      let icon: string;
+      switch (row.status) {
+        case 'scanning': icon = '{yellow-fg}▶{/yellow-fg}'; break;
+        case 'scanned':  icon = '{blue-fg}■{/blue-fg}'; break;
+        case 'polished': icon = '{green-fg}✓{/green-fg}'; break;
+        default:         icon = '{gray-fg}○{/gray-fg}'; break;
+      }
+
+      const p = row.path.length > pathW ? row.path.slice(0, pathW - 2) + '..' : row.path.padEnd(pathW);
+      const yieldStr = row.yield.toFixed(1).padStart(5);
+      const successStr = (Math.round(row.successRate * 100) + '%').padStart(7);
+      const line = ` ${icon} ${p} ${String(row.fileCount).padStart(5)} ${String(row.scans).padStart(5)} ${yieldStr} ${successStr}`;
+
+      if (row.isCurrent) {
+        lines.push(`{bold}{white-fg}${line}{/white-fg}{/bold}`);
+      } else {
+        lines.push(line);
+      }
+    }
+
+    this.sectorOverlay.setContent(lines.join('\n'));
   }
 
   destroy(): void {

@@ -121,7 +121,7 @@ describe('advanceLens', () => {
       lensMatrix: new Map<string, Set<string>>([
         ['default', new Set(['src/a', 'src/b'])],
       ]),
-      sectorState: { sectors: [{ path: 'src/a' }, { path: 'src/b' }] },
+      sectorState: { sectors: [{ path: 'src/a', production: true }, { path: 'src/b', production: true }] },
       lensZeroYieldPairs: new Set<string>(),
       sessionPhase: 'deep',
     };
@@ -141,7 +141,7 @@ describe('advanceLens', () => {
         ['default', new Set(['src/a', 'src/b'])],
         ['security-audit', new Set(['src/a', 'src/b'])],
       ]),
-      sectorState: { sectors: [{ path: 'src/a' }, { path: 'src/b' }] },
+      sectorState: { sectors: [{ path: 'src/a', production: true }, { path: 'src/b', production: true }] },
       lensZeroYieldPairs: new Set<string>(),
       sessionPhase: 'deep',
     };
@@ -156,7 +156,7 @@ describe('advanceLens', () => {
       lensIndex: 0,
       currentLens: 'default',
       lensMatrix: new Map<string, Set<string>>(),
-      sectorState: { sectors: [{ path: 'src/a' }, { path: 'src/b' }] },
+      sectorState: { sectors: [{ path: 'src/a', production: true }, { path: 'src/b', production: true }] },
       lensZeroYieldPairs: new Set<string>([
         'security-audit:src/a',
         'security-audit:src/b',
@@ -177,7 +177,7 @@ describe('advanceLens', () => {
       lensIndex: 0,
       currentLens: 'default',
       lensMatrix: new Map<string, Set<string>>(),
-      sectorState: { sectors: [{ path: 'src/a' }] },
+      sectorState: { sectors: [{ path: 'src/a', production: true }] },
       lensZeroYieldPairs: new Set<string>(),
       sessionPhase: 'warmup',
     };
@@ -194,7 +194,7 @@ describe('advanceLens', () => {
       lensMatrix: new Map<string, Set<string>>([
         ['type-safety', new Set(['src/a'])],
       ]),
-      sectorState: { sectors: [{ path: 'src/a' }] },
+      sectorState: { sectors: [{ path: 'src/a', production: true }] },
       lensZeroYieldPairs: new Set<string>(),
       sessionPhase: 'deep',
     };
@@ -212,11 +212,36 @@ describe('advanceLens', () => {
       lensIndex: 0,
       currentLens: 'default',
       lensMatrix: new Map<string, Set<string>>(),
-      sectorState: { sectors: [] },
+      sectorState: { sectors: [] as { path: string; production: boolean }[] },
       lensZeroYieldPairs: new Set<string>(),
       sessionPhase: 'deep',
     };
 
+    const result = advanceLens(state);
+    expect(result).toBe(false);
+  });
+
+  it('ignores non-production sectors when counting exhaustion', () => {
+    const state = {
+      lensRotation: ['default', 'security-audit'],
+      lensIndex: 0,
+      currentLens: 'default',
+      lensMatrix: new Map<string, Set<string>>([
+        ['default', new Set(['src/a', 'src/b'])],
+        // security-audit has scanned both production sectors
+        ['security-audit', new Set(['src/a', 'src/b'])],
+      ]),
+      // 2 production + 1 non-production; non-production should not prevent exhaustion
+      sectorState: { sectors: [
+        { path: 'src/a', production: true },
+        { path: 'src/b', production: true },
+        { path: 'test/fixtures', production: false },
+      ] },
+      lensZeroYieldPairs: new Set<string>(),
+      sessionPhase: 'deep',
+    };
+
+    // All production sectors scanned under all lenses → exhausted
     const result = advanceLens(state);
     expect(result).toBe(false);
   });
@@ -229,7 +254,7 @@ describe('advanceLens', () => {
       lensMatrix: new Map<string, Set<string>>([
         ['security-audit', new Set(['src/a'])], // 1 scanned
       ]),
-      sectorState: { sectors: [{ path: 'src/a' }, { path: 'src/b' }, { path: 'src/c' }] },
+      sectorState: { sectors: [{ path: 'src/a', production: true }, { path: 'src/b', production: true }, { path: 'src/c', production: true }] },
       lensZeroYieldPairs: new Set<string>([
         'security-audit:src/b', // 1 zero-yield
       ]),

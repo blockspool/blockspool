@@ -79,6 +79,10 @@ export class LogDisplayAdapter implements DisplayAdapter {
     // No-op for log mode
   }
 
+  sectorMapUpdate(_data: import('./display-adapter.js').SectorMapData): void {
+    // No-op for log mode
+  }
+
   progressUpdate(_snapshot: ProgressSnapshot): void {
     // No-op for log mode
   }

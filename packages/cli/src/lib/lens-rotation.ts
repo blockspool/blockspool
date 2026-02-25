@@ -70,14 +70,17 @@ export function advanceLens(state: {
   lensIndex: number;
   currentLens: string;
   lensMatrix: Map<string, Set<string>>;
-  sectorState: { sectors: { path: string }[] } | null;
+  sectorState: { sectors: { path: string; production: boolean }[] } | null;
   lensZeroYieldPairs: Set<string>;
   sessionPhase: string;
 }): boolean {
   // No rotation during warmup
   if (state.sessionPhase === 'warmup') return false;
 
-  const totalSectors = state.sectorState?.sectors.length ?? 0;
+  // Only count production sectors — pickNextSector only returns production
+  // sectors, so lensMatrix entries are always production paths.
+  const productionSectors = state.sectorState?.sectors.filter(s => s.production) ?? [];
+  const totalSectors = productionSectors.length;
   if (totalSectors === 0) return false;
 
   for (let i = 1; i < state.lensRotation.length; i++) {
@@ -87,9 +90,9 @@ export function advanceLens(state: {
 
     // Check if this lens still has unscanned sectors
     // (accounting for zero-yield pairs that should be skipped)
-    const zeroYieldCount = state.sectorState?.sectors.filter(
+    const zeroYieldCount = productionSectors.filter(
       s => state.lensZeroYieldPairs.has(`${nextLens}:${s.path}`),
-    ).length ?? 0;
+    ).length;
 
     if (scannedUnder + zeroYieldCount < totalSectors) {
       state.lensIndex = nextIndex;

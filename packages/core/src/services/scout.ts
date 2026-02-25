@@ -203,7 +203,7 @@ export async function scoutRepo(
     rootPath: repoRoot,
   });
 
-  logger?.info('Project ensured', { projectId: project.id, name: project.name });
+  logger?.debug('Project ensured', { projectId: project.id, name: project.name });
 
   // Phase 3: Create scout run
   const run = await runs.create(db, {

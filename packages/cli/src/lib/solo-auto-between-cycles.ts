@@ -435,13 +435,15 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     state.consecutiveLowYieldCycles++;
     const MAX_LOW_YIELD_CYCLES = state.drillMode ? 5 : 3;
     if (state.consecutiveLowYieldCycles >= MAX_LOW_YIELD_CYCLES) {
-      // Before shutting down, check if untried lenses remain
+      // Before shutting down, check if untried lenses remain in the current rotation
       if (!state.lensFullyExhausted && state.lensRotation.length > 1) {
         state.displayAdapter.log(chalk.gray(`  Low yield under "${state.currentLens}" lens — rotating to next lens`));
         state.consecutiveLowYieldCycles = 0;
         // advanceLens will be triggered naturally by getNextScope on next cycle
       } else {
-        state.displayAdapter.log(chalk.yellow(`  ${state.consecutiveLowYieldCycles} consecutive low-yield cycles across all lenses — stopping`));
+        const rotations = state.lensRotationsCompleted;
+        const rotLabel = rotations > 0 ? ` (${rotations} full rotation${rotations !== 1 ? 's' : ''} completed)` : '';
+        state.displayAdapter.log(chalk.yellow(`  ${state.consecutiveLowYieldCycles} consecutive low-yield cycles${rotLabel} — stopping`));
         state.shutdownRequested = true;
         if (state.shutdownReason === null) state.shutdownReason = 'low_yield';
       }

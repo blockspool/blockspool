@@ -12,13 +12,55 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  scout,
   parseClaudeOutput,
   buildScoutPrompt,
   buildCategoryPrompt,
   batchFiles,
   type ScannedFile,
-  type TicketProposal,
 } from '../scout/index.js';
+import type { ScoutBackend, RunnerResult } from '../scout/runner.js';
+
+function makeScoutProposal(
+  title: string,
+  overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    category: 'fix',
+    title,
+    description: `Description for ${title}`,
+    acceptance_criteria: ['Behavior is verified'],
+    verification_commands: ['npm test'],
+    allowed_paths: ['src/lib/math.ts'],
+    files: ['src/lib/math.ts'],
+    confidence: 80,
+    impact_score: 7,
+    rationale: 'Prevents regressions',
+    estimated_complexity: 'simple',
+    ...overrides,
+  };
+}
+
+async function withTestProject(
+  files: Record<string, string>,
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const { mkdtempSync, writeFileSync, rmSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join, dirname } = await import('node:path');
+
+  const dir = mkdtempSync(join(tmpdir(), 'scout-integration-test-'));
+  try {
+    for (const [relativePath, content] of Object.entries(files)) {
+      const absolutePath = join(dir, relativePath);
+      mkdirSync(dirname(absolutePath), { recursive: true });
+      writeFileSync(absolutePath, content);
+    }
+    await fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // parseClaudeOutput
@@ -73,6 +115,106 @@ describe('parseClaudeOutput', () => {
     });
     const result = parseClaudeOutput<{ proposals: unknown[] }>(input);
     expect(result!.proposals).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scout() normalization contracts
+// ---------------------------------------------------------------------------
+describe('scout normalization contracts', () => {
+  it('clamps confidence to 0-100 and impact_score to 1-10', async () => {
+    const mockBackend: ScoutBackend = {
+      name: 'test',
+      async run(): Promise<RunnerResult> {
+        return {
+          success: true,
+          output: JSON.stringify({
+            proposals: [
+              makeScoutProposal('Clamp high values', { confidence: 999, impact_score: 42 }),
+              makeScoutProposal('Clamp low values', { confidence: -15, impact_score: -3 }),
+            ],
+          }),
+          durationMs: 10,
+        };
+      },
+    };
+
+    await withTestProject(
+      { 'src/lib/math.ts': 'export const sum = (a: number, b: number) => a + b;' },
+      async (dir) => {
+        const result = await scout({
+          scope: 'src/**',
+          projectPath: dir,
+          backend: mockBackend,
+          maxProposals: 10,
+          minConfidence: 0,
+          timeoutMs: 5000,
+          batchTokenBudget: 5000,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.proposals).toHaveLength(2);
+
+        const high = result.proposals.find((p) => p.title === 'Clamp high values');
+        const low = result.proposals.find((p) => p.title === 'Clamp low values');
+        expect(high).toBeTruthy();
+        expect(low).toBeTruthy();
+        expect(high!.confidence).toBe(100);
+        expect(high!.impact_score).toBe(10);
+        expect(low!.confidence).toBe(0);
+        expect(low!.impact_score).toBe(1);
+      },
+    );
+  });
+
+  it('expands allowed_paths for test proposals and injects test config files', async () => {
+    const mockBackend: ScoutBackend = {
+      name: 'test',
+      async run(): Promise<RunnerResult> {
+        return {
+          success: true,
+          output: JSON.stringify({
+            proposals: [
+              makeScoutProposal('Add coverage for math helpers', {
+                category: 'test',
+                allowed_paths: ['src/lib/math.ts'],
+                files: ['src/lib/math.ts'],
+              }),
+            ],
+          }),
+          durationMs: 10,
+        };
+      },
+    };
+
+    await withTestProject(
+      { 'src/lib/math.ts': 'export const sum = (a: number, b: number) => a + b;' },
+      async (dir) => {
+        const result = await scout({
+          scope: 'src/**',
+          projectPath: dir,
+          backend: mockBackend,
+          maxProposals: 10,
+          minConfidence: 30,
+          timeoutMs: 5000,
+          batchTokenBudget: 5000,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.proposals).toHaveLength(1);
+        const proposal = result.proposals[0];
+
+        expect(proposal.allowed_paths).toContain('src/lib/math.ts');
+        expect(proposal.allowed_paths).toContain('src/lib/math.test.ts');
+        expect(proposal.allowed_paths).toContain('src/lib/math.spec.ts');
+        expect(proposal.allowed_paths).toContain('test/lib/math.test.ts');
+        expect(proposal.allowed_paths).toContain('tests/lib/math.spec.ts');
+        expect(proposal.allowed_paths).toContain('package.json');
+        expect(proposal.allowed_paths).toContain('package-lock.json');
+        expect(proposal.allowed_paths).toContain('tsconfig.json');
+        expect(proposal.allowed_paths).toContain('vitest.config.ts');
+      },
+    );
   });
 });
 

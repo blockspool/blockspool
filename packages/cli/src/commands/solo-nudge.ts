@@ -4,8 +4,8 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { createGitService } from '../lib/git.js';
 import { addHint, addDirective, readHints, clearHints } from '../lib/solo-hints.js';
+import { resolveRepoRootOrExit } from '../lib/command-runtime.js';
 
 export function registerNudgeCommands(solo: Command): void {
   solo
@@ -17,13 +17,7 @@ export function registerNudgeCommands(solo: Command): void {
     .option('--drill-resume', 'Resume drill mode')
     .option('--drill-disable', 'Disable drill for the session')
     .action(async (textParts: string[], options: { list?: boolean; clear?: boolean; drillPause?: boolean; drillResume?: boolean; drillDisable?: boolean }) => {
-      const git = createGitService();
-      const repoRoot = await git.findRepoRoot(process.cwd());
-
-      if (!repoRoot) {
-        console.error(chalk.red('✗ Not a git repository'));
-        process.exit(1);
-      }
+      const repoRoot = await resolveRepoRootOrExit();
 
       if (options.list) {
         const hints = readHints(repoRoot);

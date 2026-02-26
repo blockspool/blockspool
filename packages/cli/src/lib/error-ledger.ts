@@ -5,9 +5,9 @@
  * so error patterns survive across sessions and can be surfaced by analytics.
  */
 
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { FailureType } from './failure-classifier.js';
+import { appendNdjsonState, readNdjsonState } from './goals.js';
 
 export interface ErrorLedgerEntry {
   ts: number;
@@ -40,35 +40,17 @@ function ledgerPath(repoRoot: string): string {
  * Append an error entry to the ledger. Lazily creates the file on first write.
  */
 export function appendErrorLedger(repoRoot: string, entry: ErrorLedgerEntry): void {
-  const fp = ledgerPath(repoRoot);
-  const dir = path.dirname(fp);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  fs.appendFileSync(fp, JSON.stringify(entry) + '\n', 'utf-8');
+  appendNdjsonState(ledgerPath(repoRoot), entry);
 }
 
 /**
  * Read error ledger entries, most recent first.
  */
 export function readErrorLedger(repoRoot: string, limit?: number): ErrorLedgerEntry[] {
-  const fp = ledgerPath(repoRoot);
-  if (!fs.existsSync(fp)) return [];
-
-  const content = fs.readFileSync(fp, 'utf-8');
-  const lines = content.trim().split('\n').filter(l => l.length > 0);
-
-  const entries: ErrorLedgerEntry[] = [];
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      entries.push(JSON.parse(lines[i]));
-    } catch {
-      // Skip malformed lines
-    }
-    if (limit && entries.length >= limit) break;
-  }
-
-  return entries;
+  return readNdjsonState<ErrorLedgerEntry>(ledgerPath(repoRoot), {
+    newestFirst: true,
+    limit,
+  });
 }
 
 /**

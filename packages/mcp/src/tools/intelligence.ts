@@ -15,6 +15,7 @@ import {
   isFileAllowed,
 } from '../scope-policy.js';
 import { checkSpindle } from '../spindle.js';
+import { validateTicketAndRunOwnership } from './execute.js';
 
 export function registerIntelligenceTools(server: McpServer, getState: () => SessionManager) {
   // ── promptwheel_validate_ticket ────────────────────────────────────────────
@@ -27,16 +28,12 @@ export function registerIntelligenceTools(server: McpServer, getState: () => Ses
     async (params) => {
       const state = getState();
       try {
-        const ticket = await repos.tickets.getById(state.db, params.ticket_id);
-        if (!ticket) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({ error: `Ticket ${params.ticket_id} not found` }),
-            }],
-            isError: true,
-          };
-        }
+        const ownership = await validateTicketAndRunOwnership(state, {
+          ticketId: params.ticket_id,
+          requireCurrentTicket: false,
+        });
+        if (!ownership.ok) return ownership.response;
+        const ticket = ownership.ticket;
 
         const reasons: string[] = [];
         const suggestions: string[] = [];
@@ -365,16 +362,12 @@ export function registerIntelligenceTools(server: McpServer, getState: () => Ses
     async (params) => {
       const state = getState();
       try {
-        const ticket = await repos.tickets.getById(state.db, params.ticket_id);
-        if (!ticket) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({ error: `Ticket ${params.ticket_id} not found` }),
-            }],
-            isError: true,
-          };
-        }
+        const ownership = await validateTicketAndRunOwnership(state, {
+          ticketId: params.ticket_id,
+          requireCurrentTicket: false,
+        });
+        if (!ownership.ok) return ownership.response;
+        const ticket = ownership.ticket;
 
         const action = params.action ?? 'diagnose';
         const suggestedActions: string[] = [];
@@ -441,10 +434,10 @@ export function registerIntelligenceTools(server: McpServer, getState: () => Ses
 
         // ── Apply action ──
         if (action === 'retry') {
-          await repos.tickets.updateStatus(state.db, params.ticket_id, 'ready');
+          await repos.tickets.updateStatus(state.db, ticket.id, 'ready');
           applied = 'Reset ticket status to ready';
           state.run.appendEvent('USER_OVERRIDE' as EventType, {
-            ticket_id: params.ticket_id,
+            ticket_id: ticket.id,
             action: 'retry',
           });
         } else if (action === 'expand_scope') {
@@ -467,10 +460,10 @@ export function registerIntelligenceTools(server: McpServer, getState: () => Ses
 
             // We can't directly update allowedPaths through the standard repo API
             // so we reset the ticket to ready with a note about expanded scope
-            await repos.tickets.updateStatus(state.db, params.ticket_id, 'ready');
+            await repos.tickets.updateStatus(state.db, ticket.id, 'ready');
             applied = `Reset to ready. Suggested expanded paths: ${expanded.join(', ')}`;
             state.run.appendEvent('USER_OVERRIDE' as EventType, {
-              ticket_id: params.ticket_id,
+              ticket_id: ticket.id,
               action: 'expand_scope',
               expanded_paths: expanded,
             });

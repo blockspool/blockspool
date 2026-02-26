@@ -22,6 +22,12 @@ export { BUILTIN_FORMULAS, parseSimpleYaml, parseStringList } from '@promptwheel
 
 // Use core's Formula type locally
 type Formula = CoreFormula;
+interface FormulaPathContext {
+  repoRoot: string;
+  formulasDir: string;
+}
+
+const SAFE_FORMULA_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 // ---------------------------------------------------------------------------
 // Loader (wraps core with filesystem I/O)
@@ -32,6 +38,10 @@ type Formula = CoreFormula;
  * Search order: user formulas in `.promptwheel/formulas/`, then built-ins.
  */
 export function loadFormula(name: string, projectPath?: string): Formula | null {
+  if (!isSafeFormulaName(name)) {
+    console.warn(`[promptwheel] rejected unsafe formula name: ${name}`);
+    return null;
+  }
   const userFormula = loadUserFormula(name, projectPath);
   if (userFormula) return userFormula;
   return CORE_BUILTINS.find(f => f.name === name) ?? null;
@@ -66,31 +76,64 @@ export function applyFormula(formula: Formula, config: SessionConfig): SessionCo
 // User formulas (filesystem I/O)
 // ---------------------------------------------------------------------------
 
-function getFormulasDir(projectPath?: string): string {
-  const base = projectPath ?? process.cwd();
-  return path.join(base, '.promptwheel', 'formulas');
+function getFormulasDir(projectPath?: string): FormulaPathContext | null {
+  const repoRoot = resolveCanonicalPath(projectPath ?? process.cwd());
+  const resolvedFormulasDir = path.resolve(repoRoot, '.promptwheel', 'formulas');
+  if (!isPathWithinRoot(resolvedFormulasDir, repoRoot)) return null;
+
+  if (!fs.existsSync(resolvedFormulasDir)) {
+    return { repoRoot, formulasDir: resolvedFormulasDir };
+  }
+
+  const canonicalFormulasDir = resolveCanonicalPath(resolvedFormulasDir);
+  if (!isPathWithinRoot(canonicalFormulasDir, repoRoot)) {
+    console.warn(`[promptwheel] rejected formulas directory outside repo root: ${canonicalFormulasDir}`);
+    return null;
+  }
+
+  return { repoRoot, formulasDir: canonicalFormulasDir };
 }
 
 function loadUserFormula(name: string, projectPath?: string): Formula | null {
-  const dir = getFormulasDir(projectPath);
+  const ctx = getFormulasDir(projectPath);
+  if (!ctx) return null;
+
   for (const ext of ['.yaml', '.yml']) {
-    const filePath = path.join(dir, `${name}${ext}`);
-    if (fs.existsSync(filePath)) {
-      return parseFormulaFile(filePath, name);
+    const filePath = path.resolve(ctx.formulasDir, `${name}${ext}`);
+    if (!isPathWithinRoot(filePath, ctx.formulasDir) || !fs.existsSync(filePath)) {
+      continue;
+    }
+
+    const canonicalFile = resolveCanonicalPath(filePath);
+    if (
+      isPathWithinRoot(canonicalFile, ctx.formulasDir) &&
+      isPathWithinRoot(canonicalFile, ctx.repoRoot)
+    ) {
+      return parseFormulaFile(canonicalFile, name);
     }
   }
   return null;
 }
 
 function loadAllUserFormulas(projectPath?: string): Formula[] {
-  const dir = getFormulasDir(projectPath);
-  if (!fs.existsSync(dir)) return [];
+  const ctx = getFormulasDir(projectPath);
+  if (!ctx || !fs.existsSync(ctx.formulasDir)) return [];
 
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.yaml') || f.endsWith('.yml'));
+  const files = fs.readdirSync(ctx.formulasDir).filter(f => f.endsWith('.yaml') || f.endsWith('.yml'));
   const formulas: Formula[] = [];
   for (const file of files) {
     const name = path.basename(file, path.extname(file));
-    const formula = parseFormulaFile(path.join(dir, file), name);
+    if (!isSafeFormulaName(name)) continue;
+
+    const filePath = path.resolve(ctx.formulasDir, file);
+    if (!isPathWithinRoot(filePath, ctx.formulasDir)) continue;
+
+    const canonicalFile = resolveCanonicalPath(filePath);
+    if (!isPathWithinRoot(canonicalFile, ctx.formulasDir) || !isPathWithinRoot(canonicalFile, ctx.repoRoot)) {
+      continue;
+    }
+
+    const formula = parseFormulaFile(canonicalFile, name);
     if (formula) formulas.push(formula);
   }
   return formulas;
@@ -126,4 +169,24 @@ function parseFormulaFile(filePath: string, name: string): Formula | null {
     }
     return null;
   }
+}
+
+function isSafeFormulaName(name: string): boolean {
+  return SAFE_FORMULA_NAME_RE.test(name);
+}
+
+function resolveCanonicalPath(targetPath: string): string {
+  const resolved = path.resolve(targetPath);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
+  const normalizedRoot = path.resolve(rootPath).replace(/[\\/]+$/, '');
+  const normalizedCandidate = path.resolve(candidatePath).replace(/[\\/]+$/, '');
+  if (normalizedCandidate === normalizedRoot) return true;
+  return normalizedCandidate.startsWith(normalizedRoot + path.sep);
 }

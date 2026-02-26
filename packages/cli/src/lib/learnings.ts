@@ -10,10 +10,10 @@
  * extensions (metrics instrumentation, effectiveness tracking).
  */
 
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { metric } from './metrics.js';
+import { readJsonState, writeJsonState } from './goals.js';
 import {
   type Learning as CoreLearning,
   type StructuredKnowledge,
@@ -46,27 +46,19 @@ function learningsPath(projectRoot: string): string {
   return path.join(projectRoot, '.promptwheel', LEARNINGS_FILE);
 }
 
+function isLearningArray(value: unknown): value is Learning[] {
+  return Array.isArray(value);
+}
+
 function readLearnings(projectRoot: string): Learning[] {
-  const fp = learningsPath(projectRoot);
-  if (!fs.existsSync(fp)) return [];
-  try {
-    const raw = fs.readFileSync(fp, 'utf8');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return readJsonState(learningsPath(projectRoot), {
+    fallback: [],
+    validate: isLearningArray,
+  });
 }
 
 function writeLearnings(projectRoot: string, learnings: Learning[]): void {
-  const fp = learningsPath(projectRoot);
-  const dir = path.dirname(fp);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const tmp = fp + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(learnings, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, fp);
+  writeJsonState(learningsPath(projectRoot), learnings, { trailingNewline: true });
 }
 
 // ---------------------------------------------------------------------------

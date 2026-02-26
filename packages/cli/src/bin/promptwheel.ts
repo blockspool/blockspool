@@ -14,17 +14,19 @@
  *   promptwheel solo auto           # Explicit (backwards compat)
  */
 
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 import { soloCommand } from '../commands/solo.js';
+import { CommandRuntimeError, isCommandRuntimeError, renderCommandRuntimeError } from '../lib/command-runtime.js';
 import {
   checkForUpdateInBackground,
   printUpdateNotification,
   runSelfUpdate,
 } from '../lib/update-check.js';
 
-const CURRENT_VERSION = '0.7.19';
+const CURRENT_VERSION = '0.7.20';
 
 const program = new Command();
+program.exitOverride();
 
 program
   .name('promptwheel')
@@ -37,7 +39,11 @@ program
   .description('Update promptwheel to the latest version')
   .action(async () => {
     const success = await runSelfUpdate();
-    process.exit(success ? 0 : 1);
+    if (!success) {
+      throw new CommandRuntimeError({
+        message: 'Update failed',
+      });
+    }
   });
 
 // `promptwheel solo <cmd>` — backwards compat
@@ -59,7 +65,7 @@ const updateCheck = (!skipUpdateCheck && firstArg !== 'update' && firstArg !== '
   ? checkForUpdateInBackground(CURRENT_VERSION)
   : Promise.resolve(null);
 
-async function main() {
+async function main(): Promise<void> {
   if (isSubcommand) {
     // `promptwheel scout .` → delegate to `solo scout .`
     // Insert 'solo' so Commander routes correctly
@@ -85,7 +91,19 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+function handleError(err: unknown): number {
+  if (isCommandRuntimeError(err)) {
+    renderCommandRuntimeError(err);
+    return err.exitCode;
+  }
+
+  if (err instanceof CommanderError) {
+    if (err.code === 'commander.helpDisplayed' || err.code === 'commander.version') {
+      return 0;
+    }
+    return err.exitCode;
+  }
+
   if (err instanceof Error) {
     // User-friendly error: message only, no stack trace
     const prefix = '\x1b[31m✗\x1b[0m';
@@ -94,8 +112,17 @@ main().catch((err) => {
     if (process.env.DEBUG || process.argv.includes('--verbose') || process.argv.includes('-v')) {
       console.error(err.stack);
     }
-  } else {
-    console.error(err);
+    return 1;
   }
-  process.exit(1);
-});
+
+  console.error(err);
+  return 1;
+}
+
+void main()
+  .then(() => {
+    process.exit(process.exitCode ?? 0);
+  })
+  .catch((err) => {
+    process.exit(handleError(err));
+  });

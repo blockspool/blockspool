@@ -12,8 +12,14 @@ import {
   getDbPath,
   isInitialized,
   initSolo,
-  getAdapter,
 } from '../lib/solo-config.js';
+import {
+  ensureInitializedOrExit,
+  exitCommand,
+  resolveRepoRootOrExit,
+  withCommandAdapter,
+  withOptionalCommandAdapter,
+} from '../lib/command-runtime.js';
 import {
   runDoctorChecks,
   formatDoctorReport,
@@ -29,14 +35,9 @@ export function registerLifecycleCommands(solo: Command): void {
     .description('Initialize PromptWheel local state for this repository')
     .option('-f, --force', 'Reinitialize even if already initialized')
     .action(async (options: { force?: boolean }) => {
-      const git = createGitService();
-      const repoRoot = await git.findRepoRoot(process.cwd());
-
-      if (!repoRoot) {
-        console.error(chalk.red('✗ Not a git repository'));
-        console.error('  Run this command from within a git repository');
-        process.exit(1);
-      }
+      const repoRoot = await resolveRepoRootOrExit({
+        notRepoHumanDetails: ['  Run this command from within a git repository'],
+      });
 
       if (isInitialized(repoRoot) && !options.force) {
         console.log(chalk.yellow('Already initialized.'));
@@ -50,8 +51,7 @@ export function registerLifecycleCommands(solo: Command): void {
       const { config, detectedQa } = await initSolo(repoRoot);
 
       // Initialize database
-      const adapter = await getAdapter(repoRoot);
-      await adapter.close();
+      await withCommandAdapter(repoRoot, async () => undefined);
 
       console.log(chalk.green('✓ Initialized PromptWheel solo mode'));
       console.log(chalk.gray(`  Config: ${getPromptwheelDir(repoRoot)}/config.json`));
@@ -94,13 +94,7 @@ export function registerLifecycleCommands(solo: Command): void {
     .option('--list', 'List all reports')
     .option('--last', 'Show most recent report (default)')
     .action(async (options: { list?: boolean; last?: boolean }) => {
-      const git = createGitService();
-      const repoRoot = await git.findRepoRoot(process.cwd());
-
-      if (!repoRoot) {
-        console.error(chalk.red('✗ Not a git repository'));
-        process.exit(1);
-      }
+      const repoRoot = await resolveRepoRootOrExit();
 
       const reportsDir = path.join(getPromptwheelDir(repoRoot), 'reports');
       if (!fs.existsSync(reportsDir)) {
@@ -152,7 +146,7 @@ export function registerLifecycleCommands(solo: Command): void {
       }
 
       if (!report.canRun) {
-        process.exitCode = 1;
+        exitCommand(1, 'Doctor checks failed');
       }
     });
 
@@ -164,13 +158,7 @@ export function registerLifecycleCommands(solo: Command): void {
     .description('Clear all local state (destructive)')
     .option('-f, --force', 'Skip confirmation prompt')
     .action(async (options: { force?: boolean }) => {
-      const git = createGitService();
-      const repoRoot = await git.findRepoRoot(process.cwd());
-
-      if (!repoRoot) {
-        console.error(chalk.red('✗ Not a git repository'));
-        process.exit(1);
-      }
+      const repoRoot = await resolveRepoRootOrExit();
 
       const dir = getPromptwheelDir(repoRoot);
       const dbPathVal = getDbPath(repoRoot);
@@ -185,7 +173,7 @@ export function registerLifecycleCommands(solo: Command): void {
         console.log(chalk.gray(`  ${dir}`));
         console.log();
         console.log('Run with --force to confirm.');
-        process.exit(1);
+        exitCommand(1, 'Reset confirmation required');
       }
 
       if (fs.existsSync(dbPathVal)) {
@@ -220,19 +208,12 @@ export function registerLifecycleCommands(solo: Command): void {
     .description('Remove stale runs, history, artifacts, and archives')
     .option('--dry-run', 'Show what would be deleted without deleting')
     .action(async (options: { dryRun?: boolean }) => {
-      const git = createGitService();
-      const repoRoot = await git.findRepoRoot(process.cwd());
-
-      if (!repoRoot) {
-        console.error(chalk.red('✗ Not a git repository'));
-        process.exit(1);
-      }
-
-      if (!isInitialized(repoRoot)) {
-        console.error(chalk.red('✗ PromptWheel not initialized'));
-        console.error(chalk.gray('  Run: promptwheel init'));
-        process.exit(1);
-      }
+      const repoRoot = await resolveRepoRootOrExit();
+      await ensureInitializedOrExit({
+        repoRoot,
+        notInitializedMessage: 'PromptWheel not initialized',
+        notInitializedHumanDetails: [chalk.gray('  Run: promptwheel init')],
+      });
 
       const { loadConfig } = await import('../lib/solo-config.js');
       const {
@@ -244,36 +225,27 @@ export function registerLifecycleCommands(solo: Command): void {
       const config = loadConfig(repoRoot);
       const retentionConfig = getRetentionConfig(config);
 
-      let adapter: Awaited<ReturnType<typeof getAdapter>> | null = null;
-      try {
-        adapter = await getAdapter(repoRoot);
-      } catch {
-        // DB may not exist yet — prune without it
-      }
-
       const dryRun = options.dryRun ?? false;
 
       console.log(chalk.blue(dryRun ? 'Prune (dry run)' : 'Pruning stale state...'));
       console.log();
 
-      const report = await pruneAllAsync(
-        repoRoot,
-        retentionConfig,
-        adapter,
-        dryRun,
-      );
+      await withOptionalCommandAdapter(repoRoot, async (adapter) => {
+        const report = await pruneAllAsync(
+          repoRoot,
+          retentionConfig,
+          adapter,
+          dryRun,
+        );
 
-      console.log(formatPruneReport(report, dryRun));
-      console.log();
+        console.log(formatPruneReport(report, dryRun));
+        console.log();
 
-      if (!dryRun && report.totalPruned > 0) {
-        console.log(chalk.green(`✓ Pruned ${report.totalPruned} item(s)`));
-      } else if (!dryRun) {
-        console.log(chalk.green('✓ Nothing to prune'));
-      }
-
-      if (adapter) {
-        await adapter.close();
-      }
+        if (!dryRun && report.totalPruned > 0) {
+          console.log(chalk.green(`✓ Pruned ${report.totalPruned} item(s)`));
+        } else if (!dryRun) {
+          console.log(chalk.green('✓ Nothing to prune'));
+        }
+      });
     });
 }

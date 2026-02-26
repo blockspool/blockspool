@@ -8,6 +8,10 @@
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+  createProcessLifecycleController,
+} from './execution-backends/types.js';
+import type { ProcessLifecycleController } from './execution-backends/types.js';
 
 import type {
   ExecRunner,
@@ -168,7 +172,8 @@ export class NodeExecRunner implements ExecRunner {
     let signal: string | null = null;
     let pid: number | null = null;
 
-    let timeoutHandle: NodeJS.Timeout | undefined;
+    let lifecycle: ProcessLifecycleController | null = null;
+    let settledResultPromise: Promise<ExecResult> | null = null;
 
     const endAndWaitStreams = async (): Promise<void> => {
       try { stdoutStream.end(); } catch { /* ignore */ }
@@ -217,33 +222,28 @@ export class NodeExecRunner implements ExecRunner {
 
     let child: ReturnType<typeof spawn> | undefined;
 
-    const killChild = (_why: 'timeout' | 'canceled' | 'error') => {
-      if (!child || child.killed) return;
-
-      try {
-        child.kill('SIGTERM');
-      } catch { /* ignore */ }
-
-      // Escalate after grace period
-      setTimeout(() => {
-        if (!child || child.killed) return;
-        try {
-          child.kill('SIGKILL');
-        } catch { /* ignore */ }
-      }, this.killGraceMs);
-    };
-
     const onAbort = () => {
       canceled = true;
       errorMessage = errorMessage ?? 'Canceled';
-      killChild('canceled');
+      lifecycle?.terminate('canceled');
     };
 
-    // Shared cleanup: clears timeout, removes abort listener, then finalizes
-    const cleanupAndFinalize = async (status: ExecStatus): Promise<ExecResult> => {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-      if (spec.signal) spec.signal.removeEventListener('abort', onAbort);
-      return await finalize(status);
+    const settleAndFinalize = (status: ExecStatus): Promise<ExecResult> => {
+      if (settledResultPromise) return settledResultPromise;
+
+      if (!lifecycle) {
+        if (spec.signal) spec.signal.removeEventListener('abort', onAbort);
+        settledResultPromise = finalize(status);
+        return settledResultPromise;
+      }
+
+      lifecycle.settleOnce(() => {
+        if (spec.signal) spec.signal.removeEventListener('abort', onAbort);
+        settledResultPromise = finalize(status);
+      });
+
+      // settleOnce callback above always sets this on the first settle.
+      return settledResultPromise as Promise<ExecResult>;
     };
 
     try {
@@ -257,10 +257,6 @@ export class NodeExecRunner implements ExecRunner {
         return await finalize('canceled');
       }
 
-      if (spec.signal) {
-        spec.signal.addEventListener('abort', onAbort, { once: true });
-      }
-
       child = spawn(spec.cmd, {
         cwd,
         env,
@@ -270,13 +266,19 @@ export class NodeExecRunner implements ExecRunner {
 
       pid = child.pid ?? null;
 
-      // Timeout handling
-      if (spec.timeoutMs && spec.timeoutMs > 0) {
-        timeoutHandle = setTimeout(() => {
+      lifecycle = createProcessLifecycleController({
+        child,
+        timeoutMs: spec.timeoutMs,
+        killGraceMs: this.killGraceMs,
+        onTimeout: () => {
           timedOut = true;
           errorMessage = errorMessage ?? `Timed out after ${spec.timeoutMs}ms`;
-          killChild('timeout');
-        }, spec.timeoutMs);
+        },
+      });
+
+      if (spec.signal) {
+        spec.signal.addEventListener('abort', onAbort, { once: true });
+        if (spec.signal.aborted) onAbort();
       }
 
       // Stream piping + tail capture
@@ -304,8 +306,8 @@ export class NodeExecRunner implements ExecRunner {
           errorMessage = errorMessage ?? err.message;
           exitCode = null;
           signal = null;
-          killChild('error');
-          resolve(await cleanupAndFinalize('failed'));
+          lifecycle?.terminate('error');
+          resolve(await settleAndFinalize('failed'));
         });
       });
 
@@ -321,7 +323,7 @@ export class NodeExecRunner implements ExecRunner {
           else if (code === 0) status = 'success';
           else status = 'failed';
 
-          resolve(await cleanupAndFinalize(status));
+          resolve(await settleAndFinalize(status));
         });
       });
 
@@ -329,8 +331,8 @@ export class NodeExecRunner implements ExecRunner {
       const writeErrorPromise = new Promise<ExecResult>((resolve) => {
         const onWriteError = async (err: Error) => {
           errorMessage = errorMessage ?? `Artifact write error: ${err.message}`;
-          killChild('error');
-          resolve(await cleanupAndFinalize('failed'));
+          lifecycle?.terminate('error');
+          resolve(await settleAndFinalize('failed'));
         };
 
         stdoutStream.once('error', onWriteError);
@@ -341,7 +343,7 @@ export class NodeExecRunner implements ExecRunner {
       return await Promise.race([spawnErrorPromise, closePromise, writeErrorPromise]);
     } catch (err) {
       errorMessage = errorMessage ?? (err instanceof Error ? err.message : String(err));
-      return await cleanupAndFinalize('failed');
+      return await settleAndFinalize('failed');
     }
   }
 }

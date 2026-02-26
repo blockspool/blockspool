@@ -11,7 +11,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { ExportEntry } from './shared.js';
+import type { ExportEntry, AstFinding } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +23,8 @@ export interface AstCacheEntry {
   imports: string[];
   exports: ExportEntry[];
   complexity: number;
+  findings?: AstFinding[];
+  findingsVersion?: number;
 }
 
 export type AstCache = Record<string, AstCacheEntry>;
@@ -84,4 +86,10 @@ export function saveAstCache(repoRoot: string, cache: AstCache, currentFiles?: S
 export function isEntryCurrent(entry: AstCacheEntry | undefined, mtime: number, size: number): boolean {
   if (!entry) return false;
   return entry.mtime === mtime && entry.size === size;
+}
+
+/** Check if a cache entry's findings are current for the given pattern version. */
+export function isFindingsCurrent(entry: AstCacheEntry | undefined, currentVersion: number): boolean {
+  if (!entry) return false;
+  return entry.findingsVersion === currentVersion;
 }

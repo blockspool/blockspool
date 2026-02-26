@@ -4,6 +4,7 @@
 
 import chalk from 'chalk';
 import { createGitService } from '../lib/git.js';
+import { exitCommandError } from '../lib/command-runtime.js';
 import { loadConfig, saveConfig } from '../lib/solo-config.js';
 
 export interface AuthOptions {
@@ -34,8 +35,9 @@ export async function resolveBackends(options: AuthOptions): Promise<{
   // Expand shorthands
   const shorthands = [options.codex && 'codex', options.claude && 'claude', options.kimi && 'kimi', options.local && 'local'].filter(Boolean);
   if (shorthands.length > 1) {
-    console.error(chalk.red(`✗ Cannot combine ${shorthands.map(s => `--${s}`).join(' and ')}`));
-    process.exit(1);
+    exitCommandError({
+      message: `Cannot combine ${shorthands.map(s => `--${s}`).join(' and ')}`,
+    });
   }
 
   // Auto-detect backend from environment if no explicit choice
@@ -54,9 +56,10 @@ export async function resolveBackends(options: AuthOptions): Promise<{
   }
   if (options.local) {
     if (!options.localModel) {
-      console.error(chalk.red('✗ --local-model is required when using --local'));
-      console.error(chalk.gray('  Example: promptwheel --local --local-model kimi-k2.5'));
-      process.exit(1);
+      exitCommandError({
+        message: '--local-model is required when using --local',
+        humanDetails: [chalk.gray('  Example: promptwheel --local --local-model kimi-k2.5')],
+      });
     }
     options.scoutBackend = options.scoutBackend ?? 'openai-local';
     options.executeBackend = options.executeBackend ?? 'openai-local';
@@ -69,9 +72,10 @@ export async function resolveBackends(options: AuthOptions): Promise<{
   // Validate backend names
   for (const [flag, value] of [['--scout-backend', scoutBackendName], ['--execute-backend', executeBackendName]] as const) {
     if (!isValidProvider(value)) {
-      console.error(chalk.red(`✗ Invalid ${flag}: ${value}`));
-      console.error(chalk.gray(`  Valid values: ${getProviderNames().join(', ')}`));
-      process.exit(1);
+      exitCommandError({
+        message: `Invalid ${flag}: ${value}`,
+        humanDetails: [chalk.gray(`  Valid values: ${getProviderNames().join(', ')}`)],
+      });
     }
   }
 
@@ -83,19 +87,22 @@ export async function resolveBackends(options: AuthOptions): Promise<{
   // Detect running inside Claude Code session
   if (insideClaudeCode) {
     if (needsClaude) {
-      console.error(chalk.red('✗ Cannot run Claude backend inside Claude Code'));
-      console.error();
-      console.error(chalk.gray('  The CLI spawns Claude as subprocesses (requires ANTHROPIC_API_KEY).'));
-      console.error(chalk.gray('  Inside Claude Code, use the plugin instead:'));
-      console.error();
-      console.error(chalk.white('    /promptwheel:run'));
-      console.error();
-      console.error(chalk.gray('  Or run from a regular terminal:'));
-      console.error();
-      console.error(chalk.white('    promptwheel          # Claude (needs ANTHROPIC_API_KEY)'));
-      console.error(chalk.white('    promptwheel --codex  # Codex (needs OPENAI_API_KEY)'));
-      console.error();
-      process.exit(1);
+      exitCommandError({
+        message: 'Cannot run Claude backend inside Claude Code',
+        humanDetails: [
+          '',
+          chalk.gray('  The CLI spawns Claude as subprocesses (requires ANTHROPIC_API_KEY).'),
+          chalk.gray('  Inside Claude Code, use the plugin instead:'),
+          '',
+          chalk.white('    /promptwheel:run'),
+          '',
+          chalk.gray('  Or run from a regular terminal:'),
+          '',
+          chalk.white('    promptwheel          # Claude (needs ANTHROPIC_API_KEY)'),
+          chalk.white('    promptwheel --codex  # Codex (needs OPENAI_API_KEY)'),
+          '',
+        ],
+      });
     } else {
       console.log(chalk.yellow('⚠ Running inside Claude Code session'));
       console.log(chalk.yellow('  This works, but you\'re paying for an idle Claude Code session.'));
@@ -107,11 +114,14 @@ export async function resolveBackends(options: AuthOptions): Promise<{
 
   // Auth: Claude lane
   if (needsClaude && !process.env.ANTHROPIC_API_KEY) {
-    console.error(chalk.red('✗ ANTHROPIC_API_KEY not set'));
-    console.error(chalk.gray('  Required for Claude backend. Set the env var, or use:'));
-    console.error(chalk.gray('    promptwheel --codex  (uses OPENAI_API_KEY or codex login)'));
-    console.error(chalk.gray('    /promptwheel:run    (inside Claude Code, uses subscription)'));
-    process.exit(1);
+    exitCommandError({
+      message: 'ANTHROPIC_API_KEY not set',
+      humanDetails: [
+        chalk.gray('  Required for Claude backend. Set the env var, or use:'),
+        chalk.gray('    promptwheel --codex  (uses OPENAI_API_KEY or codex login)'),
+        chalk.gray('    /promptwheel:run    (inside Claude Code, uses subscription)'),
+      ],
+    });
   }
 
   // Auth: Codex lane
@@ -120,9 +130,10 @@ export async function resolveBackends(options: AuthOptions): Promise<{
       const { spawnSync } = await import('node:child_process');
       const loginCheck = spawnSync('codex', ['login', 'status'], { encoding: 'utf-8', timeout: 10000 });
       if (loginCheck.status !== 0) {
-        console.error(chalk.red('✗ Codex not authenticated'));
-        console.error(chalk.gray('  Set OPENAI_API_KEY or run: codex login'));
-        process.exit(1);
+        exitCommandError({
+          message: 'Codex not authenticated',
+          humanDetails: [chalk.gray('  Set OPENAI_API_KEY or run: codex login')],
+        });
       }
     }
   }
@@ -162,8 +173,9 @@ export async function resolveBackends(options: AuthOptions): Promise<{
   // Warn about unsafe flag
   if (options.codexUnsafeFullAccess) {
     if (executeBackendName !== 'codex') {
-      console.error(chalk.red('✗ --codex-unsafe-full-access only applies with --execute-backend codex'));
-      process.exit(1);
+      exitCommandError({
+        message: '--codex-unsafe-full-access only applies with --execute-backend codex',
+      });
     }
     console.log(chalk.yellow('⚠ --codex-unsafe-full-access: sandbox disabled for Codex execution'));
     console.log(chalk.yellow('  Only use this inside an externally hardened/isolated runner'));
@@ -193,10 +205,13 @@ async function resolveCodexModel(options: AuthOptions): Promise<void> {
   if (options.codexModel) {
     // Explicit model — validate
     if (!hasApiKey && !LOGIN_SAFE_MODELS.includes(options.codexModel)) {
-      console.log(chalk.yellow(`\nModel "${options.codexModel}" requires OPENAI_API_KEY (not available with codex login).`));
-      console.log(chalk.yellow(`Available models: ${LOGIN_SAFE_MODELS.join(', ')}`));
-      console.log(chalk.yellow('Set OPENAI_API_KEY or choose a compatible model.\n'));
-      process.exit(1);
+      exitCommandError({
+        message: `Model "${options.codexModel}" requires OPENAI_API_KEY (not available with codex login).`,
+        humanDetails: [
+          chalk.yellow(`Available models: ${LOGIN_SAFE_MODELS.join(', ')}`),
+          chalk.yellow('Set OPENAI_API_KEY or choose a compatible model.'),
+        ],
+      });
     }
     const earlyGit = createGitService();
     const earlyRoot = await earlyGit.findRepoRoot(process.cwd());

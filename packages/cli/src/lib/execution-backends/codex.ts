@@ -6,17 +6,8 @@
  * for use inside externally hardened/isolated runners only.
  */
 
-import { spawn } from 'node:child_process';
-import type { ClaudeResult, ExecutionBackend } from './types.js';
-
-/** Format elapsed time as human-readable string */
-function formatElapsed(ms: number): string {
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const remainingSecs = secs % 60;
-  return `${mins}m${remainingSecs}s`;
-}
+import { formatElapsed, runBackendHarness } from './process-runner.js';
+import type { BackendRunOptions, ClaudeResult, ExecutionBackend } from './types.js';
 
 /** Parse Codex JSONL output to extract meaningful progress info */
 function parseCodexEvent(line: string): { phase?: string; detail?: string; message?: string } | null {
@@ -94,16 +85,8 @@ export class CodexExecutionBackend implements ExecutionBackend {
     this.unsafeBypassSandbox = opts?.unsafeBypassSandbox ?? false;
   }
 
-  async run(opts: {
-    worktreePath: string;
-    prompt: string;
-    timeoutMs: number;
-    verbose: boolean;
-    onProgress: (msg: string) => void;
-    onRawOutput?: (chunk: string) => void;
-  }): Promise<ClaudeResult> {
-    const { worktreePath, prompt, timeoutMs, verbose: _verbose, onProgress, onRawOutput } = opts;
-    const startTime = Date.now();
+  async run(opts: BackendRunOptions): Promise<ClaudeResult> {
+    const { worktreePath, prompt, timeoutMs, onProgress, onRawOutput } = opts;
 
     const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
@@ -113,125 +96,91 @@ export class CodexExecutionBackend implements ExecutionBackend {
     const outPath = join(tmpDir, 'output.md');
 
     try {
-      return await new Promise<ClaudeResult>((resolve) => {
-        const args = ['exec', '--json', '--output-last-message', outPath];
+      const args = ['exec', '--json', '--output-last-message', outPath];
 
-        if (this.unsafeBypassSandbox) {
-          args.push('--dangerously-bypass-approvals-and-sandbox');
-        } else {
-          args.push('--sandbox', 'workspace-write');
-        }
+      if (this.unsafeBypassSandbox) {
+        args.push('--dangerously-bypass-approvals-and-sandbox');
+      } else {
+        args.push('--sandbox', 'workspace-write');
+      }
 
-        args.push('--model', this.model);
-        args.push('--cd', worktreePath);
-        args.push('-');
+      args.push('--model', this.model);
+      args.push('--cd', worktreePath);
+      args.push('-');
 
-        const env: Record<string, string> = { ...process.env } as Record<string, string>;
-        if (this.apiKey) {
-          env.OPENAI_API_KEY = this.apiKey;
-        }
+      const env: Record<string, string> = { ...process.env } as Record<string, string>;
+      if (this.apiKey) {
+        env.OPENAI_API_KEY = this.apiKey;
+      }
 
-        const proc = spawn('codex', args, {
+      let lastPhase = 'Starting';
+      let lineBuffer = '';
+
+      const result = await runBackendHarness({
+        timeoutMs,
+        exitErrorPrefix: 'codex',
+        onProgress,
+        getProgressPhase: () => lastPhase,
+        process: {
+          command: 'codex',
+          args,
           cwd: worktreePath,
           env,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
+          stdin: prompt,
+          onStdoutChunk: (text, { elapsedMs }) => {
+            // Parse JSONL lines for progress info
+            lineBuffer += text;
+            const lines = lineBuffer.split('\n');
+            lineBuffer = lines.pop() || ''; // Keep incomplete line in buffer
 
-        let stdout = '';
-        let stderr = '';
-        let timedOut = false;
-        let lastPhase = 'Starting';
-        let lineBuffer = '';
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              const parsed = parseCodexEvent(line);
+              if (parsed) {
+                const elapsed = formatElapsed(elapsedMs);
 
-        // Periodic progress update with elapsed time
-        const progressInterval = setInterval(() => {
-          const elapsed = formatElapsed(Date.now() - startTime);
-          onProgress(`${lastPhase}... (${elapsed})`);
-        }, 3000);
-
-        // Only set timeout if timeoutMs > 0 (0 = no timeout)
-        const timer = timeoutMs > 0 ? setTimeout(() => {
-          timedOut = true;
-          proc.kill('SIGTERM');
-          setTimeout(() => proc.kill('SIGKILL'), 5000);
-        }, timeoutMs) : null;
-
-        proc.stdin.write(prompt);
-        proc.stdin.end();
-
-        proc.stdout.on('data', (data: Buffer) => {
-          const text = data.toString();
-          stdout += text;
-
-          // Parse JSONL lines for progress info
-          lineBuffer += text;
-          const lines = lineBuffer.split('\n');
-          lineBuffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            const parsed = parseCodexEvent(line);
-            if (parsed) {
-              const elapsed = formatElapsed(Date.now() - startTime);
-
-              if (parsed.message) {
-                // Show full message for reasoning/commands
-                lastPhase = parsed.phase || lastPhase;
-                onProgress(`${parsed.phase}: ${parsed.message} (${elapsed})`);
-                onRawOutput?.(`[${parsed.phase}] ${parsed.message}\n`);
-              } else if (parsed.phase) {
-                // Just phase update
-                lastPhase = parsed.phase;
-                const detail = parsed.detail ? `: ${parsed.detail}` : '';
-                onProgress(`${lastPhase}${detail} (${elapsed})`);
-                onRawOutput?.(`[${lastPhase}]${detail}\n`);
+                if (parsed.message) {
+                  // Show full message for reasoning/commands
+                  lastPhase = parsed.phase || lastPhase;
+                  onProgress(`${parsed.phase}: ${parsed.message} (${elapsed})`);
+                  onRawOutput?.(`[${parsed.phase}] ${parsed.message}\n`);
+                } else if (parsed.phase) {
+                  // Just phase update
+                  lastPhase = parsed.phase;
+                  const detail = parsed.detail ? `: ${parsed.detail}` : '';
+                  onProgress(`${lastPhase}${detail} (${elapsed})`);
+                  onRawOutput?.(`[${lastPhase}]${detail}\n`);
+                }
+              } else {
+                // Unparsed lines: emit raw for TUI
+                onRawOutput?.(line + '\n');
               }
-            } else {
-              // Unparsed lines: emit raw for TUI
-              onRawOutput?.(line + '\n');
             }
-          }
-          // Don't show raw JSONL even in verbose mode - it's not useful
-        });
-
-        proc.stderr.on('data', (data: Buffer) => {
-          const text = data.toString();
-          stderr += text;
-          onRawOutput?.(`[stderr] ${text}`);
-        });
-
-        proc.on('close', (code: number | null) => {
-          if (timer) clearTimeout(timer);
-          clearInterval(progressInterval);
-          const durationMs = Date.now() - startTime;
-
-          if (timedOut) {
-            resolve({ success: false, error: `Timed out after ${timeoutMs}ms`, stdout, stderr, exitCode: code, timedOut: true, durationMs });
-            return;
+            // Don't show raw JSONL even in verbose mode - it's not useful
+          },
+          onStderrChunk: (text) => {
+            onRawOutput?.(`[stderr] ${text}`);
+          },
+        },
+        postProcess: (result) => {
+          // Keep timeout behavior: return raw telemetry stdout when command times out.
+          if (result.timedOut) {
+            return {};
           }
 
           // Prefer --output-last-message file over stdout (stdout is JSONL telemetry)
-          let output = stdout;
+          let output = result.stdout;
           try {
             output = readFileSync(outPath, 'utf-8');
           } catch {
             // Fall back to stdout if file wasn't written
           }
 
-          if (code !== 0) {
-            resolve({ success: false, error: `codex exited with code ${code}: ${stderr.slice(0, 200)}`, stdout: output, stderr, exitCode: code, timedOut: false, durationMs });
-            return;
-          }
-
-          resolve({ success: true, stdout: output, stderr, exitCode: code, timedOut: false, durationMs });
-        });
-
-        proc.on('error', (err: Error) => {
-          if (timer) clearTimeout(timer);
-          clearInterval(progressInterval);
-          resolve({ success: false, error: err.message, stdout, stderr, exitCode: null, timedOut: false, durationMs: Date.now() - startTime });
-        });
+          return { stdout: output };
+        },
       });
+
+      return result;
     } finally {
       try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     }

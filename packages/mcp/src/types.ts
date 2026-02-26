@@ -377,4 +377,34 @@ export interface SessionConfig {
   dry_run?: boolean;
   /** User-specified QA commands to run after every ticket (in addition to scout-proposed verification commands). */
   qa_commands?: string[];
+  /**
+   * Explicitly enable loading repository custom tools from `.promptwheel/tools/*.json`.
+   * Defaults to false unless enabled by env flag.
+   */
+  enable_custom_tools?: boolean;
+}
+
+export type CustomToolWarningCode =
+  | 'custom_tools_disabled'
+  | 'custom_tools_dir_read_failed'
+  | 'custom_tool_file_load_failed'
+  | 'custom_tool_schema_invalid'
+  | 'custom_tool_approve_pattern_malformed'
+  | 'custom_tool_approve_pattern_unsafe';
+
+export interface CustomToolValidationWarning {
+  code: CustomToolWarningCode;
+  message: string;
+  file?: string;
+  tool?: string;
+  pattern?: string;
+}
+
+export interface CustomToolLoadReport {
+  enabled: boolean;
+  directory: string | null;
+  discovered: number;
+  loaded: number;
+  rejected: number;
+  warnings: CustomToolValidationWarning[];
 }

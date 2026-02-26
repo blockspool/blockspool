@@ -2,14 +2,17 @@ import { repos } from '@promptwheel/core';
 import type { EventContext, ProcessResult } from './event-helpers.js';
 import {
   classifyQaError,
+  EVENT_MAX_ARTIFACT_BYTES,
   maxRetriesForClass,
   extractErrorSignature,
   recordSectorOutcome,
   recordTicketDedup,
+  stringifyBoundedArtifactJson,
   toBooleanOrUndefined,
   toNumberOrUndefined,
   toStringArrayOrUndefined,
   toStringOrUndefined,
+  truncateArtifactText,
 } from './event-helpers.js';
 import { recordCommandFailure, recordDiff } from './spindle.js';
 import { recordQualitySignal } from './run-state-bridge.js';
@@ -44,9 +47,19 @@ export async function handleQaCommandResult(ctx: EventContext, payload: Record<s
 
   // Save command output as artifact
   const cmdSlug = command.replace(/[^a-z0-9]/gi, '-').slice(0, 30);
+  const artifactRaw = `$ ${command}\n\n${output}`;
+  const artifactMetaSuffix = (() => {
+    const bytes = Buffer.byteLength(artifactRaw, 'utf8');
+    if (bytes <= EVENT_MAX_ARTIFACT_BYTES) return '';
+    return `\n\n[output truncated: original_bytes=${bytes}, max_bytes=${EVENT_MAX_ARTIFACT_BYTES}]`;
+  })();
+  const truncatedArtifact = truncateArtifactText(
+    artifactRaw,
+    Math.max(0, EVENT_MAX_ARTIFACT_BYTES - Buffer.byteLength(artifactMetaSuffix, 'utf8')),
+  );
   ctx.run.saveArtifact(
     `${s.step_count}-qa-${cmdSlug}-${success ? 'pass' : 'fail'}.log`,
-    `$ ${command}\n\n${output}`,
+    `${truncatedArtifact.text}${artifactMetaSuffix}`,
   );
 
   return {
@@ -105,12 +118,19 @@ export async function handleQaPassed(ctx: EventContext, payload: Record<string, 
   // Save QA summary artifact
   ctx.run.saveArtifact(
     `${s.step_count}-qa-summary.json`,
-    JSON.stringify({
-      ticket_id: s.current_ticket_id,
-      status: 'passed',
-      attempt: s.qa_retries + 1,
-      ...payload,
-    }, null, 2),
+    stringifyBoundedArtifactJson(
+      {
+        ticket_id: s.current_ticket_id,
+        status: 'passed',
+        attempt: s.qa_retries + 1,
+        ...payload,
+      },
+      {
+        ticket_id: s.current_ticket_id,
+        status: 'passed',
+        attempt: s.qa_retries + 1,
+      },
+    ),
   );
 
   // Skip PR phase when not creating PRs
@@ -154,11 +174,17 @@ export async function handleQaFailed(ctx: EventContext, payload: Record<string, 
   // Save failure artifact
   ctx.run.saveArtifact(
     `${s.step_count}-qa-failed-attempt-${s.qa_retries + 1}.json`,
-    JSON.stringify({
-      ticket_id: s.current_ticket_id,
-      attempt: s.qa_retries + 1,
-      ...payload,
-    }, null, 2),
+    stringifyBoundedArtifactJson(
+      {
+        ticket_id: s.current_ticket_id,
+        attempt: s.qa_retries + 1,
+        ...payload,
+      },
+      {
+        ticket_id: s.current_ticket_id,
+        attempt: s.qa_retries + 1,
+      },
+    ),
   );
 
   s.qa_retries++;

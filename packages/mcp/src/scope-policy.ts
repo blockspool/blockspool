@@ -9,6 +9,7 @@
  * This file adds MCP-specific policy derivation and minimatch-based validation.
  */
 
+import * as nodeFs from 'node:fs';
 import * as nodePath from 'node:path';
 import { minimatch } from 'minimatch';
 import {
@@ -33,6 +34,88 @@ export { detectCredentialInContent as containsCredentials } from '@promptwheel/c
 function normalizeAllowedGlob(glob: string): string {
   if (glob.endsWith('/')) return glob + '**';
   return glob;
+}
+
+function normalizePathForMatch(filePath: string): string {
+  const normalized = filePath
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\.\//, '');
+  if (normalized === '/' || /^[A-Za-z]:\/$/.test(normalized)) {
+    return normalized;
+  }
+  return normalized.replace(/\/$/, '');
+}
+
+function canonicalizePathForCheck(targetPath: string): string | null {
+  const absolutePath = nodePath.resolve(targetPath);
+  try {
+    return normalizePathForMatch(nodeFs.realpathSync(absolutePath));
+  } catch (err) {
+    const code = err instanceof Error && 'code' in err
+      ? (err as NodeJS.ErrnoException).code
+      : undefined;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      return null;
+    }
+
+    // For create/write targets that do not exist yet, resolve symlinks in the
+    // nearest existing ancestor and append the remaining path segments.
+    const suffix: string[] = [];
+    let current = absolutePath;
+    while (!nodeFs.existsSync(current)) {
+      const parent = nodePath.dirname(current);
+      if (parent === current) return null;
+      suffix.unshift(nodePath.basename(current));
+      current = parent;
+    }
+
+    try {
+      const canonicalAncestor = nodeFs.realpathSync(current);
+      return normalizePathForMatch(
+        suffix.length > 0 ? nodePath.resolve(canonicalAncestor, ...suffix) : canonicalAncestor,
+      );
+    } catch {
+      return null;
+    }
+  }
+}
+
+function isCanonicalPathWithinRoot(canonicalPath: string, canonicalRoot: string): boolean {
+  if (canonicalRoot === '/') return canonicalPath.startsWith('/');
+  const normalizedRoot = canonicalRoot.replace(/\/$/, '');
+  return canonicalPath === normalizedRoot || canonicalPath.startsWith(normalizedRoot + '/');
+}
+
+function buildPathMatchCandidates(filePath: string, worktreeRoot?: string): string[] {
+  const candidates = new Set<string>();
+  const addCandidate = (candidate: string) => {
+    const normalized = normalizePathForMatch(candidate);
+    if (normalized.length > 0) {
+      candidates.add(normalized);
+    }
+  };
+
+  addCandidate(filePath);
+
+  const canonicalFile = canonicalizePathForCheck(filePath);
+  if (canonicalFile) {
+    addCandidate(canonicalFile);
+
+    const canonicalCwd = canonicalizePathForCheck(process.cwd());
+    if (canonicalCwd && isCanonicalPathWithinRoot(canonicalFile, canonicalCwd)) {
+      addCandidate(nodePath.relative(canonicalCwd, canonicalFile));
+    }
+  }
+
+  if (worktreeRoot) {
+    const canonicalRoot = canonicalizePathForCheck(worktreeRoot);
+    if (canonicalFile && canonicalRoot && isCanonicalPathWithinRoot(canonicalFile, canonicalRoot)) {
+      addCandidate(nodePath.relative(canonicalRoot, canonicalFile));
+    }
+  }
+
+  return [...candidates];
 }
 
 // ---------------------------------------------------------------------------
@@ -195,12 +278,13 @@ export function validatePlanScope(
 
 /**
  * Check if a file path is inside a worktree directory.
- * Normalizes both paths before comparison.
+ * Resolves canonical paths before comparison to block traversal/symlink escapes.
  */
 export function isFileInWorktree(filePath: string, worktreeRoot: string): boolean {
-  const normalizedFile = nodePath.normalize(filePath).replace(/\\/g, '/');
-  const normalizedRoot = nodePath.normalize(worktreeRoot).replace(/\\/g, '/').replace(/\/$/, '');
-  return normalizedFile === normalizedRoot || normalizedFile.startsWith(normalizedRoot + '/');
+  const canonicalFile = canonicalizePathForCheck(filePath);
+  const canonicalRoot = canonicalizePathForCheck(worktreeRoot);
+  if (!canonicalFile || !canonicalRoot) return false;
+  return isCanonicalPathWithinRoot(canonicalFile, canonicalRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,25 +299,30 @@ export function isFileAllowed(filePath: string, policy: ScopePolicy): boolean {
     }
   }
 
+  const pathCandidates = buildPathMatchCandidates(filePath, policy.worktree_root);
+
   // Check denied paths
   for (const deniedGlob of policy.denied_paths) {
-    if (minimatch(filePath, deniedGlob, { dot: true })) {
+    if (pathCandidates.some(candidate => minimatch(candidate, deniedGlob, { dot: true }))) {
       return false;
     }
   }
 
   // Check denied patterns
   for (const pattern of policy.denied_patterns) {
-    if (pattern.test(filePath)) {
+    if (pathCandidates.some(candidate => pattern.test(candidate))) {
       return false;
     }
   }
 
   // Check allowed paths (empty = everything allowed)
   if (policy.allowed_paths.length > 0) {
-    return policy.allowed_paths.some(glob =>
-      minimatch(filePath, normalizeAllowedGlob(glob), { dot: true }),
-    );
+    return policy.allowed_paths.some(glob => {
+      const normalizedGlob = normalizeAllowedGlob(glob);
+      return pathCandidates.some(candidate =>
+        minimatch(candidate, normalizedGlob, { dot: true }),
+      );
+    });
   }
 
   return true;

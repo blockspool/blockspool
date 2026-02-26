@@ -420,6 +420,56 @@ export function analyzeViolationsForExpansion(
 // ---------------------------------------------------------------------------
 
 /**
+ * Decode a git porcelain path token.
+ * Git quotes paths with special chars/spaces using C-style escapes.
+ */
+function decodePorcelainPathToken(pathToken: string): string {
+  const trimmed = pathToken.trim();
+
+  if (!(trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+    return trimmed;
+  }
+
+  const body = trimmed.slice(1, -1);
+  let decoded = '';
+
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+    if (char !== '\\') {
+      decoded += char;
+      continue;
+    }
+
+    const next = body[i + 1];
+    if (!next) {
+      decoded += '\\';
+      break;
+    }
+
+    if (i + 3 < body.length && /^[0-7]{3}$/.test(body.slice(i + 1, i + 4))) {
+      decoded += String.fromCharCode(parseInt(body.slice(i + 1, i + 4), 8));
+      i += 3;
+      continue;
+    }
+
+    const mappedEscapes: Record<string, string> = {
+      '"': '"',
+      '\\': '\\',
+      n: '\n',
+      r: '\r',
+      t: '\t',
+      b: '\b',
+      f: '\f',
+    };
+
+    decoded += mappedEscapes[next] ?? next;
+    i += 1;
+  }
+
+  return decoded;
+}
+
+/**
  * Parse git status --porcelain output to get changed file paths.
  */
 export function parseChangedFiles(statusOutput: string): string[] {
@@ -433,7 +483,9 @@ export function parseChangedFiles(statusOutput: string): string[] {
       // eslint-disable-next-line security/detect-unsafe-regex
       const match = line.match(/^..\s+(.+?)(?:\s+->\s+(.+))?$/);
       if (!match) return null;
-      return match[2] || match[1];
+      const destination = match[2] ? decodePorcelainPathToken(match[2]) : null;
+      const source = decodePorcelainPathToken(match[1]);
+      return destination || source;
     })
     .filter((f): f is string => f !== null);
 }

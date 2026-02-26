@@ -12,6 +12,9 @@ import type { DatabaseAdapter, Project } from '@promptwheel/core';
 import { RunManager } from '../run-manager.js';
 import { processEvent } from '../event-processor.js';
 import { advance } from '../advance.js';
+import { SessionManager } from '../state.js';
+import { registerSessionTools } from '../tools/session.js';
+import { registerExecuteTools } from '../tools/execute.js';
 import {
   deriveScopePolicy,
   validatePlanScope,
@@ -664,6 +667,16 @@ describe('isFileInWorktree', () => {
   it('handles trailing slash on worktree root', () => {
     expect(isFileInWorktree('.promptwheel/worktrees/t1/foo.ts', '.promptwheel/worktrees/t1/')).toBe(true);
   });
+
+  it('rejects symlink escape outside worktree root', () => {
+    const worktreeRoot = path.join(tmpDir, 'worktree');
+    const outsideDir = path.join(tmpDir, 'outside');
+    fs.mkdirSync(worktreeRoot, { recursive: true });
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.symlinkSync(outsideDir, path.join(worktreeRoot, 'escape-link'));
+
+    expect(isFileInWorktree(path.join(worktreeRoot, 'escape-link', 'foo.ts'), worktreeRoot)).toBe(false);
+  });
 });
 
 describe('isFileAllowed with worktree_root', () => {
@@ -679,15 +692,43 @@ describe('isFileAllowed with worktree_root', () => {
   });
 
   it('allows files inside worktree when worktree_root is set', () => {
+    const worktreeRoot = path.join(tmpDir, '.promptwheel', 'worktrees', 't1');
+    fs.mkdirSync(path.join(worktreeRoot, 'src'), { recursive: true });
     const policy = deriveScopePolicy({
       allowedPaths: [],
       category: 'refactor',
       maxLinesPerTicket: 500,
-      worktreeRoot: '/tmp/project/.promptwheel/worktrees/t1',
+      worktreeRoot,
     });
-    // Files use absolute paths in worktree mode, so they match the worktree_root prefix
-    // and are not blocked by the .promptwheel/** deny glob (which matches relative paths)
-    expect(isFileAllowed('/tmp/project/.promptwheel/worktrees/t1/src/foo.ts', policy)).toBe(true);
+    expect(isFileAllowed(path.join(worktreeRoot, 'src', 'foo.ts'), policy)).toBe(true);
+  });
+
+  it('denies metadata paths inside worktree prefixes', () => {
+    const worktreeRoot = path.join(tmpDir, '.promptwheel', 'worktrees', 't1');
+    fs.mkdirSync(path.join(worktreeRoot, '.git'), { recursive: true });
+    const policy = deriveScopePolicy({
+      allowedPaths: [],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+      worktreeRoot,
+    });
+    expect(isFileAllowed(path.join(worktreeRoot, '.git', 'config'), policy)).toBe(false);
+  });
+
+  it('rejects symlink escape even when allowed paths would otherwise match', () => {
+    const worktreeRoot = path.join(tmpDir, '.promptwheel', 'worktrees', 't1');
+    const outsideDir = path.join(tmpDir, 'outside-src');
+    fs.mkdirSync(worktreeRoot, { recursive: true });
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.symlinkSync(outsideDir, path.join(worktreeRoot, 'src'));
+
+    const policy = deriveScopePolicy({
+      allowedPaths: ['src/**'],
+      category: 'refactor',
+      maxLinesPerTicket: 500,
+      worktreeRoot,
+    });
+    expect(isFileAllowed(path.join(worktreeRoot, 'src', 'foo.ts'), policy)).toBe(false);
   });
 
   it('behaves normally when worktree_root is not set (backwards compat)', () => {
@@ -720,6 +761,82 @@ describe('serializeScopePolicy with worktree_root', () => {
     });
     const serialized = serializeScopePolicy(policy);
     expect(serialized.worktree_root).toBeUndefined();
+  });
+});
+
+describe('scope policy parity between tools and runtime checks', () => {
+  it('uses worktree_root in get_scope_policy and matches validate_scope allow/deny', async () => {
+    const state = new SessionManager(db, project, tmpDir);
+    state.start({
+      step_budget: 100,
+      ticket_step_budget: 12,
+      max_prs: 5,
+      parallel: 1,
+      direct: false,
+    });
+
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Worktree parity ticket',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: [],
+    });
+
+    const active = state.run.require();
+    active.current_ticket_id = ticket.id;
+
+    const worktreeRoot = path.resolve(tmpDir, '.promptwheel', 'worktrees', ticket.id);
+    fs.mkdirSync(path.join(worktreeRoot, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(worktreeRoot, '.git'), { recursive: true });
+    const allowedFile = path.join(worktreeRoot, 'src', 'foo.ts');
+    const deniedFile = path.join(worktreeRoot, '.git', 'config');
+
+    type ToolHandler = (params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>;
+    const handlers = new Map<string, ToolHandler>();
+    const fakeServer = {
+      tool(name: string, _description: string, _schema: unknown, handler: ToolHandler) {
+        handlers.set(name, handler);
+      },
+    };
+
+    registerSessionTools(fakeServer as any, () => state);
+    registerExecuteTools(fakeServer as any, () => state);
+
+    const getScopePolicy = handlers.get('promptwheel_get_scope_policy');
+    const validateScope = handlers.get('promptwheel_validate_scope');
+    expect(getScopePolicy).toBeDefined();
+    expect(validateScope).toBeDefined();
+
+    const policyResp = await getScopePolicy!({ file_path: allowedFile });
+    const policyBody = JSON.parse(policyResp.content[0].text) as Record<string, unknown>;
+    const policy = policyBody.policy as Record<string, unknown>;
+    const fileCheck = policyBody.file_check as Record<string, unknown>;
+    expect(policy.worktree_root).toBe(worktreeRoot);
+    expect(fileCheck.allowed).toBe(true);
+
+    const validateAllowedResp = await validateScope!({
+      ticketId: ticket.id,
+      changedFiles: [allowedFile],
+    });
+    const validateAllowedBody = JSON.parse(validateAllowedResp.content[0].text) as Record<string, unknown>;
+    expect(validateAllowedBody.valid).toBe(true);
+
+    const deniedScopeResp = await getScopePolicy!({ file_path: deniedFile });
+    const deniedScopeBody = JSON.parse(deniedScopeResp.content[0].text) as Record<string, unknown>;
+    expect((deniedScopeBody.file_check as Record<string, unknown>).allowed).toBe(false);
+
+    const validateDeniedResp = await validateScope!({
+      ticketId: ticket.id,
+      changedFiles: [deniedFile],
+    });
+    const validateDeniedBody = JSON.parse(validateDeniedResp.content[0].text) as Record<string, unknown>;
+    expect(validateDeniedBody.valid).toBe(false);
+
+    state.end();
   });
 });
 

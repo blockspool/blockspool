@@ -28,7 +28,7 @@ export async function scoutAllSectors(state: AutoSessionState): Promise<ScoutAll
   const allProposals: TicketProposal[] = [];
   let sectorsScanned = 0;
 
-  const totalSectors = state.sectorState?.sectors.length ?? 1;
+  const totalSectors = state.sectorState?.sectors.filter(s => s.production).length ?? 1;
 
   // If --scope is set, scout only that scope
   if (state.userScope) {

@@ -10,7 +10,7 @@
  * - Proposals are collected correctly from parallel results
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { scout } from '../scout/index.js';
 import type { ScoutBackend, RunnerOptions, RunnerResult } from '../scout/runner.js';
 
@@ -32,6 +32,26 @@ function makeProposalJson(title: string, confidence = 80) {
       },
     ],
   });
+}
+
+function makeProposalPayload(
+  title: string,
+  overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    category: 'refactor',
+    title,
+    description: `Description for ${title}`,
+    acceptance_criteria: ['Works correctly'],
+    verification_commands: ['npm run build'],
+    allowed_paths: ['src/test-file.ts'],
+    files: ['src/test-file.ts'],
+    confidence: 80,
+    impact_score: 7,
+    rationale: 'Test rationale',
+    estimated_complexity: 'simple',
+    ...overrides,
+  };
 }
 
 /** Creates a temp directory with source files for scanning */
@@ -256,6 +276,48 @@ describe('parallel scout batches', () => {
 
       // Should have stopped early
       expect(result.success).toBe(true);
+    });
+  });
+
+  it('drops malformed proposals while keeping valid ones', async () => {
+    const malformedMissingDescription = makeProposalPayload('Missing description');
+    delete malformedMissingDescription.description;
+
+    const mockBackend: ScoutBackend = {
+      name: 'test',
+      async run(): Promise<RunnerResult> {
+        return {
+          success: true,
+          output: JSON.stringify({
+            proposals: [
+              makeProposalPayload('Valid proposal'),
+              malformedMissingDescription,
+              makeProposalPayload('Unsupported category', { category: 'not-a-category' }),
+              null,
+              'not-an-object',
+            ],
+          }),
+          durationMs: 10,
+        };
+      },
+    };
+
+    await withTestFiles(10, async (dir) => {
+      const result = await scout({
+        scope: 'src/**',
+        projectPath: dir,
+        backend: mockBackend,
+        maxProposals: 20,
+        minConfidence: 30,
+        scoutConcurrency: 2,
+        batchTokenBudget: 200,
+        timeoutMs: 10000,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.proposals).toHaveLength(1);
+      expect(result.proposals[0].title).toBe('Valid proposal');
+      expect(result.errors).toEqual([]);
     });
   });
 

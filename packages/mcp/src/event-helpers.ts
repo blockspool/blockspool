@@ -48,6 +48,34 @@ const PLAN_ACTIONS = new Set(['create', 'modify', 'delete']);
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
 type PlanAction = 'create' | 'modify' | 'delete';
 
+export const EVENT_MAX_PAYLOAD_BYTES = 512 * 1024;
+export const EVENT_MAX_RECORD_ARRAY_ITEMS = 200;
+export const EVENT_MAX_STRING_ARRAY_ITEMS = 400;
+export const EVENT_MAX_PLAN_FILES = 400;
+export const EVENT_MAX_PATH_BYTES = 2048;
+export const EVENT_MAX_COMMAND_BYTES = 4096;
+export const EVENT_MAX_SMALL_STRING_BYTES = 8192;
+export const EVENT_MAX_MEDIUM_STRING_BYTES = 32768;
+export const EVENT_MAX_LARGE_STRING_BYTES = 131072;
+export const EVENT_MAX_ARTIFACT_BYTES = 131072;
+
+type StringLimitMode = 'truncate' | 'reject';
+type ArrayLimitMode = 'truncate' | 'reject';
+
+interface PayloadTruncation {
+  field: string;
+  kind: 'string' | 'array';
+  original: number;
+  max: number;
+}
+
+interface FieldValidationSuccess<T> {
+  ok: true;
+  value: T;
+}
+
+type FieldValidationResult<T> = FieldValidationSuccess<T> | EventPayloadValidationFailure;
+
 function isPlanAction(value: string): value is PlanAction {
   return value === 'create' || value === 'modify' || value === 'delete';
 }
@@ -100,25 +128,230 @@ function invalid(type: EventType, message: string): EventPayloadValidationFailur
   return { ok: false, error: `Invalid ${type} payload: ${message}` };
 }
 
-function toRecordArrayOrUndefined(value: unknown): Record<string, unknown>[] | undefined {
-  if (!Array.isArray(value)) return undefined;
+function toJsonBytes(value: unknown): number {
+  try {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== 'string') return Number.POSITIVE_INFINITY;
+    return Buffer.byteLength(serialized, 'utf8');
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+export function truncateUtf8String(value: string, maxBytes: number): {
+  value: string;
+  truncated: boolean;
+  originalBytes: number;
+} {
+  const safeMaxBytes = Math.max(0, maxBytes);
+  const originalBytes = Buffer.byteLength(value, 'utf8');
+  if (originalBytes <= safeMaxBytes) {
+    return { value, truncated: false, originalBytes };
+  }
+
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const candidate = value.slice(0, mid);
+    if (Buffer.byteLength(candidate, 'utf8') <= safeMaxBytes) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return {
+    value: value.slice(0, low),
+    truncated: true,
+    originalBytes,
+  };
+}
+
+export function truncateArtifactText(
+  text: string,
+  maxBytes: number = EVENT_MAX_ARTIFACT_BYTES,
+): {
+  text: string;
+  truncated: boolean;
+  originalBytes: number;
+  maxBytes: number;
+} {
+  const limited = truncateUtf8String(text, maxBytes);
+  return {
+    text: limited.value,
+    truncated: limited.truncated,
+    originalBytes: limited.originalBytes,
+    maxBytes,
+  };
+}
+
+export function stringifyBoundedArtifactJson(
+  value: unknown,
+  fallback: Record<string, unknown> = {},
+  maxBytes: number = EVENT_MAX_ARTIFACT_BYTES,
+): string {
+  const serialized = JSON.stringify(value, null, 2);
+  if (typeof serialized !== 'string') {
+    return JSON.stringify({
+      ...fallback,
+      _artifact_truncated: true,
+      _artifact_original_bytes: -1,
+      _artifact_max_bytes: maxBytes,
+      _artifact_preview: '[unserializable artifact payload]',
+    }, null, 2);
+  }
+  const bytes = Buffer.byteLength(serialized, 'utf8');
+  if (bytes <= maxBytes) return serialized;
+
+  const previewBudget = Math.max(0, maxBytes - 1536);
+  const preview = truncateUtf8String(serialized, previewBudget).value;
+  return JSON.stringify({
+    ...fallback,
+    _artifact_truncated: true,
+    _artifact_original_bytes: bytes,
+    _artifact_max_bytes: maxBytes,
+    _artifact_preview: preview,
+  }, null, 2);
+}
+
+function validateRecordArrayField(
+  type: EventType,
+  field: string,
+  value: unknown,
+  maxItems: number,
+  arrayMode: ArrayLimitMode,
+  truncations: PayloadTruncation[],
+): FieldValidationResult<Record<string, unknown>[]> {
+  if (!Array.isArray(value)) {
+    return invalid(type, `\`${field}\` must be an array of objects`);
+  }
+
+  if (value.length > maxItems) {
+    if (arrayMode === 'reject') {
+      return invalid(type, `\`${field}\` must contain at most ${maxItems} items`);
+    }
+    truncations.push({ field, kind: 'array', original: value.length, max: maxItems });
+  }
+
   const records: Record<string, unknown>[] = [];
-  for (const item of value) {
-    if (!isRecord(item)) return undefined;
+  const bounded = value.slice(0, maxItems);
+  for (const item of bounded) {
+    if (!isRecord(item)) {
+      return invalid(type, `\`${field}\` must be an array of objects`);
+    }
     records.push(item);
   }
-  return records;
+  return { ok: true, value: records };
+}
+
+function validateStringField(
+  type: EventType,
+  field: string,
+  value: unknown,
+  maxBytes: number,
+  mode: StringLimitMode,
+  truncations: PayloadTruncation[],
+): FieldValidationResult<string> {
+  if (typeof value !== 'string') {
+    return invalid(type, `\`${field}\` must be a string`);
+  }
+  const limited = truncateUtf8String(value, maxBytes);
+  if (!limited.truncated) return { ok: true, value };
+  if (mode === 'reject') {
+    return invalid(type, `\`${field}\` exceeds ${maxBytes} bytes`);
+  }
+  truncations.push({ field, kind: 'string', original: limited.originalBytes, max: maxBytes });
+  return { ok: true, value: limited.value };
+}
+
+function validateStringArrayField(
+  type: EventType,
+  field: string,
+  value: unknown,
+  maxItems: number,
+  maxItemBytes: number,
+  arrayMode: ArrayLimitMode,
+  itemMode: StringLimitMode,
+  truncations: PayloadTruncation[],
+): FieldValidationResult<string[]> {
+  if (!Array.isArray(value)) {
+    return invalid(type, `\`${field}\` must be an array of strings`);
+  }
+
+  let source = value;
+  if (value.length > maxItems) {
+    if (arrayMode === 'reject') {
+      return invalid(type, `\`${field}\` must contain at most ${maxItems} items`);
+    }
+    truncations.push({ field, kind: 'array', original: value.length, max: maxItems });
+    source = value.slice(0, maxItems);
+  }
+
+  const strings: string[] = [];
+  let truncatedItems = 0;
+  let maxOriginalItemBytes = 0;
+  for (let i = 0; i < source.length; i++) {
+    const item = source[i];
+    if (typeof item !== 'string') {
+      return invalid(type, `\`${field}\` must be an array of strings`);
+    }
+    const limited = truncateUtf8String(item, maxItemBytes);
+    if (limited.truncated) {
+      if (itemMode === 'reject') {
+        return invalid(type, `\`${field}[${i}]\` exceeds ${maxItemBytes} bytes`);
+      }
+      truncatedItems++;
+      if (limited.originalBytes > maxOriginalItemBytes) {
+        maxOriginalItemBytes = limited.originalBytes;
+      }
+    }
+    strings.push(limited.value);
+  }
+  if (truncatedItems > 0) {
+    truncations.push({ field: `${field}[*]`, kind: 'string', original: maxOriginalItemBytes, max: maxItemBytes });
+  }
+  return { ok: true, value: strings };
+}
+
+function attachTruncationMetadata(
+  payload: Record<string, unknown>,
+  truncations: PayloadTruncation[],
+): Record<string, unknown> {
+  if (truncations.length === 0) return payload;
+  return {
+    ...payload,
+    _payload_truncated: true,
+    _payload_truncations: truncations,
+  };
 }
 
 export function validateAndSanitizeEventPayload(
   type: EventType,
   payload: Record<string, unknown>,
 ): EventPayloadValidation {
+  const payloadBytes = toJsonBytes(payload);
+  if (!Number.isFinite(payloadBytes)) {
+    return invalid(type, 'payload is not JSON-serializable');
+  }
+  if (payloadBytes > EVENT_MAX_PAYLOAD_BYTES) {
+    return invalid(type, `payload exceeds ${EVENT_MAX_PAYLOAD_BYTES} bytes`);
+  }
+
+  const truncations: PayloadTruncation[] = [];
   const sanitized: Record<string, unknown> = { ...payload };
   if ('ticket_id' in payload) {
     const ticketId = payload['ticket_id'];
     if (typeof ticketId === 'string') {
-      sanitized['ticket_id'] = ticketId;
+      const limitedTicketId = validateStringField(
+        type,
+        'ticket_id',
+        ticketId,
+        EVENT_MAX_COMMAND_BYTES,
+        'truncate',
+        truncations,
+      );
+      if (!limitedTicketId.ok) return limitedTicketId;
+      sanitized['ticket_id'] = limitedTicketId.value;
     } else if (typeof ticketId === 'number' && Number.isFinite(ticketId)) {
       sanitized['ticket_id'] = String(ticketId);
     } else {
@@ -129,33 +362,70 @@ export function validateAndSanitizeEventPayload(
   switch (type) {
     case 'SCOUT_OUTPUT': {
       if ('explored_dirs' in payload) {
-        const exploredDirs = toStringArrayOrUndefined(payload['explored_dirs']);
-        if (!exploredDirs) return invalid(type, '`explored_dirs` must be an array of strings');
-        sanitized['explored_dirs'] = exploredDirs;
+        const exploredDirs = validateStringArrayField(
+          type,
+          'explored_dirs',
+          payload['explored_dirs'],
+          EVENT_MAX_STRING_ARRAY_ITEMS,
+          EVENT_MAX_PATH_BYTES,
+          'truncate',
+          'truncate',
+          truncations,
+        );
+        if (!exploredDirs.ok) return exploredDirs;
+        sanitized['explored_dirs'] = exploredDirs.value;
       }
 
       if ('proposals' in payload) {
-        const proposals = toRecordArrayOrUndefined(payload['proposals']);
-        if (!proposals) return invalid(type, '`proposals` must be an array of objects');
-        sanitized['proposals'] = proposals;
+        const proposals = validateRecordArrayField(
+          type,
+          'proposals',
+          payload['proposals'],
+          EVENT_MAX_RECORD_ARRAY_ITEMS,
+          'reject',
+          truncations,
+        );
+        if (!proposals.ok) return proposals;
+        sanitized['proposals'] = proposals.value;
       }
 
       if ('reviewed_proposals' in payload) {
-        const reviewedProposals = toRecordArrayOrUndefined(payload['reviewed_proposals']);
-        if (!reviewedProposals) return invalid(type, '`reviewed_proposals` must be an array of objects');
-        sanitized['reviewed_proposals'] = reviewedProposals;
+        const reviewedProposals = validateRecordArrayField(
+          type,
+          'reviewed_proposals',
+          payload['reviewed_proposals'],
+          EVENT_MAX_RECORD_ARRAY_ITEMS,
+          'reject',
+          truncations,
+        );
+        if (!reviewedProposals.ok) return reviewedProposals;
+        sanitized['reviewed_proposals'] = reviewedProposals.value;
       }
 
       if ('text' in payload) {
-        const text = toStringOrUndefined(payload['text']);
-        if (text === undefined) return invalid(type, '`text` must be a string');
-        sanitized['text'] = text;
+        const text = validateStringField(
+          type,
+          'text',
+          payload['text'],
+          EVENT_MAX_LARGE_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!text.ok) return text;
+        sanitized['text'] = text.value;
       }
 
       if ('exploration_summary' in payload) {
-        const summary = toStringOrUndefined(payload['exploration_summary']);
-        if (summary === undefined) return invalid(type, '`exploration_summary` must be a string');
-        sanitized['exploration_summary'] = summary;
+        const summary = validateStringField(
+          type,
+          'exploration_summary',
+          payload['exploration_summary'],
+          EVENT_MAX_SMALL_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!summary.ok) return summary;
+        sanitized['exploration_summary'] = summary.value;
       }
 
       if ('sector_reclassification' in payload) {
@@ -178,21 +448,35 @@ export function validateAndSanitizeEventPayload(
           sanitized['sector_reclassification'] = reclass;
         }
       }
-      return { ok: true, payload: sanitized };
+      return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
     }
 
     case 'PROPOSALS_REVIEWED': {
-      const reviewedProposals = toRecordArrayOrUndefined(payload['reviewed_proposals']);
-      if (!reviewedProposals) return invalid(type, '`reviewed_proposals` is required and must be an array of objects');
+      const reviewedProposals = validateRecordArrayField(
+        type,
+        'reviewed_proposals',
+        payload['reviewed_proposals'],
+        EVENT_MAX_RECORD_ARRAY_ITEMS,
+        'reject',
+        truncations,
+      );
+      if (!reviewedProposals.ok) return reviewedProposals;
 
       const cleanItems: Record<string, unknown>[] = [];
-      for (const item of reviewedProposals) {
+      for (const item of reviewedProposals.value) {
         const clean: Record<string, unknown> = {};
 
         if ('title' in item) {
-          const title = toStringOrUndefined(item['title']);
-          if (title === undefined) return invalid(type, '`reviewed_proposals[].title` must be a string');
-          clean['title'] = title;
+          const title = validateStringField(
+            type,
+            'reviewed_proposals[].title',
+            item['title'],
+            EVENT_MAX_SMALL_STRING_BYTES,
+            'truncate',
+            truncations,
+          );
+          if (!title.ok) return title;
+          clean['title'] = title.value;
         }
         if ('confidence' in item) {
           const confidence = toNumberOrUndefined(item['confidence']);
@@ -205,21 +489,28 @@ export function validateAndSanitizeEventPayload(
           clean['impact_score'] = impactScore;
         }
         if ('review_note' in item) {
-          const reviewNote = toStringOrUndefined(item['review_note']);
-          if (reviewNote === undefined) return invalid(type, '`reviewed_proposals[].review_note` must be a string');
-          clean['review_note'] = reviewNote;
+          const reviewNote = validateStringField(
+            type,
+            'reviewed_proposals[].review_note',
+            item['review_note'],
+            EVENT_MAX_MEDIUM_STRING_BYTES,
+            'truncate',
+            truncations,
+          );
+          if (!reviewNote.ok) return reviewNote;
+          clean['review_note'] = reviewNote.value;
         }
 
         cleanItems.push({ ...item, ...clean });
       }
 
       sanitized['reviewed_proposals'] = cleanItems;
-      return { ok: true, payload: sanitized };
+      return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
     }
 
     case 'PROPOSALS_FILTERED':
     case 'QA_PASSED':
-      return { ok: true, payload: sanitized };
+      return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
 
     case 'PLAN_SUBMITTED': {
       const filesToTouchRaw = Array.isArray(payload['files_to_touch']) ? payload['files_to_touch']
@@ -235,31 +526,69 @@ export function validateAndSanitizeEventPayload(
         return invalid(type, '`files_to_touch`/`files`/`touched_files` must be arrays');
       }
 
+      if ((filesToTouchRaw?.length ?? 0) > EVENT_MAX_PLAN_FILES) {
+        return invalid(type, `\`files_to_touch\` must contain at most ${EVENT_MAX_PLAN_FILES} items`);
+      }
+
       const filesToTouch: Array<{ path: string; action: PlanAction; reason: string }> = [];
       for (const file of filesToTouchRaw ?? []) {
         if (typeof file === 'string') {
-          filesToTouch.push({ path: file, action: 'modify', reason: '' });
+          const filePath = validateStringField(
+            type,
+            'files_to_touch[].path',
+            file,
+            EVENT_MAX_PATH_BYTES,
+            'truncate',
+            truncations,
+          );
+          if (!filePath.ok) return filePath;
+          filesToTouch.push({ path: filePath.value, action: 'modify', reason: '' });
           continue;
         }
         if (!isRecord(file)) {
           return invalid(type, '`files_to_touch[]` entries must be strings or objects');
         }
-        const pathValue = toStringOrUndefined(file['path']);
-        if (!pathValue) return invalid(type, '`files_to_touch[].path` must be a non-empty string');
+        const pathValue = validateStringField(
+          type,
+          'files_to_touch[].path',
+          file['path'],
+          EVENT_MAX_PATH_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!pathValue.ok || !pathValue.value) return invalid(type, '`files_to_touch[].path` must be a non-empty string');
         const actionValue = 'action' in file ? toStringOrUndefined(file['action']) : 'modify';
         if (!actionValue || !PLAN_ACTIONS.has(actionValue) || !isPlanAction(actionValue)) {
           return invalid(type, '`files_to_touch[].action` must be create, modify, or delete');
         }
-        const reasonValue = 'reason' in file ? toStringOrUndefined(file['reason']) : '';
-        if (reasonValue === undefined) return invalid(type, '`files_to_touch[].reason` must be a string');
-        filesToTouch.push({ path: pathValue, action: actionValue, reason: reasonValue });
+        const reasonValue = 'reason' in file
+          ? validateStringField(
+            type,
+            'files_to_touch[].reason',
+            file['reason'],
+            EVENT_MAX_SMALL_STRING_BYTES,
+            'truncate',
+            truncations,
+          )
+          : { ok: true, value: '' } as const;
+        if (!reasonValue.ok) return reasonValue;
+        filesToTouch.push({ path: pathValue.value, action: actionValue, reason: reasonValue.value });
       }
       sanitized['files_to_touch'] = filesToTouch;
 
       if ('expected_tests' in payload) {
-        const expectedTests = toStringArrayOrUndefined(payload['expected_tests']);
-        if (!expectedTests) return invalid(type, '`expected_tests` must be an array of strings');
-        sanitized['expected_tests'] = expectedTests;
+        const expectedTests = validateStringArrayField(
+          type,
+          'expected_tests',
+          payload['expected_tests'],
+          EVENT_MAX_STRING_ARRAY_ITEMS,
+          EVENT_MAX_COMMAND_BYTES,
+          'truncate',
+          'truncate',
+          truncations,
+        );
+        if (!expectedTests.ok) return expectedTests;
+        sanitized['expected_tests'] = expectedTests.value;
       }
 
       if ('risk_level' in payload) {
@@ -278,18 +607,34 @@ export function validateAndSanitizeEventPayload(
         sanitized['estimated_lines'] = estimatedLines;
       }
 
-      return { ok: true, payload: sanitized };
+      return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
     }
 
     case 'TICKET_RESULT': {
-      const status = toStringOrUndefined(payload['status']);
-      if (!status) return invalid(type, '`status` is required and must be a string');
-      sanitized['status'] = status;
+      const status = validateStringField(
+        type,
+        'status',
+        payload['status'],
+        EVENT_MAX_SMALL_STRING_BYTES,
+        'reject',
+        truncations,
+      );
+      if (!status.ok || !status.value) return invalid(type, '`status` is required and must be a string');
+      sanitized['status'] = status.value;
 
       if ('changed_files' in payload) {
-        const changedFiles = toStringArrayOrUndefined(payload['changed_files']);
-        if (!changedFiles) return invalid(type, '`changed_files` must be an array of strings');
-        sanitized['changed_files'] = changedFiles;
+        const changedFiles = validateStringArrayField(
+          type,
+          'changed_files',
+          payload['changed_files'],
+          EVENT_MAX_STRING_ARRAY_ITEMS,
+          EVENT_MAX_PATH_BYTES,
+          'truncate',
+          'truncate',
+          truncations,
+        );
+        if (!changedFiles.ok) return changedFiles;
+        sanitized['changed_files'] = changedFiles.value;
       } else {
         sanitized['changed_files'] = [];
       }
@@ -313,28 +658,78 @@ export function validateAndSanitizeEventPayload(
       if ('diff' in payload && payload['diff'] !== null && typeof payload['diff'] !== 'string') {
         return invalid(type, '`diff` must be a string or null');
       }
+      if ('diff' in payload && typeof payload['diff'] === 'string') {
+        const diff = validateStringField(
+          type,
+          'diff',
+          payload['diff'],
+          EVENT_MAX_LARGE_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!diff.ok) return diff;
+        sanitized['diff'] = diff.value;
+      }
       if ('stdout' in payload && typeof payload['stdout'] !== 'string') {
         return invalid(type, '`stdout` must be a string');
+      }
+      if ('stdout' in payload && typeof payload['stdout'] === 'string') {
+        const stdout = validateStringField(
+          type,
+          'stdout',
+          payload['stdout'],
+          EVENT_MAX_LARGE_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!stdout.ok) return stdout;
+        sanitized['stdout'] = stdout.value;
       }
       if ('reason' in payload && typeof payload['reason'] !== 'string') {
         return invalid(type, '`reason` must be a string');
       }
-      return { ok: true, payload: sanitized };
+      if ('reason' in payload && typeof payload['reason'] === 'string') {
+        const reason = validateStringField(
+          type,
+          'reason',
+          payload['reason'],
+          EVENT_MAX_SMALL_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!reason.ok) return reason;
+        sanitized['reason'] = reason.value;
+      }
+      return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
     }
 
     case 'QA_COMMAND_RESULT': {
-      const command = toStringOrUndefined(payload['command']);
-      if (!command) return invalid(type, '`command` is required and must be a string');
-      sanitized['command'] = command;
+      const command = validateStringField(
+        type,
+        'command',
+        payload['command'],
+        EVENT_MAX_COMMAND_BYTES,
+        'reject',
+        truncations,
+      );
+      if (!command.ok || !command.value) return invalid(type, '`command` is required and must be a string');
+      sanitized['command'] = command.value;
 
       const success = toBooleanOrUndefined(payload['success']);
       if (success === undefined) return invalid(type, '`success` is required and must be boolean');
       sanitized['success'] = success;
 
       if ('output' in payload) {
-        const output = toStringOrUndefined(payload['output']);
-        if (output === undefined) return invalid(type, '`output` must be a string');
-        sanitized['output'] = output;
+        const output = validateStringField(
+          type,
+          'output',
+          payload['output'],
+          EVENT_MAX_LARGE_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!output.ok) return output;
+        sanitized['output'] = output.value;
       } else {
         sanitized['output'] = '';
       }
@@ -355,56 +750,126 @@ export function validateAndSanitizeEventPayload(
         sanitized['timedOut'] = false;
       }
 
-      return { ok: true, payload: sanitized };
+      return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
     }
 
     case 'QA_FAILED': {
       if ('failed_commands' in payload) {
         const failedCommands = payload['failed_commands'];
         if (typeof failedCommands === 'string') {
-          sanitized['failed_commands'] = [failedCommands];
+          const command = validateStringField(
+            type,
+            'failed_commands[0]',
+            failedCommands,
+            EVENT_MAX_COMMAND_BYTES,
+            'truncate',
+            truncations,
+          );
+          if (!command.ok) return command;
+          sanitized['failed_commands'] = [command.value];
         } else {
-          const commandArray = toStringArrayOrUndefined(failedCommands);
-          if (!commandArray) return invalid(type, '`failed_commands` must be a string or array of strings');
-          sanitized['failed_commands'] = commandArray;
+          const commandArray = validateStringArrayField(
+            type,
+            'failed_commands',
+            failedCommands,
+            EVENT_MAX_STRING_ARRAY_ITEMS,
+            EVENT_MAX_COMMAND_BYTES,
+            'truncate',
+            'truncate',
+            truncations,
+          );
+          if (!commandArray.ok) return invalid(type, '`failed_commands` must be a string or array of strings');
+          sanitized['failed_commands'] = commandArray.value;
         }
       }
 
       if ('command' in payload) {
-        const command = toStringOrUndefined(payload['command']);
-        if (command === undefined) return invalid(type, '`command` must be a string');
-        sanitized['command'] = command;
+        const command = validateStringField(
+          type,
+          'command',
+          payload['command'],
+          EVENT_MAX_COMMAND_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!command.ok) return command;
+        sanitized['command'] = command.value;
       }
 
       if ('error' in payload) {
-        const error = toStringOrUndefined(payload['error']);
-        if (error === undefined) return invalid(type, '`error` must be a string');
-        sanitized['error'] = error;
+        const error = validateStringField(
+          type,
+          'error',
+          payload['error'],
+          EVENT_MAX_LARGE_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!error.ok) return error;
+        sanitized['error'] = error.value;
       }
 
       if ('output' in payload) {
-        const output = toStringOrUndefined(payload['output']);
-        if (output === undefined) return invalid(type, '`output` must be a string');
-        sanitized['output'] = output;
+        const output = validateStringField(
+          type,
+          'output',
+          payload['output'],
+          EVENT_MAX_LARGE_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!output.ok) return output;
+        sanitized['output'] = output.value;
       }
-      return { ok: true, payload: sanitized };
+      return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
     }
 
     case 'PR_CREATED': {
       if ('url' in payload && typeof payload['url'] !== 'string') {
         return invalid(type, '`url` must be a string');
       }
+      if ('url' in payload && typeof payload['url'] === 'string') {
+        const url = validateStringField(
+          type,
+          'url',
+          payload['url'],
+          EVENT_MAX_MEDIUM_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!url.ok) return url;
+        sanitized['url'] = url.value;
+      }
       if ('branch' in payload && typeof payload['branch'] !== 'string') {
         return invalid(type, '`branch` must be a string');
       }
-      return { ok: true, payload: sanitized };
+      if ('branch' in payload && typeof payload['branch'] === 'string') {
+        const branch = validateStringField(
+          type,
+          'branch',
+          payload['branch'],
+          EVENT_MAX_SMALL_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!branch.ok) return branch;
+        sanitized['branch'] = branch.value;
+      }
+      return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
     }
 
     case 'USER_OVERRIDE': {
       if ('hint' in payload) {
-        const hint = toStringOrUndefined(payload['hint']);
-        if (hint === undefined) return invalid(type, '`hint` must be a string');
-        sanitized['hint'] = hint;
+        const hint = validateStringField(
+          type,
+          'hint',
+          payload['hint'],
+          EVENT_MAX_MEDIUM_STRING_BYTES,
+          'truncate',
+          truncations,
+        );
+        if (!hint.ok) return hint;
+        sanitized['hint'] = hint.value;
       }
       if ('cancel' in payload) {
         const cancel = toBooleanOrUndefined(payload['cancel']);
@@ -416,11 +881,11 @@ export function validateAndSanitizeEventPayload(
         if (skipReview === undefined) return invalid(type, '`skip_review` must be boolean');
         sanitized['skip_review'] = skipReview;
       }
-      return { ok: true, payload: sanitized };
+      return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
     }
 
     default:
-      return { ok: true, payload: sanitized };
+      return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
   }
 }
 

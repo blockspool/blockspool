@@ -36,6 +36,8 @@ export interface CodebaseIndex {
   structural_issues?: StructuralIssue[];
   /** TypeScript-specific semantic analysis results. ts-morph only. */
   typescript_analysis?: TypeScriptAnalysis;
+  /** AST pattern scan findings — mechanically detected code issues. */
+  ast_findings?: AstFindingEntry[];
 }
 
 export interface GraphMetrics {
@@ -82,6 +84,24 @@ export interface AstAnalysisResult {
   imports: string[];
   exports: ExportEntry[];
   complexity: number;
+  findings?: AstFinding[];
+}
+
+export interface AstFinding {
+  patternId: string;
+  message: string;
+  line: number | null;
+  severity: 'high' | 'medium' | 'low';
+  category: 'fix' | 'refactor' | 'types' | 'security' | 'perf' | 'cleanup';
+}
+
+export interface AstFindingEntry {
+  file: string;
+  patternId: string;
+  message: string;
+  line: number | null;
+  severity: 'high' | 'medium' | 'low';
+  category: string;
 }
 
 export interface DeadExportEntry {

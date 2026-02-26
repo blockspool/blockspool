@@ -11,8 +11,10 @@ import { z } from 'zod';
 import type { SessionManager } from '../state.js';
 import { advance } from '../advance.js';
 import { processEvent } from '../event-processor.js';
+import { validateAndSanitizeEventPayload } from '../event-helpers.js';
 import { advanceTicketWorker, ingestTicketEvent } from '../ticket-worker.js';
 import type { EventType, SessionConfig } from '../types.js';
+import { getRegistry, setCustomToolsEnabledOverride } from '../tool-registry.js';
 import { deriveScopePolicy, isFileAllowed, serializeScopePolicy } from '../scope-policy.js';
 import { repos } from '@promptwheel/core';
 import { loadFormula, applyFormula, listFormulas } from '../formulas.js';
@@ -48,6 +50,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
       skip_review: z.boolean().optional().describe('Skip adversarial review: create tickets directly from scout proposals without a second review pass (default: false).'),
       dry_run: z.boolean().optional().describe('Dry-run mode: scout only, no ticket creation or execution (default: false).'),
       qa_commands: z.array(z.string()).optional().describe('QA commands to always run after every ticket (e.g. ["pytest", "cargo test"]).'),
+      enable_custom_tools: z.boolean().optional().describe('Explicitly enable repository custom tools from .promptwheel/tools/*.json (default: false, unless PROMPTWHEEL_ENABLE_CUSTOM_TOOLS is set).'),
     },
     async (params) => {
       const state = getState();
@@ -80,6 +83,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
         skip_review: params.skip_review,
         dry_run: params.dry_run,
         qa_commands: params.qa_commands,
+        enable_custom_tools: params.enable_custom_tools,
       };
 
       let formulaInfo: { name: string; description: string } | undefined;
@@ -93,6 +97,24 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
 
       // Pre-start validation: detect environment and adjust config
       const warnings: string[] = [];
+
+      // Explicit trust-boundary opt-in for repository custom tools
+      setCustomToolsEnabledOverride(
+        typeof params.enable_custom_tools === 'boolean' ? params.enable_custom_tools : null,
+      );
+      const customToolReport = getRegistry(state.projectPath, {
+        enableCustomTools: params.enable_custom_tools,
+      }).getCustomToolReport();
+
+      if (!customToolReport.enabled && customToolReport.discovered > 0) {
+        warnings.push(`Custom tools are disabled; ignored ${customToolReport.discovered} repository tool file(s).`);
+      }
+      if (customToolReport.enabled && customToolReport.loaded > 0) {
+        warnings.push(`Loaded ${customToolReport.loaded} custom tool spec(s) from .promptwheel/tools/.`);
+      }
+      if (customToolReport.warnings.length > 0) {
+        warnings.push(`Custom tool validation emitted ${customToolReport.warnings.length} warning(s); see custom_tool_report for structured details.`);
+      }
 
       // Git repo check — force direct mode if not a git repo
       const isGitRepo = existsSync(join(state.projectPath, '.git'));
@@ -168,6 +190,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
             expires_at: runState.expires_at,
             run_dir: state.run.dir,
             formula: formulaInfo,
+            custom_tool_report: customToolReport,
             warnings: warnings.length > 0 ? warnings : undefined,
             detected: {
               languages: runState.project_metadata?.languages ?? [],
@@ -235,16 +258,35 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
       const state = getState();
       try {
         state.run.require();
+        const eventType = params.type as EventType;
+        const validatedPayload = validateAndSanitizeEventPayload(
+          eventType,
+          params.payload as Record<string, unknown>,
+        );
+        if (!validatedPayload.ok) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                processed: false,
+                phase_changed: false,
+                message: validatedPayload.error,
+                step: state.run.require().step_count,
+                current_phase: state.run.require().phase,
+              }, null, 2),
+            }],
+          };
+        }
 
-        // Log the raw event
-        state.run.appendEvent(params.type as EventType, params.payload as Record<string, unknown>);
+        // Log only the validated/sanitized event payload.
+        state.run.appendEvent(eventType, validatedPayload.payload);
 
         // Process the event (may trigger state transitions)
         const result = await processEvent(
           state.run,
           state.db,
-          params.type as EventType,
-          params.payload as Record<string, unknown>,
+          eventType,
+          validatedPayload.payload,
           state.project,
         );
 
@@ -430,10 +472,15 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
           };
         }
 
+        const worktreeRoot = s.direct
+          ? undefined
+          : resolve(state.projectPath, '.promptwheel', 'worktrees', s.current_ticket_id);
+
         const policy = deriveScopePolicy({
           allowedPaths: ticket.allowedPaths ?? [],
           category: ticket.category ?? 'refactor',
           maxLinesPerTicket: s.max_lines_per_ticket,
+          worktreeRoot,
         });
 
         const result: Record<string, unknown> = {
@@ -549,11 +596,28 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
     async (params) => {
       const state = getState();
       try {
+        const eventType = params.type as EventType;
+        const validatedPayload = validateAndSanitizeEventPayload(
+          eventType,
+          params.payload as Record<string, unknown>,
+        );
+        if (!validatedPayload.ok) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                processed: false,
+                message: validatedPayload.error,
+              }, null, 2),
+            }],
+          };
+        }
+
         const result = await ingestTicketEvent(
           { run: state.run, db: state.db, project: state.project },
           params.ticket_id,
-          params.type,
-          params.payload as Record<string, unknown>,
+          eventType,
+          validatedPayload.payload,
         );
         return {
           content: [{

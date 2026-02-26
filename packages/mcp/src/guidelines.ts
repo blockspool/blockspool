@@ -23,6 +23,9 @@ export interface GuidelinesOptions {
   customPath?: string | false | null;
 }
 
+const WINDOWS_ABSOLUTE_PATH_RE = /^[A-Za-z]:[\\/]/;
+const UNC_PATH_RE = /^[\\/]{2}/;
+
 export function loadGuidelines(
   repoRoot: string,
   opts: GuidelinesOptions = {},
@@ -32,6 +35,10 @@ export function loadGuidelines(
   if (customPath === false) return null;
 
   if (typeof customPath === 'string') {
+    if (!isSafeGuidelinePath(customPath)) {
+      console.warn(`[promptwheel] rejected unsafe guidelines path: ${customPath}`);
+      return null;
+    }
     return readGuidelinesFile(repoRoot, customPath);
   }
 
@@ -40,10 +47,15 @@ export function loadGuidelines(
 }
 
 function readGuidelinesFile(repoRoot: string, rel: string): ProjectGuidelines | null {
-  const full = path.join(repoRoot, rel);
-  if (!fs.existsSync(full)) return null;
+  const canonicalRepoRoot = resolveCanonicalPath(repoRoot);
+  const full = path.resolve(canonicalRepoRoot, rel);
+  if (!isPathWithinRoot(full, canonicalRepoRoot) || !fs.existsSync(full)) return null;
+
   try {
-    const content = fs.readFileSync(full, 'utf-8');
+    const canonicalFile = resolveCanonicalPath(full);
+    if (!isPathWithinRoot(canonicalFile, canonicalRepoRoot)) return null;
+
+    const content = fs.readFileSync(canonicalFile, 'utf-8');
     return { content, source: rel, loadedAt: Date.now() };
   } catch (err) {
     if (err instanceof Error && !('code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT')) {
@@ -59,4 +71,29 @@ function searchPaths(repoRoot: string, paths: string[]): ProjectGuidelines | nul
     if (result) return result;
   }
   return null;
+}
+
+function isSafeGuidelinePath(input: string): boolean {
+  if (!input || input.includes('\0')) return false;
+  if (path.isAbsolute(input) || WINDOWS_ABSOLUTE_PATH_RE.test(input) || UNC_PATH_RE.test(input)) {
+    return false;
+  }
+  const segments = input.split(/[\\/]+/).filter(Boolean);
+  return !segments.includes('..');
+}
+
+function resolveCanonicalPath(targetPath: string): string {
+  const resolved = path.resolve(targetPath);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
+  const normalizedRoot = path.resolve(rootPath).replace(/[\\/]+$/, '');
+  const normalizedCandidate = path.resolve(candidatePath).replace(/[\\/]+$/, '');
+  if (normalizedCandidate === normalizedRoot) return true;
+  return normalizedCandidate.startsWith(normalizedRoot + path.sep);
 }

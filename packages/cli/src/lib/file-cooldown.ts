@@ -3,8 +3,8 @@
  * Prevents scheduling overlapping work on files that already have open PRs.
  */
 
-import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readJsonState, writeJsonState } from './goals.js';
 
 interface CooldownEntry {
   filePath: string;
@@ -19,25 +19,19 @@ function cooldownPath(repoRoot: string): string {
   return path.join(repoRoot, '.promptwheel', COOLDOWN_FILE);
 }
 
+function isCooldownEntryArray(value: unknown): value is CooldownEntry[] {
+  return Array.isArray(value);
+}
+
 function readEntries(repoRoot: string): CooldownEntry[] {
-  const fp = cooldownPath(repoRoot);
-  if (!fs.existsSync(fp)) return [];
-  try {
-    const raw = fs.readFileSync(fp, 'utf8');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return readJsonState(cooldownPath(repoRoot), {
+    fallback: [],
+    validate: isCooldownEntryArray,
+  });
 }
 
 function writeEntries(repoRoot: string, entries: CooldownEntry[]): void {
-  const fp = cooldownPath(repoRoot);
-  const dir = path.dirname(fp);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  fs.writeFileSync(fp, JSON.stringify(entries, null, 2) + '\n', 'utf8');
+  writeJsonState(cooldownPath(repoRoot), entries, { trailingNewline: true });
 }
 
 function prune(entries: CooldownEntry[]): CooldownEntry[] {

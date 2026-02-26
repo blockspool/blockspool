@@ -18,6 +18,10 @@ import {
   detectCredentialPattern,
   isPathAllowed,
   matchesPattern,
+  parseChangedFiles,
+  checkScopeViolations,
+  analyzeViolationsForExpansion,
+  type ScopeViolation,
   ALWAYS_DENIED,
   CREDENTIAL_PATTERNS,
   FILE_DENY_PATTERNS,
@@ -362,5 +366,194 @@ describe('isPathAllowed', () => {
   it('normalizes paths before matching', () => {
     expect(isPathAllowed('./src/index.ts', ['src/**'], [])).toBe(true);
     expect(isPathAllowed('src\\lib\\index.ts', ['src/**'], [])).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseChangedFiles
+// ---------------------------------------------------------------------------
+
+describe('parseChangedFiles', () => {
+  it('returns empty for empty porcelain output', () => {
+    expect(parseChangedFiles('')).toEqual([]);
+    expect(parseChangedFiles(' \n\t\n')).toEqual([]);
+  });
+
+  it('parses normal modified and deleted porcelain lines', () => {
+    const output = ' M src/index.ts\nD  src/obsolete.ts';
+    expect(parseChangedFiles(output)).toEqual(['src/index.ts', 'src/obsolete.ts']);
+  });
+
+  it('parses rename lines and returns destination path', () => {
+    const output = 'R  packages/core/src/old-name.ts -> packages/core/src/new-name.ts';
+    expect(parseChangedFiles(output)).toEqual(['packages/core/src/new-name.ts']);
+  });
+
+  it('parses quoted rename lines with spaces and unquotes destination', () => {
+    const output = 'R  "src/old name.ts" -> "src/new name.ts"';
+    expect(parseChangedFiles(output)).toEqual(['src/new name.ts']);
+  });
+
+  it('parses changed paths containing whitespace', () => {
+    const output = ' M src/my file.ts\nD  "src/removed file.ts"\n?? docs/space dir/read me.md';
+    expect(parseChangedFiles(output)).toEqual([
+      'src/my file.ts',
+      'src/removed file.ts',
+      'docs/space dir/read me.md',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkScopeViolations
+// ---------------------------------------------------------------------------
+
+describe('checkScopeViolations', () => {
+  it('flags files outside allowed paths as not_in_allowed', () => {
+    const files = ['src/index.ts', 'docs/README.md'];
+    const violations = checkScopeViolations(files, ['src/**'], []);
+
+    expect(violations).toEqual([
+      {
+        file: 'docs/README.md',
+        violation: 'not_in_allowed',
+      },
+    ]);
+  });
+
+  it('prioritizes forbidden matches over allowed matches', () => {
+    const files = ['src/internal/private.ts'];
+    const violations = checkScopeViolations(files, ['src/**'], ['src/internal/**']);
+
+    expect(violations).toEqual([
+      {
+        file: 'src/internal/private.ts',
+        violation: 'in_forbidden',
+        pattern: 'src/internal/**',
+      },
+    ]);
+  });
+
+  it('treats hallucinated paths as not_in_allowed before forbidden checks', () => {
+    const files = ['src/src/index.ts'];
+    const violations = checkScopeViolations(files, ['src/**'], ['src/src/**']);
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.violation).toBe('not_in_allowed');
+    expect(violations[0]?.pattern).toContain('hallucinated:');
+  });
+
+  it('rejects hallucinated paths even when no explicit allow list exists', () => {
+    const files = ['src//generated.ts'];
+    const violations = checkScopeViolations(files, [], []);
+
+    expect(violations).toEqual([
+      {
+        file: 'src//generated.ts',
+        violation: 'not_in_allowed',
+        pattern: 'hallucinated: Contains double slashes',
+      },
+    ]);
+  });
+
+  it('allows trailing-slash directory paths when allowed files are inside that directory', () => {
+    const files = ['src/lib/'];
+    const allowed = ['src/lib/index.ts', 'src/lib/utils/helpers.ts'];
+
+    expect(checkScopeViolations(files, allowed, [])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// analyzeViolationsForExpansion
+// ---------------------------------------------------------------------------
+
+describe('analyzeViolationsForExpansion', () => {
+  it('expands for sibling files and related file types', () => {
+    const violations: ScopeViolation[] = [
+      { file: 'src/lib/helpers.ts', violation: 'not_in_allowed' },
+      { file: 'src/models/user.test.ts', violation: 'not_in_allowed' },
+    ];
+    const result = analyzeViolationsForExpansion(violations, ['src/lib/index.ts']);
+
+    expect(result.canExpand).toBe(true);
+    expect(result.addedPaths).toContain('src/lib/helpers.ts');
+    expect(result.addedPaths).toContain('src/models/user.test.ts');
+  });
+
+  it('rejects expansion when additions exceed maxExpansions', () => {
+    const violations: ScopeViolation[] = [
+      { file: 'src/lib/a.ts', violation: 'not_in_allowed' },
+      { file: 'src/lib/b.ts', violation: 'not_in_allowed' },
+      { file: 'src/lib/c.ts', violation: 'not_in_allowed' },
+    ];
+    const result = analyzeViolationsForExpansion(violations, ['src/lib/index.ts'], 2);
+
+    expect(result.canExpand).toBe(false);
+    expect(result.addedPaths).toEqual([]);
+    expect(result.reason).toContain('3 files');
+    expect(result.reason).toContain('max: 2');
+  });
+
+  it('allows expansion when additions are exactly at maxExpansions', () => {
+    const violations: ScopeViolation[] = [
+      { file: 'src/lib/a.ts', violation: 'not_in_allowed' },
+      { file: 'src/lib/b.ts', violation: 'not_in_allowed' },
+    ];
+    const result = analyzeViolationsForExpansion(violations, ['src/lib/index.ts'], 2);
+
+    expect(result.canExpand).toBe(true);
+    expect(result.addedPaths).toEqual(['src/lib/a.ts', 'src/lib/b.ts']);
+  });
+
+  it('hard-stops expansion when a forbidden violation exists', () => {
+    const violations: ScopeViolation[] = [
+      { file: 'src/lib/helpers.ts', violation: 'not_in_allowed' },
+      { file: 'config/secrets.json', violation: 'in_forbidden', pattern: 'config/**' },
+    ];
+    const result = analyzeViolationsForExpansion(violations, ['src/lib/index.ts']);
+
+    expect(result.canExpand).toBe(false);
+    expect(result.addedPaths).toEqual([]);
+    expect(result.reason).toContain('forbidden');
+  });
+
+  it('hard-stops expansion when a hallucinated violation exists', () => {
+    const violations: ScopeViolation[] = [
+      { file: 'src/lib/helpers.ts', violation: 'not_in_allowed' },
+      {
+        file: 'src/src/index.ts',
+        violation: 'not_in_allowed',
+        pattern: 'hallucinated: Repeated path segment',
+      },
+    ];
+    const result = analyzeViolationsForExpansion(violations, ['src/lib/index.ts']);
+
+    expect(result.canExpand).toBe(false);
+    expect(result.addedPaths).toEqual([]);
+    expect(result.reason).toContain('hallucinated');
+  });
+
+  it('refuses expansion when all violations are unrelated to current scope', () => {
+    const violations: ScopeViolation[] = [
+      { file: 'docs/architecture.md', violation: 'not_in_allowed' },
+    ];
+    const result = analyzeViolationsForExpansion(violations, ['src/lib/index.ts']);
+
+    expect(result.canExpand).toBe(false);
+    expect(result.addedPaths).toEqual([]);
+    expect(result.reason).toContain('unrelated directories');
+  });
+
+  it('only auto-expands sibling or related paths from a mixed violation set', () => {
+    const violations: ScopeViolation[] = [
+      { file: 'src/lib/helpers.ts', violation: 'not_in_allowed' },
+      { file: 'docs/README.md', violation: 'not_in_allowed' },
+    ];
+    const result = analyzeViolationsForExpansion(violations, ['src/lib/index.ts']);
+
+    expect(result.canExpand).toBe(true);
+    expect(result.addedPaths).toContain('src/lib/helpers.ts');
+    expect(result.addedPaths).not.toContain('docs/README.md');
   });
 });

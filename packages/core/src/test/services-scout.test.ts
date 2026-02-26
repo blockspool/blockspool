@@ -229,6 +229,99 @@ describe('scoutRepo', () => {
     expect(result.tickets[0].title).toBe(proposal.title);
   });
 
+  it('tracks run lifecycle metadata for a successful auto-approved scan', async () => {
+    const proposal = makeProposal({
+      title: 'Stabilize parser timeout handling',
+      category: 'fix',
+      confidence: 90,
+    });
+    const deps = makeDeps();
+
+    vi.mocked(scanAndPropose).mockResolvedValue({
+      success: true,
+      proposals: [proposal],
+      errors: [],
+      scannedFiles: 11,
+      scanDurationMs: 800,
+    });
+    vi.mocked(tickets.getRecentlyCompleted).mockResolvedValue([
+      { title: 'Previously completed parser cleanup' } as any,
+    ]);
+    vi.mocked(tickets.createMany).mockResolvedValue([
+      {
+        id: 'tkt_100',
+        projectId: fakeProject.id,
+        title: proposal.title,
+        description: 'desc',
+        status: 'ready' as const,
+        priority: proposal.confidence,
+        shard: null,
+        category: proposal.category,
+        allowedPaths: proposal.allowed_paths,
+        forbiddenPaths: [],
+        verificationCommands: proposal.verification_commands,
+        maxRetries: 3,
+        retryCount: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    vi.mocked(runs.getById).mockResolvedValue({
+      ...fakeRun,
+      status: 'success' as const,
+      completedAt: new Date(),
+      error: null,
+      metadata: {
+        scannedFiles: 11,
+        proposalCount: 1,
+        ticketCount: 1,
+      },
+    });
+
+    const result = await scoutRepo(deps, {
+      path: '/repo',
+      scope: 'packages/**',
+      maxProposals: 6,
+      model: 'sonnet',
+      autoApprove: true,
+    });
+
+    expect(runs.create).toHaveBeenCalledWith(deps.db, {
+      projectId: fakeProject.id,
+      type: 'scout',
+      metadata: {
+        scope: 'packages/**',
+        maxProposals: 6,
+        model: 'sonnet',
+      },
+    });
+    expect(scanAndPropose).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'packages/**',
+      maxProposals: 6,
+      projectPath: '/repo',
+      model: 'sonnet',
+      recentlyCompletedTitles: ['Previously completed parser cleanup'],
+    }));
+    expect(runs.markSuccess).toHaveBeenCalledWith(
+      deps.db,
+      fakeRun.id,
+      expect.objectContaining({
+        scannedFiles: 11,
+        proposalCount: 1,
+        ticketCount: 1,
+        durationMs: expect.any(Number),
+      }),
+    );
+    expect(runs.markFailure).not.toHaveBeenCalled();
+    expect(result.success).toBe(true);
+    expect(result.run.status).toBe('success');
+    expect(result.run.metadata).toEqual(expect.objectContaining({
+      scannedFiles: 11,
+      proposalCount: 1,
+      ticketCount: 1,
+    }));
+  });
+
   it('reports progress at each phase', async () => {
     vi.mocked(scanAndPropose).mockResolvedValue({
       success: true,
@@ -247,8 +340,100 @@ describe('scoutRepo', () => {
     expect(phases).toContain('complete');
   });
 
+  it('marks run failure on incomplete scan and returns scan errors/proposals', async () => {
+    const proposal = makeProposal({
+      title: 'Fix parser partial output handling',
+      category: 'fix',
+    });
+    vi.mocked(scanAndPropose).mockResolvedValue({
+      success: false,
+      proposals: [proposal],
+      errors: ['Batch 2 failed: timeout'],
+      scannedFiles: 12,
+      scanDurationMs: 600,
+    });
+    vi.mocked(runs.getById).mockResolvedValue({
+      ...fakeRun,
+      status: 'failure' as const,
+      completedAt: new Date(),
+      error: 'Batch 2 failed: timeout',
+      metadata: {
+        scannedFiles: 12,
+        proposalCount: 1,
+      },
+    });
+
+    const result = await scoutRepo(makeDeps(), { autoApprove: true });
+
+    expect(runs.markFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      fakeRun.id,
+      'Batch 2 failed: timeout',
+      expect.objectContaining({
+        scannedFiles: 12,
+        proposalCount: 1,
+        durationMs: expect.any(Number),
+      }),
+    );
+    expect(runs.markSuccess).not.toHaveBeenCalled();
+    expect(tickets.createMany).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    expect(result.proposals).toHaveLength(1);
+    expect(result.tickets).toEqual([]);
+    expect(result.errors).toEqual(['Batch 2 failed: timeout']);
+    expect(result.scannedFiles).toBe(12);
+    expect(result.run.status).toBe('failure');
+    expect(result.run.metadata).toEqual(expect.objectContaining({
+      scannedFiles: 12,
+      proposalCount: 1,
+    }));
+  });
+
+  it('uses fallback error payload for incomplete scan with empty errors', async () => {
+    vi.mocked(scanAndPropose).mockResolvedValue({
+      success: false,
+      proposals: [],
+      errors: [],
+      scannedFiles: 4,
+      scanDurationMs: 300,
+    });
+    vi.mocked(runs.getById).mockResolvedValue({
+      ...fakeRun,
+      status: 'failure' as const,
+      completedAt: new Date(),
+      error: 'Scout scan did not complete successfully',
+      metadata: {
+        scannedFiles: 4,
+        proposalCount: 0,
+      },
+    });
+
+    const result = await scoutRepo(makeDeps());
+
+    expect(runs.markFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      fakeRun.id,
+      'Scout scan did not complete successfully',
+      expect.objectContaining({
+        scannedFiles: 4,
+        proposalCount: 0,
+        durationMs: expect.any(Number),
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errors).toEqual(['Scout scan did not complete successfully']);
+    expect(result.run.status).toBe('failure');
+  });
+
   it('handles scout failure gracefully', async () => {
     vi.mocked(scanAndPropose).mockRejectedValue(new Error('LLM timeout'));
+    vi.mocked(runs.getById).mockResolvedValue({
+      ...fakeRun,
+      status: 'failure' as const,
+      completedAt: new Date(),
+      error: 'LLM timeout',
+      metadata: { durationMs: 10 },
+    });
 
     const result = await scoutRepo(makeDeps());
 
@@ -260,6 +445,12 @@ describe('scoutRepo', () => {
       expect.any(Error),
       expect.objectContaining({ durationMs: expect.any(Number) }),
     );
+    expect(runs.markSuccess).not.toHaveBeenCalled();
+    expect(result.run.status).toBe('failure');
+    expect(result.proposals).toEqual([]);
+    expect(result.tickets).toEqual([]);
+    expect(result.scannedFiles).toBe(0);
+    expect(result.errors).toEqual(['LLM timeout']);
   });
 
   it('returns result with proposals count', async () => {

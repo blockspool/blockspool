@@ -18,6 +18,7 @@ import { deriveScopePolicy, validatePlanScope, serializeScopePolicy } from './sc
 import { getRegistry } from './tool-registry.js';
 import { checkSpindle, recordDiff, recordCommandFailure, recordPlanHash } from './spindle.js';
 import { loadGuidelines, formatGuidelinesForPrompt } from './guidelines.js';
+import { validateTicketResultPayload } from './event-handlers-ticket.js';
 import {
   computeRetryRisk,
   scoreStrategies,
@@ -373,8 +374,13 @@ export async function ingestTicketEvent(
     }
 
     case 'TICKET_RESULT': {
-      const status = payload['status'] as string;
-      if (status === 'done' || status === 'success') {
+      const validation = validateTicketResultPayload({
+        payload,
+        currentPlan: worker.plan,
+        maxLinesPerTicket: run.require().max_lines_per_ticket,
+      });
+
+      if (validation.isCompletion) {
         const inline = validateInlineCompletionContract(payload, ticketId, 'TICKET_RESULT');
 
         // Explicit inline-completion contract allows intentional phase bypass.
@@ -396,19 +402,31 @@ export async function ingestTicketEvent(
           return { processed: true, message: 'Ticket result outside EXECUTE phase (missing/invalid inline_completion contract)' };
         }
 
+        if (validation.rejectionKind === 'scope') {
+          run.appendEvent('SCOPE_BLOCKED', {
+            ticket_id: ticketId,
+            surprise_files: validation.surpriseFiles,
+            planned_files: validation.plannedFiles,
+            parallel: true,
+          });
+        }
+        if (validation.rejectionMessage) {
+          return { processed: true, message: validation.rejectionMessage };
+        }
+
         const diff = (payload['diff'] ?? null) as string | null;
-        const changedFiles = (payload['changed_files'] ?? []) as string[];
+        const changedFiles = validation.changedFiles;
         recordDiff(worker.spindle, diff ?? (changedFiles.length > 0 ? changedFiles.join('\n') : null));
         const nextPhase = run.require().cross_verify ? 'CROSS_QA' : 'QA';
         run.updateTicketWorker(ticketId, { phase: nextPhase, spindle: worker.spindle });
         return { processed: true, message: run.require().cross_verify ? 'Moving to CROSS_QA (independent verification)' : 'Moving to QA' };
       }
-      if (status === 'failed') {
+      if (validation.isFailure) {
         await repos.tickets.updateStatus(db, ticketId, 'blocked');
         run.failTicketWorker(ticketId, (payload['reason'] as string) ?? 'Execution failed');
         return { processed: true, message: 'Ticket failed' };
       }
-      return { processed: true, message: `Ticket result: ${status}` };
+      return { processed: true, message: `Ticket result: ${validation.status}` };
     }
 
     case 'QA_COMMAND_RESULT': {

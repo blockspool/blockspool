@@ -11,6 +11,7 @@ import type {
   DeadExportEntry,
   StructuralIssue,
   TypeScriptAnalysis,
+  AstFindingEntry,
 } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -129,6 +130,34 @@ function formatTypeScriptAnalysis(ts: TypeScriptAnalysis): string {
   return parts.join('\n');
 }
 
+function formatAstFindings(findings: AstFindingEntry[], sectorPath?: string): string {
+  let filtered = findings;
+  if (sectorPath) {
+    const prefix = sectorPath.endsWith('/') ? sectorPath : sectorPath + '/';
+    filtered = findings.filter(f => f.file === sectorPath || f.file.startsWith(prefix));
+  }
+  if (filtered.length === 0) return '';
+
+  // Sort by severity (high first), then by file
+  const severityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
+  filtered.sort((a, b) => {
+    const sa = severityOrder[a.severity] ?? 2;
+    const sb = severityOrder[b.severity] ?? 2;
+    if (sa !== sb) return sa - sb;
+    return a.file.localeCompare(b.file);
+  });
+
+  // Cap at 20 findings
+  const capped = filtered.slice(0, 20);
+  const lines: string[] = [`### AST Findings (${filtered.length} detected${filtered.length > 20 ? ', showing top 20' : ''})`];
+  for (const f of capped) {
+    const loc = f.line ? `${f.file}:${f.line}` : f.file;
+    lines.push(`- [${f.severity}] ${loc}: ${f.message} (${f.category})`);
+  }
+  lines.push('These are mechanically detected — prioritize targeted fixes.');
+  return lines.join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -142,6 +171,7 @@ const SECTIONS = [
   'graph',
   'coupling',
   'typescript',
+  'ast-findings',
 ] as const;
 
 type SectionKey = (typeof SECTIONS)[number];
@@ -157,6 +187,7 @@ type SectionKey = (typeof SECTIONS)[number];
 export function formatAnalysisForPrompt(
   index: CodebaseIndex,
   scoutCycle: number,
+  sectorPath?: string,
 ): string | null {
   // Render all sections
   const rendered = new Map<SectionKey, string>();
@@ -184,6 +215,11 @@ export function formatAnalysisForPrompt(
   if (index.typescript_analysis && (index.typescript_analysis.any_count > 0 || index.typescript_analysis.unchecked_type_assertions > 0)) {
     const s = formatTypeScriptAnalysis(index.typescript_analysis);
     if (s) rendered.set('typescript', s);
+  }
+
+  if (index.ast_findings && index.ast_findings.length > 0) {
+    const s = formatAstFindings(index.ast_findings, sectorPath);
+    if (s) rendered.set('ast-findings', s);
   }
 
   if (rendered.size === 0) return null;

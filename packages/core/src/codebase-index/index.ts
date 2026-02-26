@@ -28,6 +28,8 @@ export {
   type GraphMetrics,
   type ExportEntry,
   type AstAnalysisResult,
+  type AstFinding,
+  type AstFindingEntry,
   type DeadExportEntry,
   type StructuralIssue,
   type TypeScriptAnalysis,
@@ -48,7 +50,7 @@ export {
 } from './shared.js';
 
 // Import for local use
-import type { CodebaseIndex, ModuleEntry, LargeFileEntry, ExportEntry } from './shared.js';
+import type { CodebaseIndex, ModuleEntry, LargeFileEntry, ExportEntry, AstFindingEntry } from './shared.js';
 import {
   SOURCE_EXTENSIONS,
   sampleEvenly,
@@ -61,8 +63,9 @@ import {
 } from './shared.js';
 import type { AstGrepModule as AstGrepModuleType } from './ast-analysis.js';
 import { analyzeFileAst, mapExtensionToLang } from './ast-analysis.js';
-import { loadAstCache, saveAstCache, isEntryCurrent, type AstCache } from './ast-cache.js';
+import { loadAstCache, saveAstCache, isEntryCurrent, isFindingsCurrent, type AstCache } from './ast-cache.js';
 import { detectDeadExports, detectStructuralIssues } from './dead-code.js';
+import { getPatterns, scanPatterns, FINDINGS_VERSION } from './ast-patterns.js';
 
 // Re-export format-analysis
 export { formatAnalysisForPrompt } from './format-analysis.js';
@@ -273,11 +276,13 @@ export function buildCodebaseIndex(
 
   // Step 2c: AST analysis — when ast-grep is available, extract exports and complexity
   let analysisBackend: 'regex' | 'ast-grep' = 'regex';
+  const allFindings: AstFindingEntry[] = [];
   if (astGrepModule) {
     analysisBackend = 'ast-grep';
     const astCache = loadAstCache(projectRoot);
     const updatedCache: AstCache = { ...astCache };
     const allCurrentFiles = new Set<string>();
+    const patterns = getPatterns();
 
     // Per-module: aggregate exports and complexity from individual files
     for (const mod of modules) {
@@ -297,29 +302,66 @@ export function buildCodebaseIndex(
         let stat: fs.Stats;
         try { stat = fs.statSync(filePath); } catch { continue; }
         const cached = updatedCache[relFile];
+
         if (isEntryCurrent(cached, stat.mtimeMs, stat.size)) {
+          // File unchanged — reuse imports/exports/complexity from cache
           moduleExports.push(...cached.exports);
           totalComplexity += cached.complexity;
           filesAnalyzed++;
+
+          if (isFindingsCurrent(cached, FINDINGS_VERSION)) {
+            // State A: unchanged + findings current → full cache hit
+            if (cached.findings) {
+              for (const f of cached.findings) {
+                allFindings.push({ file: relFile, patternId: f.patternId, message: f.message, line: f.line, severity: f.severity, category: f.category });
+              }
+            }
+          } else {
+            // State B: unchanged + findings stale → re-parse for patterns only
+            try {
+              const content = fs.readFileSync(filePath, 'utf-8');
+              const langId = astGrepModule.Lang[langKey];
+              if (langId) {
+                const root = astGrepModule.parse(langId, content).root();
+                const findings = scanPatterns(root, langKey, content, patterns);
+                const storedFindings = findings.length > 0 ? findings : undefined;
+                updatedCache[relFile] = { ...cached, findings: storedFindings, findingsVersion: FINDINGS_VERSION };
+                if (storedFindings) {
+                  for (const f of storedFindings) {
+                    allFindings.push({ file: relFile, patternId: f.patternId, message: f.message, line: f.line, severity: f.severity, category: f.category });
+                  }
+                }
+              }
+            } catch {
+              // Re-parse error — keep cached imports/exports/complexity, skip findings
+            }
+          }
           continue;
         }
 
-        // Read full file content for AST analysis
+        // State C: file changed → full re-parse with patterns
         try {
           const content = fs.readFileSync(filePath, 'utf-8');
-          const result = analyzeFileAst(content, filePath, langKey, astGrepModule);
+          const result = analyzeFileAst(content, filePath, langKey, astGrepModule, patterns);
           if (result) {
             moduleExports.push(...result.exports);
             totalComplexity += result.complexity;
             filesAnalyzed++;
-            // Update cache
+            const storedFindings = result.findings && result.findings.length > 0 ? result.findings : undefined;
             updatedCache[relFile] = {
               mtime: stat.mtimeMs,
               size: stat.size,
               imports: result.imports,
               exports: result.exports,
               complexity: result.complexity,
+              findings: storedFindings,
+              findingsVersion: FINDINGS_VERSION,
             };
+            if (storedFindings) {
+              for (const f of storedFindings) {
+                allFindings.push({ file: relFile, patternId: f.patternId, message: f.message, line: f.line, severity: f.severity, category: f.category });
+              }
+            }
           }
         } catch {
           // File read error — skip this file for AST analysis
@@ -478,6 +520,7 @@ export function buildCodebaseIndex(
     analysis_backend: analysisBackend,
     dead_exports: deadExports,
     structural_issues: structuralIssues,
+    ast_findings: allFindings.length > 0 ? allFindings : undefined,
   };
 }
 

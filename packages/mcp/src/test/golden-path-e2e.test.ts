@@ -487,6 +487,100 @@ describe('Golden Path E2E', () => {
 });
 
 describe('Golden Path E2E — parallel worker completion gating', () => {
+  it('rejects files outside approved plan before entering QA in parallel mode', async () => {
+    run.create(project.id, {
+      step_budget: 50,
+      parallel: 2,
+      create_prs: false,
+      categories: ['refactor'],
+    });
+
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Parallel plan file enforcement',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: [],
+    });
+
+    const s = run.require();
+    s.phase = 'PARALLEL_EXECUTE';
+    run.initTicketWorker(ticket.id, { title: ticket.title });
+
+    await ingestEvent('PLAN_SUBMITTED', {
+      ticket_id: ticket.id,
+      files_to_touch: [{ path: 'src/foo.ts', action: 'modify', reason: 'fix' }],
+      expected_tests: [],
+      estimated_lines: 10,
+      risk_level: 'low',
+    });
+
+    expect(run.getTicketWorker(ticket.id)?.phase).toBe('EXECUTE');
+
+    const result = await ingestEvent('TICKET_RESULT', {
+      ticket_id: ticket.id,
+      status: 'success',
+      changed_files: ['src/foo.ts', 'src/bar.ts'],
+      lines_added: 2,
+      lines_removed: 1,
+    });
+
+    expect(result.phase_changed).toBe(false);
+    expect(result.message).toContain('not in plan');
+    expect(result.message).toContain('src/bar.ts');
+    expect(run.getTicketWorker(ticket.id)?.phase).toBe('EXECUTE');
+  });
+
+  it('enforces line budget before entering QA in parallel mode', async () => {
+    run.create(project.id, {
+      step_budget: 50,
+      parallel: 2,
+      create_prs: false,
+      categories: ['refactor'],
+    });
+
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Parallel line budget enforcement',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: ['src/**'],
+      verificationCommands: [],
+    });
+
+    const s = run.require();
+    s.phase = 'PARALLEL_EXECUTE';
+    s.max_lines_per_ticket = 5;
+    run.initTicketWorker(ticket.id, { title: ticket.title });
+
+    await ingestEvent('PLAN_SUBMITTED', {
+      ticket_id: ticket.id,
+      files_to_touch: [{ path: 'src/foo.ts', action: 'modify', reason: 'fix' }],
+      expected_tests: [],
+      estimated_lines: 5,
+      risk_level: 'low',
+    });
+
+    expect(run.getTicketWorker(ticket.id)?.phase).toBe('EXECUTE');
+
+    const result = await ingestEvent('TICKET_RESULT', {
+      ticket_id: ticket.id,
+      status: 'done',
+      changed_files: ['src/foo.ts'],
+      lines_added: 4,
+      lines_removed: 2,
+    });
+
+    expect(result.phase_changed).toBe(false);
+    expect(result.message).toContain('exceeds budget');
+    expect(run.getTicketWorker(ticket.id)?.phase).toBe('EXECUTE');
+  });
+
   it('rejects out-of-phase TICKET_RESULT completion without inline contract and accepts valid contract', async () => {
     run.create(project.id, {
       step_budget: 50,

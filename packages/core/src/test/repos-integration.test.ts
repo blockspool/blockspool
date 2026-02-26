@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createSQLiteAdapter } from '@promptwheel/sqlite';
 import * as projects from '../repos/projects.js';
 import * as tickets from '../repos/tickets.js';
@@ -8,11 +8,11 @@ import type { DatabaseAdapter } from '../db/adapter.js';
 
 let db: DatabaseAdapter;
 
-beforeAll(async () => {
+beforeEach(async () => {
   db = await createSQLiteAdapter({ url: ':memory:' });
 });
 
-afterAll(async () => {
+afterEach(async () => {
   await db.close();
 });
 
@@ -70,12 +70,28 @@ describe('projects repo — extended', () => {
   });
 
   it('list orders by updated_at DESC', async () => {
+    const oldest = await projects.ensureForRepo(db, {
+      id: 'proj_list_oldest',
+      name: 'oldest',
+      rootPath: '/tmp/proj-list-oldest',
+    });
+    const newest = await projects.ensureForRepo(db, {
+      id: 'proj_list_newest',
+      name: 'newest',
+      rootPath: '/tmp/proj-list-newest',
+    });
+    const middle = await projects.ensureForRepo(db, {
+      id: 'proj_list_middle',
+      name: 'middle',
+      rootPath: '/tmp/proj-list-middle',
+    });
+
+    await db.query('UPDATE projects SET updated_at = $1 WHERE id = $2', ['2024-01-01T00:00:00.000Z', oldest.id]);
+    await db.query('UPDATE projects SET updated_at = $1 WHERE id = $2', ['2024-01-03T00:00:00.000Z', newest.id]);
+    await db.query('UPDATE projects SET updated_at = $1 WHERE id = $2', ['2024-01-02T00:00:00.000Z', middle.id]);
+
     const all = await projects.list(db);
-    for (let i = 1; i < all.length; i++) {
-      expect(all[i - 1].updatedAt.getTime()).toBeGreaterThanOrEqual(
-        all[i].updatedAt.getTime()
-      );
-    }
+    expect(all.map(project => project.id)).toEqual([newest.id, middle.id, oldest.id]);
   });
 });
 
@@ -85,7 +101,7 @@ describe('projects repo — extended', () => {
 describe('tickets repo — extended', () => {
   let projId: string;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     const p = await projects.ensureForRepo(db, {
       id: 'proj_tkt_ext',
       name: 'tickets-ext',
@@ -151,34 +167,65 @@ describe('tickets repo — extended', () => {
   });
 
   it('listByProject with array of statuses', async () => {
-    await tickets.create(db, { projectId: projId, title: 'Blocked', status: 'blocked' });
-    await tickets.create(db, { projectId: projId, title: 'Aborted', status: 'aborted' });
+    const blocked = await tickets.create(db, {
+      projectId: projId,
+      title: 'Blocked',
+      status: 'blocked',
+    });
+    const aborted = await tickets.create(db, {
+      projectId: projId,
+      title: 'Aborted',
+      status: 'aborted',
+    });
+    await tickets.create(db, { projectId: projId, title: 'Ready', status: 'ready' });
+
+    await db.query('UPDATE tickets SET created_at = $1 WHERE id = $2', ['2024-01-01T00:00:00.000Z', blocked.id]);
+    await db.query('UPDATE tickets SET created_at = $1 WHERE id = $2', ['2024-01-02T00:00:00.000Z', aborted.id]);
 
     const result = await tickets.listByProject(db, projId, {
       status: ['blocked', 'aborted'],
     });
-    expect(result.length).toBeGreaterThanOrEqual(2);
-    for (const t of result) {
-      expect(['blocked', 'aborted']).toContain(t.status);
-    }
+    expect(result.map(ticket => ticket.id)).toEqual([aborted.id, blocked.id]);
   });
 
   it('listByProject respects limit', async () => {
+    await tickets.create(db, { projectId: projId, title: 'Low', priority: 10 });
+    await tickets.create(db, { projectId: projId, title: 'Mid', priority: 20 });
+    await tickets.create(db, { projectId: projId, title: 'High', priority: 30 });
+
     const result = await tickets.listByProject(db, projId, { limit: 2 });
-    expect(result.length).toBeLessThanOrEqual(2);
+    expect(result.map(ticket => ticket.title)).toEqual(['High', 'Mid']);
   });
 
   it('listByProject orders by priority DESC then created_at DESC', async () => {
+    const low = await tickets.create(db, { projectId: projId, title: 'Low', priority: 1 });
+    const prioritySameOlder = await tickets.create(db, {
+      projectId: projId,
+      title: 'Priority Same Older',
+      priority: 5,
+    });
+    const prioritySameNewer = await tickets.create(db, {
+      projectId: projId,
+      title: 'Priority Same Newer',
+      priority: 5,
+    });
+
+    await db.query('UPDATE tickets SET created_at = $1 WHERE id = $2', [
+      '2024-01-01T00:00:00.000Z',
+      prioritySameOlder.id,
+    ]);
+    await db.query('UPDATE tickets SET created_at = $1 WHERE id = $2', [
+      '2024-01-02T00:00:00.000Z',
+      prioritySameNewer.id,
+    ]);
+    await db.query('UPDATE tickets SET created_at = $1 WHERE id = $2', ['2024-01-03T00:00:00.000Z', low.id]);
+
     const all = await tickets.listByProject(db, projId);
-    for (let i = 1; i < all.length; i++) {
-      if (all[i - 1].priority === all[i].priority) {
-        expect(all[i - 1].createdAt.getTime()).toBeGreaterThanOrEqual(
-          all[i].createdAt.getTime()
-        );
-      } else {
-        expect(all[i - 1].priority).toBeGreaterThanOrEqual(all[i].priority);
-      }
-    }
+    expect(all.map(ticket => ticket.id)).toEqual([
+      prioritySameNewer.id,
+      prioritySameOlder.id,
+      low.id,
+    ]);
   });
 
   it('updateStatus transitions through multiple states', async () => {
@@ -207,18 +254,44 @@ describe('tickets repo — extended', () => {
   });
 
   it('getRecentlyCompleted returns done tickets', async () => {
+    const doneLow = await tickets.create(db, {
+      projectId: projId,
+      title: 'Done Low',
+      status: 'done',
+      priority: 1,
+    });
+    const doneHigh = await tickets.create(db, {
+      projectId: projId,
+      title: 'Done High',
+      status: 'done',
+      priority: 10,
+    });
+    await tickets.create(db, { projectId: projId, title: 'Ready', status: 'ready', priority: 999 });
+
+    await db.query('UPDATE tickets SET created_at = $1 WHERE id = $2', ['2024-01-01T00:00:00.000Z', doneLow.id]);
+    await db.query('UPDATE tickets SET created_at = $1 WHERE id = $2', ['2024-01-02T00:00:00.000Z', doneHigh.id]);
+
     const recent = await tickets.getRecentlyCompleted(db, projId, 5);
-    for (const t of recent) {
-      expect(t.status).toBe('done');
-    }
+    expect(recent.map(ticket => ticket.id)).toEqual([doneHigh.id, doneLow.id]);
   });
 
   it('countByStatus returns correct counts', async () => {
+    await tickets.create(db, { projectId: projId, title: 'Ready 1', status: 'ready' });
+    await tickets.create(db, { projectId: projId, title: 'Done 1', status: 'done' });
+    await tickets.create(db, { projectId: projId, title: 'Done 2', status: 'done' });
+    await tickets.create(db, { projectId: projId, title: 'Blocked 1', status: 'blocked' });
+
     const counts = await tickets.countByStatus(db, projId);
-    expect(typeof counts.ready).toBe('number');
-    expect(typeof counts.done).toBe('number');
-    // at least the ones we created above
-    expect((counts.ready ?? 0) + (counts.done ?? 0)).toBeGreaterThan(0);
+    expect(counts).toEqual({
+      backlog: 0,
+      ready: 1,
+      leased: 0,
+      in_progress: 0,
+      in_review: 0,
+      done: 2,
+      blocked: 1,
+      aborted: 0,
+    });
   });
 
   it('findSimilarByTitle is case-insensitive', async () => {
@@ -245,7 +318,7 @@ describe('tickets repo — extended', () => {
 describe('runs repo — extended', () => {
   let projId: string;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     const p = await projects.ensureForRepo(db, {
       id: 'proj_runs_ext',
       name: 'runs-ext',
@@ -317,48 +390,87 @@ describe('runs repo — extended', () => {
   });
 
   it('listByProject filters by status array', async () => {
+    const success = await runs.create(db, { projectId: projId, type: 'qa' });
+    await runs.markSuccess(db, success.id);
+    const failure = await runs.create(db, { projectId: projId, type: 'scout' });
+    await runs.markFailure(db, failure.id, 'failed');
+    await runs.create(db, { projectId: projId, type: 'worker' });
+
+    await db.query('UPDATE runs SET created_at = $1 WHERE id = $2', ['2024-01-01T00:00:00.000Z', success.id]);
+    await db.query('UPDATE runs SET created_at = $1 WHERE id = $2', ['2024-01-02T00:00:00.000Z', failure.id]);
+
     const result = await runs.listByProject(db, projId, {
       status: ['success', 'failure'],
     });
-    for (const r of result) {
-      expect(['success', 'failure']).toContain(r.status);
-    }
+    expect(result.map(run => run.id)).toEqual([failure.id, success.id]);
   });
 
   it('listByProject filters by type and status combined', async () => {
+    const qaSuccess = await runs.create(db, { projectId: projId, type: 'qa' });
+    await runs.markSuccess(db, qaSuccess.id);
+    const qaFailure = await runs.create(db, { projectId: projId, type: 'qa' });
+    await runs.markFailure(db, qaFailure.id, 'qa failed');
+    const workerSuccess = await runs.create(db, { projectId: projId, type: 'worker' });
+    await runs.markSuccess(db, workerSuccess.id);
+
     const result = await runs.listByProject(db, projId, {
       type: 'qa',
       status: 'success',
     });
-    for (const r of result) {
-      expect(r.type).toBe('qa');
-      expect(r.status).toBe('success');
-    }
+    expect(result.map(run => run.id)).toEqual([qaSuccess.id]);
   });
 
   it('listByProject respects limit', async () => {
+    const oldest = await runs.create(db, { projectId: projId, type: 'worker' });
+    const middle = await runs.create(db, { projectId: projId, type: 'worker' });
+    const newest = await runs.create(db, { projectId: projId, type: 'worker' });
+
+    await db.query('UPDATE runs SET created_at = $1 WHERE id = $2', ['2024-01-01T00:00:00.000Z', oldest.id]);
+    await db.query('UPDATE runs SET created_at = $1 WHERE id = $2', ['2024-01-02T00:00:00.000Z', middle.id]);
+    await db.query('UPDATE runs SET created_at = $1 WHERE id = $2', ['2024-01-03T00:00:00.000Z', newest.id]);
+
     const result = await runs.listByProject(db, projId, { limit: 1 });
-    expect(result.length).toBeLessThanOrEqual(1);
+    expect(result.map(run => run.id)).toEqual([newest.id]);
   });
 
   it('countActive counts pending and running', async () => {
-    // We created several runs; the ones not marked should be running
+    await runs.create(db, { projectId: projId, type: 'worker' });
+    await runs.create(db, { projectId: projId, type: 'qa' });
+    const completed = await runs.create(db, { projectId: projId, type: 'scout' });
+    await runs.markSuccess(db, completed.id);
+
     const count = await runs.countActive(db, projId);
-    expect(count).toBeGreaterThanOrEqual(0);
+    expect(count).toBe(2);
   });
 
   it('countActive without projectId counts globally', async () => {
+    await runs.create(db, { projectId: projId, type: 'worker' });
+    const localCompleted = await runs.create(db, { projectId: projId, type: 'qa' });
+    await runs.markFailure(db, localCompleted.id, 'failed');
+
+    const otherProject = await projects.ensureForRepo(db, {
+      id: 'proj_runs_other',
+      name: 'runs-other',
+      rootPath: '/tmp/runs-other',
+    });
+    await runs.create(db, { projectId: otherProject.id, type: 'scout' });
+    await runs.create(db, { projectId: otherProject.id, type: 'worker' });
+
     const count = await runs.countActive(db);
-    expect(typeof count).toBe('number');
+    expect(count).toBe(3);
   });
 
   it('getLatestByType returns most recent', async () => {
     const r1 = await runs.create(db, { projectId: projId, type: 'merge' });
     const r2 = await runs.create(db, { projectId: projId, type: 'merge' });
+    await runs.create(db, { projectId: projId, type: 'qa' });
+
+    await db.query('UPDATE runs SET created_at = $1 WHERE id = $2', ['2024-01-01T00:00:00.000Z', r1.id]);
+    await db.query('UPDATE runs SET created_at = $1 WHERE id = $2', ['2024-01-02T00:00:00.000Z', r2.id]);
+
     const latest = await runs.getLatestByType(db, projId, 'merge');
     expect(latest).not.toBeNull();
-    // Both created in same millisecond; just verify one is returned
-    expect([r1.id, r2.id]).toContain(latest!.id);
+    expect(latest!.id).toBe(r2.id);
   });
 
   it('getLatestByType returns null when none exist', async () => {
@@ -386,7 +498,7 @@ describe('run_steps repo — extended', () => {
   let projId: string;
   let runId: string;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     const p = await projects.ensureForRepo(db, {
       id: 'proj_steps_ext',
       name: 'steps-ext',
@@ -536,14 +648,38 @@ describe('run_steps repo — extended', () => {
   });
 
   it('listByRun returns steps ordered by attempt,ordinal', async () => {
+    const attempt2Ordinal1 = await runSteps.create(db, {
+      runId,
+      attempt: 2,
+      ordinal: 1,
+      name: 'a2-o1',
+    });
+    const attempt1Ordinal0 = await runSteps.create(db, {
+      runId,
+      attempt: 1,
+      ordinal: 0,
+      name: 'a1-o0',
+    });
+    const attempt2Ordinal0 = await runSteps.create(db, {
+      runId,
+      attempt: 2,
+      ordinal: 0,
+      name: 'a2-o0',
+    });
+    const attempt1Ordinal1 = await runSteps.create(db, {
+      runId,
+      attempt: 1,
+      ordinal: 1,
+      name: 'a1-o1',
+    });
+
     const steps = await runSteps.listByRun(db, runId);
-    for (let i = 1; i < steps.length; i++) {
-      if (steps[i - 1].attempt === steps[i].attempt) {
-        expect(steps[i - 1].ordinal).toBeLessThanOrEqual(steps[i].ordinal);
-      } else {
-        expect(steps[i - 1].attempt).toBeLessThanOrEqual(steps[i].attempt);
-      }
-    }
+    expect(steps.map(step => step.id)).toEqual([
+      attempt1Ordinal0.id,
+      attempt1Ordinal1.id,
+      attempt2Ordinal0.id,
+      attempt2Ordinal1.id,
+    ]);
   });
 
   it('listByRun filters by attempt', async () => {
@@ -557,17 +693,27 @@ describe('run_steps repo — extended', () => {
   });
 
   it('listByRun filters by status', async () => {
+    const success = await runSteps.create(db, { runId, ordinal: 0, name: 'success-step' });
+    const failed = await runSteps.create(db, { runId, ordinal: 1, name: 'failed-step' });
+    await runSteps.markStarted(db, success.id);
+    await runSteps.markSuccess(db, success.id);
+    await runSteps.markStarted(db, failed.id);
+    await runSteps.markFailed(db, failed.id, { errorMessage: 'failed' });
+
     const steps = await runSteps.listByRun(db, runId, { status: 'success' });
-    for (const s of steps) {
-      expect(s.status).toBe('success');
-    }
+    expect(steps.map(step => step.id)).toEqual([success.id]);
   });
 
   it('listByRun filters by status array', async () => {
+    const failed = await runSteps.create(db, { runId, ordinal: 0, name: 'failed' });
+    const canceled = await runSteps.create(db, { runId, ordinal: 1, name: 'canceled' });
+    await runSteps.create(db, { runId, ordinal: 2, name: 'queued' });
+    await runSteps.markStarted(db, failed.id);
+    await runSteps.markFailed(db, failed.id, { errorMessage: 'boom' });
+    await runSteps.markCanceled(db, canceled.id, 'stopped');
+
     const steps = await runSteps.listByRun(db, runId, { status: ['failed', 'canceled'] });
-    for (const s of steps) {
-      expect(['failed', 'canceled']).toContain(s.status);
-    }
+    expect(steps.map(step => step.id)).toEqual([failed.id, canceled.id]);
   });
 
   it('getLatestAttempt returns 0 for run with no steps', async () => {
@@ -577,8 +723,11 @@ describe('run_steps repo — extended', () => {
   });
 
   it('getLatestAttempt returns max attempt', async () => {
+    await runSteps.create(db, { runId, attempt: 1, ordinal: 0, name: 'attempt-1' });
+    await runSteps.create(db, { runId, attempt: 3, ordinal: 0, name: 'attempt-3' });
+
     const attempt = await runSteps.getLatestAttempt(db, runId);
-    expect(attempt).toBeGreaterThanOrEqual(1);
+    expect(attempt).toBe(3);
   });
 
   it('getStepCounts returns correct aggregates', async () => {

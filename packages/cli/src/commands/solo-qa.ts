@@ -12,17 +12,20 @@ import {
   type QaConfig,
 } from '@promptwheel/core/services';
 import { projects } from '@promptwheel/core/repos';
-import { createGitService } from '../lib/git.js';
 import { createExecRunner } from '../lib/exec.js';
 import { createLogger } from '../lib/logger.js';
 import { startTuiApp } from '../tui/index.js';
 import {
-  isInitialized,
-  initSolo,
   loadConfig,
-  getAdapter,
   createScoutDeps,
 } from '../lib/solo-config.js';
+import {
+  ensureInitializedOrExit,
+  exitCommand,
+  exitCommandError,
+  resolveRepoRootOrExit,
+  withCommandAdapter,
+} from '../lib/command-runtime.js';
 import {
   formatDuration,
   normalizeQaConfig,
@@ -51,48 +54,31 @@ export function registerQaCommands(solo: Command): void {
         console.log();
       }
 
-      const git = createGitService();
-      const repoRoot = await git.findRepoRoot(process.cwd());
-
-      if (!repoRoot) {
-        if (isJsonMode) {
-          console.log(JSON.stringify({ success: false, error: 'Not a git repository' }));
-        } else {
-          console.error(chalk.red('✗ Not a git repository'));
-        }
-        process.exit(1);
-      }
-
-      if (!isInitialized(repoRoot)) {
-        if (!isJsonMode) {
-          console.log(chalk.gray('Initializing local state...'));
-        }
-        await initSolo(repoRoot);
-      }
+      const repoRoot = await resolveRepoRootOrExit({ json: isJsonMode });
+      await ensureInitializedOrExit({
+        repoRoot,
+        json: isJsonMode,
+        autoInit: true,
+      });
 
       const config = loadConfig(repoRoot);
       if (!config) {
-        if (isJsonMode) {
-          console.log(JSON.stringify({ success: false, error: 'No config found' }));
-        } else {
-          console.error(chalk.red('✗ No config found. Run: promptwheel solo init'));
-        }
-        process.exit(1);
+        exitCommandError({
+          json: isJsonMode,
+          message: 'No config found',
+          humanMessage: 'No config found. Run: promptwheel solo init',
+        });
       }
 
       let qaConfig: QaConfig;
       try {
         qaConfig = normalizeQaConfig(config, { maxAttempts: options.maxAttempts });
       } catch (err) {
-        if (isJsonMode) {
-          console.log(JSON.stringify({
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-          }));
-        } else {
-          console.error(chalk.red(`✗ ${err instanceof Error ? err.message : err}`));
-        }
-        process.exit(1);
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        exitCommandError({
+          json: isJsonMode,
+          message: errorMessage,
+        });
       }
 
       if (!isJsonMode) {
@@ -104,29 +90,27 @@ export function registerQaCommands(solo: Command): void {
         console.log();
       }
 
-      const adapter = await getAdapter(repoRoot);
+      await withCommandAdapter(repoRoot, async (adapter) => {
+        const project = await projects.ensureForRepo(adapter, {
+          name: path.basename(repoRoot),
+          rootPath: repoRoot,
+        });
 
-      const project = await projects.ensureForRepo(adapter, {
-        name: path.basename(repoRoot),
-        rootPath: repoRoot,
-      });
+        const exec = createExecRunner({
+          defaultMaxLogBytes: qaConfig.artifacts.maxLogBytes,
+          defaultTailBytes: qaConfig.artifacts.tailBytes,
+        });
 
-      const exec = createExecRunner({
-        defaultMaxLogBytes: qaConfig.artifacts.maxLogBytes,
-        defaultTailBytes: qaConfig.artifacts.tailBytes,
-      });
+        const logger = createLogger({ verbose: options.verbose, quiet: isJsonMode });
 
-      const logger = createLogger({ verbose: options.verbose, quiet: isJsonMode });
+        const controller = new AbortController();
+        process.on('SIGINT', () => {
+          if (!isJsonMode) {
+            console.log(chalk.yellow('\n\nCanceling QA run...'));
+          }
+          controller.abort();
+        });
 
-      const controller = new AbortController();
-      process.on('SIGINT', () => {
-        if (!isJsonMode) {
-          console.log(chalk.yellow('\n\nCanceling QA run...'));
-        }
-        controller.abort();
-      });
-
-      try {
         const result = await runQa(
           { db: adapter, exec, logger },
           {
@@ -220,11 +204,11 @@ export function registerQaCommands(solo: Command): void {
           }
         }
 
-        process.exitCode = result.status === 'success' ? 0 : 1;
+        if (result.status !== 'success') {
+          exitCommand(1, `QA run ended with status ${result.status}`);
+        }
 
-      } finally {
-        await adapter.close();
-      }
+      });
     });
 
   /**
@@ -234,24 +218,17 @@ export function registerQaCommands(solo: Command): void {
     .command('tui')
     .description('Launch interactive terminal UI (lazygit-style)')
     .action(async () => {
-      const git = createGitService();
-      const repoRoot = await git.findRepoRoot(process.cwd());
-
-      if (!repoRoot) {
-        console.error(chalk.red('Not a git repository'));
-        process.exit(1);
-      }
-
-      if (!isInitialized(repoRoot)) {
-        console.log(chalk.gray('Initializing local state...'));
-        await initSolo(repoRoot);
-      }
+      const repoRoot = await resolveRepoRootOrExit({
+        notRepoHumanPrefix: '',
+      });
+      await ensureInitializedOrExit({
+        repoRoot,
+        autoInit: true,
+      });
 
       const config = loadConfig(repoRoot);
 
-      const adapter = await getAdapter(repoRoot);
-
-      try {
+      await withCommandAdapter(repoRoot, async (adapter) => {
         const actions = {
           runScout: async () => {
             const deps = createScoutDeps(adapter, { quiet: true });
@@ -294,16 +271,11 @@ export function registerQaCommands(solo: Command): void {
           actions,
         });
 
-        process.on('SIGINT', async () => {
-          await stop();
-          await adapter.close();
-          process.exit(0);
+        await new Promise<void>((resolve) => {
+          process.once('SIGINT', () => {
+            void stop().finally(resolve);
+          });
         });
-
-        await new Promise(() => {});
-
-      } finally {
-        await adapter.close();
-      }
+      });
     });
 }

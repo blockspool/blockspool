@@ -1,12 +1,82 @@
 import { repos } from '@promptwheel/core';
 import type { EventContext, ProcessResult } from './event-helpers.js';
-import { recordSectorOutcome, recordTicketDedup } from './event-helpers.js';
-import { isRecord, toNumberOrUndefined, toStringArrayOrUndefined, toStringOrUndefined } from './event-helpers.js';
+import {
+  recordSectorOutcome,
+  recordTicketDedup,
+  isRecord,
+  toNumberOrUndefined,
+  toStringArrayOrUndefined,
+  toStringOrUndefined,
+  stringifyBoundedArtifactJson,
+} from './event-helpers.js';
 import type { CommitPlan } from './types.js';
 import { deriveScopePolicy, validatePlanScope } from './scope-policy.js';
 import { recordDiff, recordPlanHash } from './spindle.js';
 import { addLearning, extractTags, type StructuredKnowledge } from './learnings.js';
 import { isStreamJsonOutput, analyzeTrace } from '@promptwheel/core/trace/shared';
+
+export interface TicketResultValidationInput {
+  payload: Record<string, unknown>;
+  currentPlan: CommitPlan | null;
+  maxLinesPerTicket: number;
+}
+
+export interface TicketResultValidationResult {
+  status: string;
+  changedFiles: string[];
+  linesAdded: number;
+  linesRemoved: number;
+  totalLines: number;
+  isCompletion: boolean;
+  isFailure: boolean;
+  rejectionKind: 'scope' | 'line_budget' | null;
+  rejectionMessage: string | null;
+  surpriseFiles: string[];
+  plannedFiles: string[];
+}
+
+export function validateTicketResultPayload(input: TicketResultValidationInput): TicketResultValidationResult {
+  const status = toStringOrUndefined(input.payload['status']) ?? '';
+  const changedFiles = toStringArrayOrUndefined(input.payload['changed_files']) ?? [];
+  const linesAdded = toNumberOrUndefined(input.payload['lines_added']) ?? 0;
+  const linesRemoved = toNumberOrUndefined(input.payload['lines_removed']) ?? 0;
+  const totalLines = linesAdded + linesRemoved;
+  const isCompletion = status === 'done' || status === 'success';
+  const isFailure = status === 'failed';
+
+  let rejectionKind: TicketResultValidationResult['rejectionKind'] = null;
+  let rejectionMessage: string | null = null;
+  let surpriseFiles: string[] = [];
+  let plannedFiles: string[] = [];
+
+  if (isCompletion && input.currentPlan) {
+    plannedFiles = input.currentPlan.files_to_touch.map(f => f.path);
+    const plannedPaths = new Set(plannedFiles);
+    surpriseFiles = changedFiles.filter(f => !plannedPaths.has(f));
+
+    if (surpriseFiles.length > 0) {
+      rejectionKind = 'scope';
+      rejectionMessage = `Changed files not in plan: ${surpriseFiles.join(', ')}. Revert those changes and re-submit.`;
+    } else if (totalLines > input.maxLinesPerTicket) {
+      rejectionKind = 'line_budget';
+      rejectionMessage = `Lines changed (${totalLines}) exceeds budget (${input.maxLinesPerTicket}). Reduce changes.`;
+    }
+  }
+
+  return {
+    status,
+    changedFiles,
+    linesAdded,
+    linesRemoved,
+    totalLines,
+    isCompletion,
+    isFailure,
+    rejectionKind,
+    rejectionMessage,
+    surpriseFiles,
+    plannedFiles,
+  };
+}
 
 export async function handlePlanSubmitted(ctx: EventContext, payload: Record<string, unknown>): Promise<ProcessResult> {
   const s = ctx.run.require();
@@ -135,54 +205,54 @@ export async function handleTicketResult(ctx: EventContext, payload: Record<stri
     return { processed: true, phase_changed: false, message: 'Ticket result outside EXECUTE phase' };
   }
 
-  const status = toStringOrUndefined(payload['status']) ?? '';
+  const validation = validateTicketResultPayload({
+    payload,
+    currentPlan: s.current_ticket_plan,
+    maxLinesPerTicket: s.max_lines_per_ticket,
+  });
+  const {
+    status,
+    changedFiles,
+    linesAdded,
+    linesRemoved,
+    totalLines,
+  } = validation;
 
   // Accept both 'done' and 'success' as completion status
-  if (status === 'done' || status === 'success') {
-    // Validate changed_files against plan (if plan exists)
-    const changedFiles = toStringArrayOrUndefined(payload['changed_files']) ?? [];
-    const linesAdded = toNumberOrUndefined(payload['lines_added']) ?? 0;
-    const linesRemoved = toNumberOrUndefined(payload['lines_removed']) ?? 0;
-    const totalLines = linesAdded + linesRemoved;
-
+  if (validation.isCompletion) {
     // Save ticket result artifact
     ctx.run.saveArtifact(
       `${s.step_count}-ticket-result.json`,
-      JSON.stringify({
-        status,
-        changed_files: changedFiles,
-        lines_added: linesAdded,
-        lines_removed: linesRemoved,
-        summary: payload['summary'],
-      }, null, 2),
+      stringifyBoundedArtifactJson(
+        {
+          status,
+          changed_files: changedFiles,
+          lines_added: linesAdded,
+          lines_removed: linesRemoved,
+          summary: payload['summary'],
+        },
+        {
+          status,
+          changed_files_count: changedFiles.length,
+          lines_added: linesAdded,
+          lines_removed: linesRemoved,
+        },
+      ),
     );
 
-    // Validate changed files against approved plan
-    if (s.current_ticket_plan) {
-      const plannedPaths = new Set(s.current_ticket_plan.files_to_touch.map(f => f.path));
-      const surpriseFiles = changedFiles.filter(f => !plannedPaths.has(f));
-
-      if (surpriseFiles.length > 0) {
-        ctx.run.appendEvent('SCOPE_BLOCKED', {
-          ticket_id: s.current_ticket_id,
-          surprise_files: surpriseFiles,
-          planned_files: [...plannedPaths],
-        });
-        return {
-          processed: true,
-          phase_changed: false,
-          message: `Changed files not in plan: ${surpriseFiles.join(', ')}. Revert those changes and re-submit.`,
-        };
-      }
-
-      // Validate lines against budget
-      if (totalLines > s.max_lines_per_ticket) {
-        return {
-          processed: true,
-          phase_changed: false,
-          message: `Lines changed (${totalLines}) exceeds budget (${s.max_lines_per_ticket}). Reduce changes.`,
-        };
-      }
+    if (validation.rejectionKind === 'scope') {
+      ctx.run.appendEvent('SCOPE_BLOCKED', {
+        ticket_id: s.current_ticket_id,
+        surprise_files: validation.surpriseFiles,
+        planned_files: validation.plannedFiles,
+      });
+    }
+    if (validation.rejectionMessage) {
+      return {
+        processed: true,
+        phase_changed: false,
+        message: validation.rejectionMessage,
+      };
     }
 
     // Track lines
@@ -219,7 +289,7 @@ export async function handleTicketResult(ctx: EventContext, payload: Record<stri
     };
   }
 
-  if (status === 'failed') {
+  if (validation.isFailure) {
     // Fetch ticket once for both learning and dedup
     const ticket = s.current_ticket_id ? await repos.tickets.getById(ctx.db, s.current_ticket_id) : null;
     // Record learning on ticket failure

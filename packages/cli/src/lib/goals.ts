@@ -15,6 +15,127 @@ import {
 } from '@promptwheel/core/formulas/shared';
 
 // ---------------------------------------------------------------------------
+// Shared state-store persistence
+// ---------------------------------------------------------------------------
+
+export interface JsonStateReadOptions<T> {
+  fallback: T;
+  validate?: (value: unknown) => value is T;
+  recoverTmp?: boolean;
+}
+
+export interface JsonStateWriteOptions {
+  atomic?: boolean;
+  pretty?: boolean;
+  trailingNewline?: boolean;
+}
+
+export interface NdjsonReadOptions<T> {
+  limit?: number;
+  newestFirst?: boolean;
+  parseLine?: (line: string) => T;
+}
+
+function ensureParentDir(filePath: string): void {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+function recoverTmpFile(filePath: string): void {
+  const tmp = filePath + '.tmp';
+  if (!fs.existsSync(filePath) && fs.existsSync(tmp)) {
+    try {
+      fs.renameSync(tmp, filePath);
+    } catch {
+      // Best effort recovery
+    }
+  }
+}
+
+export function readJsonState<T>(filePath: string, options: JsonStateReadOptions<T>): T {
+  try {
+    if (options.recoverTmp) {
+      recoverTmpFile(filePath);
+    }
+    if (!fs.existsSync(filePath)) {
+      return options.fallback;
+    }
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    if (options.validate && !options.validate(parsed)) {
+      return options.fallback;
+    }
+    return parsed as T;
+  } catch {
+    return options.fallback;
+  }
+}
+
+export function writeJsonState(filePath: string, value: unknown, options: JsonStateWriteOptions = {}): void {
+  const atomic = options.atomic ?? true;
+  const pretty = options.pretty ?? true;
+  const trailingNewline = options.trailingNewline ?? false;
+  const serialized = pretty
+    ? JSON.stringify(value, null, 2)
+    : JSON.stringify(value);
+  const payload = trailingNewline ? `${serialized}\n` : serialized;
+
+  ensureParentDir(filePath);
+  if (!atomic) {
+    fs.writeFileSync(filePath, payload, 'utf-8');
+    return;
+  }
+
+  const tmp = filePath + '.tmp';
+  try {
+    fs.writeFileSync(tmp, payload, 'utf-8');
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    if (fs.existsSync(tmp)) {
+      try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    }
+    throw err;
+  }
+}
+
+export function appendNdjsonState(filePath: string, value: unknown): void {
+  ensureParentDir(filePath);
+  fs.appendFileSync(filePath, JSON.stringify(value) + '\n', 'utf-8');
+}
+
+export function readNdjsonState<T>(filePath: string, options: NdjsonReadOptions<T> = {}): T[] {
+  if (!fs.existsSync(filePath)) return [];
+
+  const parseLine = options.parseLine ?? ((line: string) => JSON.parse(line) as T);
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const lines = raw.split('\n').filter(line => line.trim().length > 0);
+  const entries: T[] = [];
+
+  if (options.newestFirst) {
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        entries.push(parseLine(lines[i]));
+      } catch {
+        // Skip malformed lines
+      }
+      if (options.limit && entries.length >= options.limit) break;
+    }
+    return entries;
+  }
+
+  for (const line of lines) {
+    try {
+      entries.push(parseLine(line));
+    } catch {
+      // Skip malformed lines
+    }
+    if (options.limit && entries.length >= options.limit) break;
+  }
+  return entries;
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -227,44 +348,27 @@ function goalStatePath(repoRoot: string): string {
   return path.join(repoRoot, '.promptwheel', 'goal-state.json');
 }
 
-export function readGoalState(repoRoot: string): GoalState {
-  const p = goalStatePath(repoRoot);
-  try {
-    // Recover from crash: if .tmp exists but main file doesn't, restore it
-    const tmp = p + '.tmp';
-    if (!fs.existsSync(p) && fs.existsSync(tmp)) {
-      try { fs.renameSync(tmp, p); } catch { /* best effort */ }
-    }
-    if (fs.existsSync(p)) {
-      const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
-      // Structural validation
-      if (data && typeof data === 'object' && data.measurements && typeof data.measurements === 'object' && !Array.isArray(data.measurements)) {
-        return data as GoalState;
-      }
-      // Malformed but parseable — start fresh
-      return { measurements: {}, lastUpdated: 0 };
-    }
-  } catch {
-    // Corrupted file — start fresh
-  }
+function emptyGoalState(): GoalState {
   return { measurements: {}, lastUpdated: 0 };
 }
 
+function isGoalState(value: unknown): value is GoalState {
+  if (!value || typeof value !== 'object') return false;
+  const measurements = (value as GoalState).measurements;
+  return Boolean(measurements && typeof measurements === 'object' && !Array.isArray(measurements));
+}
+
+export function readGoalState(repoRoot: string): GoalState {
+  return readJsonState(goalStatePath(repoRoot), {
+    fallback: emptyGoalState(),
+    recoverTmp: true,
+    validate: isGoalState,
+  });
+}
+
 export function writeGoalState(repoRoot: string, state: GoalState): void {
-  const p = goalStatePath(repoRoot);
-  const dir = path.dirname(p);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
   state.lastUpdated = Date.now();
-  const tmp = p + '.tmp';
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-    fs.renameSync(tmp, p);
-  } catch (err) {
-    if (fs.existsSync(tmp)) try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-    throw err;
-  }
+  writeJsonState(goalStatePath(repoRoot), state);
 }
 
 const MAX_MEASUREMENTS_PER_GOAL = 50;

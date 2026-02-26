@@ -665,12 +665,49 @@ export class AutoScreen {
     const tot = data.totals;
     const lens = data.lens;
 
+    // ── Heat classification ─────────────────────────────────────────
+    type HeatTier = 'blazing' | 'warm' | 'tepid' | 'cold' | 'uncharted' | 'polished';
+
+    interface ClassifiedSector {
+      row: import('../../lib/display-adapter.js').SectorMapRow;
+      tier: HeatTier;
+      score: number;
+    }
+
+    const classifySector = (row: import('../../lib/display-adapter.js').SectorMapRow): ClassifiedSector => {
+      if (row.status === 'polished') return { row, tier: 'polished', score: 0 };
+      if (row.scans === 0) return { row, tier: 'uncharted', score: 0 };
+      const score = (row.yield * 0.7) + (row.successRate * 3.0 * 0.3);
+      let tier: HeatTier;
+      if (score >= 4.0) tier = 'blazing';
+      else if (score >= 2.0) tier = 'warm';
+      else if (score >= 0.5) tier = 'tepid';
+      else tier = 'cold';
+      return { row, tier, score };
+    };
+
+    const classified = data.sectors.map(classifySector);
+
+    // Count per tier for header summary
+    const tierOrder: HeatTier[] = ['blazing', 'warm', 'tepid', 'cold', 'uncharted', 'polished'];
+    const tierCounts = new Map<HeatTier, number>();
+    for (const t of tierOrder) tierCounts.set(t, 0);
+    for (const c of classified) tierCounts.set(c.tier, (tierCounts.get(c.tier) ?? 0) + 1);
+
+    const tierColor: Record<HeatTier, string> = {
+      blazing: 'red', warm: 'yellow', tepid: 'cyan', cold: 'blue', uncharted: 'gray', polished: 'green',
+    };
+
     // ── Summary header ──────────────────────────────────────────────
-    const polished = data.sectors.filter(s => s.status === 'polished').length;
     const hitRate = tot.totalTickets > 0 ? Math.round((tot.totalSuccesses / tot.totalTickets) * 100) : 0;
 
-    lines.push(` {bold}Survey:{/bold} ${cov.scannedSectors}/${cov.totalSectors} sectors surveyed │ ${cov.scannedFiles}/${cov.totalFiles} files │ ${polished} exhausted`);
-    lines.push(` {bold}Yield:{/bold}  ${tot.totalScans} scans │ ${tot.totalTickets} tickets │ ${hitRate}% hit rate │ avg ${tot.avgYield.toFixed(1)}/scan`);
+    // Heat distribution: [12 15 10 5 5 3] colored by tier
+    const heatDist = tierOrder
+      .map(t => `{${tierColor[t]}-fg}${tierCounts.get(t)}{/${tierColor[t]}-fg}`)
+      .join(' ');
+
+    lines.push(` {bold}Survey:{/bold} ${cov.scannedSectors}/${cov.totalSectors} sectors | ${cov.scannedFiles}/${cov.totalFiles} files  [${heatDist}]`);
+    lines.push(` {bold}Yield:{/bold}  ${tot.totalScans} scans | ${tot.totalTickets} tickets | ${hitRate}% hit rate | avg ${tot.avgYield.toFixed(1)}/scan`);
 
     // Momentum: filled dots based on average yield across scanned sectors
     const dots = 5;
@@ -694,38 +731,87 @@ export class AutoScreen {
 
     lines.push('');
 
-    // ── Sector table ────────────────────────────────────────────────
+    // ── Heat-classified sector map ──────────────────────────────────
     const screenWidth = (this.screen.width as number) || 80;
-    const fixedCols = 4 + 6 + 6 + 6 + 8; // St + Files + Scans + Yield + Success + spacing
-    const pathW = Math.min(50, Math.max(20, screenWidth - fixedCols - 6));
-    const hdr = ` ${'St'} ${'Path'.padEnd(pathW)} ${'Files'.padStart(5)} ${'Scans'.padStart(5)} ${'Yield'.padStart(5)} ${'Success'.padStart(7)}`;
-    lines.push(`{bold}${hdr}{/bold}`);
-    lines.push(' ' + '─'.repeat(hdr.length - 1));
+    const fixedCols = 2 + 1 + 7 + 6 + 5 + 4; // icon+space + heatbar+space + yield+space + pct+space + scans+space
+    const pathW = Math.min(50, Math.max(16, screenWidth - fixedCols - 4));
 
-    // Sort: current first → scanning → scanned → pending → exhausted
-    const statusOrder: Record<string, number> = { scanning: 0, scanned: 1, pending: 2, polished: 3 };
-    const sorted = [...data.sectors].sort((a, b) => {
-      if (a.isCurrent && !b.isCurrent) return -1;
-      if (!a.isCurrent && b.isCurrent) return 1;
-      return (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
+    // Sort: current sector first, then by tier order, then by score descending within tier
+    const tierRank: Record<HeatTier, number> = { blazing: 0, warm: 1, tepid: 2, cold: 3, uncharted: 4, polished: 5 };
+    const sorted = [...classified].sort((a, b) => {
+      if (a.row.isCurrent && !b.row.isCurrent) return -1;
+      if (!a.row.isCurrent && b.row.isCurrent) return 1;
+      const ta = tierRank[a.tier];
+      const tb = tierRank[b.tier];
+      if (ta !== tb) return ta - tb;
+      return b.score - a.score;
     });
 
-    for (const row of sorted) {
-      let icon: string;
-      switch (row.status) {
-        case 'scanning': icon = '{yellow-fg}▶{/yellow-fg}'; break;
-        case 'scanned':  icon = '{blue-fg}■{/blue-fg}'; break;
-        case 'polished': icon = '{green-fg}✓{/green-fg}'; break;
-        default:         icon = '{gray-fg}○{/gray-fg}'; break;
+    // Group by tier with dividers
+    const tierLabels: Record<HeatTier, string> = {
+      blazing: 'blazing', warm: 'warm', tepid: 'tepid', cold: 'cold', uncharted: 'uncharted', polished: 'exhausted',
+    };
+
+    // Find current sector's tier so we can place it in the right group header
+    const currentSector = sorted.find(s => s.row.isCurrent);
+    let lastTier: HeatTier | null = null;
+
+    for (const { row, tier, score } of sorted) {
+      // Emit group divider when tier changes
+      const displayTier = row.isCurrent && currentSector ? currentSector.tier : tier;
+      if (displayTier !== lastTier) {
+        // Skip divider if this tier is empty (shouldn't happen since we're iterating sorted, but safety)
+        const label = tierLabels[displayTier];
+        const dividerColor = tierColor[displayTier];
+        const dividerW = Math.max(0, screenWidth - label.length - 6);
+        lines.push(` {${dividerColor}-fg}── ${label} ${'─'.repeat(dividerW)}{/${dividerColor}-fg}`);
+        lastTier = displayTier;
       }
 
+      // Icon
+      let icon: string;
+      if (row.isCurrent) {
+        icon = '{bold}{yellow-fg}⛏{/yellow-fg}{/bold}';
+      } else {
+        switch (tier) {
+          case 'blazing': icon = '{red-fg}◆{/red-fg}'; break;
+          case 'warm':    icon = '{yellow-fg}◆{/yellow-fg}'; break;
+          case 'tepid':   icon = '{cyan-fg}◇{/cyan-fg}'; break;
+          case 'cold':    icon = '{blue-fg}◇{/blue-fg}'; break;
+          case 'polished': icon = '{green-fg}✓{/green-fg}'; break;
+          default:        icon = '{gray-fg}·{/gray-fg}'; break; // uncharted
+        }
+      }
+
+      // Heat bar (6 chars)
+      let heatBar: string;
+      switch (tier) {
+        case 'blazing':   heatBar = '{red-fg}██████{/red-fg}'; break;
+        case 'warm':      heatBar = '{yellow-fg}███{/yellow-fg}{gray-fg}░░░{/gray-fg}'; break;
+        case 'tepid':     heatBar = '{cyan-fg}█{/cyan-fg}{gray-fg}░░░░░{/gray-fg}'; break;
+        case 'cold':      heatBar = '{blue-fg}░░░░░░{/blue-fg}'; break;
+        case 'polished':  heatBar = '{green-fg}──────{/green-fg}'; break;
+        default:          heatBar = '{gray-fg}······{/gray-fg}'; break; // uncharted
+      }
+
+      // Path (truncated)
       const p = row.path.length > pathW ? row.path.slice(0, pathW - 2) + '..' : row.path.padEnd(pathW);
-      const yieldStr = row.yield.toFixed(1).padStart(5);
-      const successStr = (Math.round(row.successRate * 100) + '%').padStart(7);
-      const line = ` ${icon} ${p} ${String(row.fileCount).padStart(5)} ${String(row.scans).padStart(5)} ${yieldStr} ${successStr}`;
+
+      // Stats
+      let stats: string;
+      if (tier === 'uncharted') {
+        stats = `${' '.repeat(6)} ${'--'.padStart(5)} ${'--'.padStart(4)} ${('0x').padStart(3)}`;
+      } else {
+        const yieldStr = (row.yield.toFixed(1) + 'y').padStart(5);
+        const pctStr = (Math.round(row.successRate * 100) + '%').padStart(4);
+        const scanStr = (row.scans + 'x').padStart(3);
+        stats = `${heatBar} ${yieldStr} ${pctStr} ${scanStr}`;
+      }
+
+      const line = ` ${icon} ${p} ${stats}`;
 
       if (row.isCurrent) {
-        lines.push(`{bold}{white-fg}${line}{/white-fg}{/bold}`);
+        lines.push(`{bold}{yellow-fg}${line}{/yellow-fg}{/bold}`);
       } else {
         lines.push(line);
       }

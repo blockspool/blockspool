@@ -148,24 +148,26 @@ export function getAdaptiveProposalThresholds(state: AutoSessionState): { min: n
 
 /**
  * Measure code staleness since a given timestamp — gradient from 0.0 (completely fresh)
- * to 1.0 (very stale, lots of changes). Returns the number of external commits as a
+ * to 1.0 (very stale, lots of changes). Returns the number of commits as a
  * normalized staleness score. Binary check: staleness > 0 means some changes exist.
  *
- * Uses git to detect commits after the timestamp, excluding PromptWheel's own
- * commits (which don't represent external changes worth re-surveying for).
+ * When `excludeOwnCommits` is true (default), excludes PromptWheel's own commits
+ * so only external changes are measured. Set to false for drill survey gating —
+ * PromptWheel's own commits change the codebase and create new patterns worth scanning.
  * Falls back to 1.0 (assume fully stale) if git is unavailable.
  */
-function measureCodeStaleness(repoRoot: string, sinceTimestamp: number, logBase: number = 11): number {
+function measureCodeStaleness(repoRoot: string, sinceTimestamp: number, logBase: number = 11, excludeOwnCommits: boolean = true): number {
   try {
     // Validate timestamp — reject NaN, negative, or unreasonably old/future values
     if (!Number.isFinite(sinceTimestamp) || sinceTimestamp <= 0) return 1.0;
     const sinceDate = new Date(sinceTimestamp).toISOString();
-    // Use --invert-grep to exclude commits authored by PromptWheel
-    const result = spawnSync('git', [
-      'log', '--oneline', `--since=${sinceDate}`,
-      '--invert-grep', '--grep=\\[promptwheel\\]', '--grep=Co-Authored-By: Claude',
-      '--', '.',
-    ], {
+    const args = ['log', '--oneline', `--since=${sinceDate}`];
+    if (excludeOwnCommits) {
+      // Use --invert-grep to exclude commits authored by PromptWheel
+      args.push('--invert-grep', '--grep=\\[promptwheel\\]', '--grep=Co-Authored-By: Claude');
+    }
+    args.push('--', '.');
+    const result = spawnSync('git', args, {
       cwd: repoRoot,
       timeout: 5000,
       encoding: 'utf-8',
@@ -1136,6 +1138,18 @@ function buildAnalysisContext(state: AutoSessionState): string | undefined {
     parts.push(`Structural issues: ${lines.join('; ')}`);
   }
 
+  if (idx.ast_findings && idx.ast_findings.length > 0) {
+    const byPattern = new Map<string, number>();
+    for (const f of idx.ast_findings) {
+      byPattern.set(f.patternId, (byPattern.get(f.patternId) ?? 0) + 1);
+    }
+    const summary = Array.from(byPattern.entries())
+      .sort(([, a], [, b]) => b - a)
+      .map(([id, count]) => `${id}: ${count}`)
+      .join(', ');
+    parts.push(`AST findings (${idx.ast_findings.length}): ${summary}`);
+  }
+
   return parts.length > 0 ? parts.join('\n') : undefined;
 }
 
@@ -1154,10 +1168,12 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     return 'cooldown';
   }
 
-  // Gradient staleness check — skip survey when no external changes, reduce confidence boost when few changes
+  // Gradient staleness check — skip survey when no changes at all (including own commits).
+  // Own commits are included because PromptWheel's changes create new code worth scanning —
+  // excluding them starves drill in autonomous sessions where PW is the only committer.
   if (state.drillTrajectoriesGenerated > 0 && state.drillLastSurveyTimestamp) {
     const stalenessLogBase = state.autoConf.drill?.stalenessLogBase ?? 11;
-    const staleness = measureCodeStaleness(state.repoRoot, state.drillLastSurveyTimestamp, stalenessLogBase);
+    const staleness = measureCodeStaleness(state.repoRoot, state.drillLastSurveyTimestamp, stalenessLogBase, /* excludeOwnCommits */ false);
     if (staleness === 0) {
       if (state.options.verbose) {
         state.displayAdapter.log(chalk.gray('  Drill: no code changes since last survey — skipping'));

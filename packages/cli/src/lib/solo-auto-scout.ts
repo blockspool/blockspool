@@ -174,7 +174,7 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   }
   if (state.codebaseIndex) promptBuilder.addCodebaseIndex(formatIndexForPrompt(state.codebaseIndex, state.cycleCount));
   if (state.codebaseIndex) {
-    const analysisBlock = formatAnalysisForPrompt(state.codebaseIndex, state.cycleCount);
+    const analysisBlock = formatAnalysisForPrompt(state.codebaseIndex, state.cycleCount, state.currentSectorId ?? undefined);
     if (analysisBlock) promptBuilder.addAnalysis(analysisBlock);
   }
   const dedupPrefix = formatDedupForPrompt(state.dedupMemory);

@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { repos } from '@promptwheel/core';
 import type { Ticket } from '@promptwheel/core';
 import { execSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import type { SessionManager } from '../state.js';
 import { deriveScopePolicy, isFileAllowed, isCategoryFileAllowed } from '../scope-policy.js';
 
@@ -128,14 +129,19 @@ export function validateVerificationCommand(command: string): { valid: true } | 
   return { valid: true };
 }
 
-function buildToolErrorResponse(message: string) {
+export type ToolErrorResponse = {
+  content: [{ type: 'text'; text: string }];
+  isError: true;
+};
+
+function buildToolErrorResponse(message: string): ToolErrorResponse {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify({ error: message }) }],
     isError: true as const,
   };
 }
 
-type OwnershipValidationResult =
+export type OwnershipValidationResult =
   | {
       ok: true;
       ticket: Ticket;
@@ -143,10 +149,10 @@ type OwnershipValidationResult =
     }
   | {
       ok: false;
-      response: ReturnType<typeof buildToolErrorResponse>;
+      response: ToolErrorResponse;
     };
 
-async function validateTicketAndRunOwnership(
+export async function validateTicketAndRunOwnership(
   state: SessionManager,
   params: {
     ticketId: string;
@@ -308,7 +314,9 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
 
       // Use proper scope policy with minimatch-based validation
       const s = ownership.session;
-      const worktreeRoot = s.direct ? undefined : `.promptwheel/worktrees/${params.ticketId}`;
+      const worktreeRoot = s.direct
+        ? undefined
+        : resolve(state.projectPath, '.promptwheel', 'worktrees', params.ticketId);
       const policy = deriveScopePolicy({
         allowedPaths: ticket.allowedPaths,
         category: ticket.category ?? 'fix',

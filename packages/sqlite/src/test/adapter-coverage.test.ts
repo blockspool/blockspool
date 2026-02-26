@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import type { Migration } from '@promptwheel/core/db';
 import { SQLiteAdapter, createSQLiteAdapter } from '../adapter.js';
+import { runSqliteMigrations } from '../migrations/runner.js';
 
 let tmpDir: string;
 let dbPath: string;
@@ -90,6 +93,34 @@ describe('convertParams (tested via real queries)', () => {
     expect((result.rows[0] as any).name).toBe('alice');
     expect((result.rows[0] as any).age).toBe(30);
   });
+
+  it('supports out-of-order and repeated placeholders', async () => {
+    const result = await adapter.query(
+      'SELECT $2 AS second, $1 AS first, $2 AS second_again',
+      ['first', 'second'],
+    );
+
+    expect(result.rows).toEqual([{ second: 'second', first: 'first', second_again: 'second' }]);
+  });
+
+  it('does not rewrite placeholders in comments or string literals', async () => {
+    const result = await adapter.query(
+      "SELECT '$2 literal' AS literal, $1 AS bound /* block $3 */ -- line $4\n",
+      ['value', 'unused-2', 'unused-3', 'unused-4'],
+    );
+
+    expect(result.rows).toEqual([{ literal: '$2 literal', bound: 'value' }]);
+  });
+
+  it('supports repeated executions of the same SQL with different params', async () => {
+    const sql = "SELECT '$3 literal' AS literal, $2 AS second, $1 AS first, $2 AS second_again /* block $4 */ -- line $5\n";
+
+    const first = await adapter.query(sql, ['alpha', 'beta', 'unused-3', 'unused-4', 'unused-5']);
+    const second = await adapter.query(sql, ['uno', 'dos', 'unused-3b', 'unused-4b', 'unused-5b']);
+
+    expect(first.rows).toEqual([{ literal: '$3 literal', second: 'beta', first: 'alpha', second_again: 'beta' }]);
+    expect(second.rows).toEqual([{ literal: '$3 literal', second: 'dos', first: 'uno', second_again: 'dos' }]);
+  });
 });
 
 describe('getQueryType (tested via stats)', () => {
@@ -132,6 +163,80 @@ describe('migrate', () => {
     await adapter.migrate();
     await expect(adapter.migrate()).resolves.not.toThrow();
   });
+
+  it('supports dryRun without applying schema changes', async () => {
+    const result = await adapter.migrate({ dryRun: true });
+    expect(result.dryRun).toBe(true);
+    expect(result.applied).toEqual(['001_initial', '002_run_steps']);
+
+    const projects = await adapter.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='projects'",
+    );
+    expect(projects.rows).toHaveLength(0);
+
+    const migrations = await adapter.query<{ count: number }>('SELECT COUNT(*) as count FROM _migrations');
+    expect(migrations.rows[0].count).toBe(0);
+  });
+
+  it('stops at target migration and does not apply later migrations', async () => {
+    const result = await adapter.migrate({ target: '001_initial' });
+    expect(result.applied).toEqual(['001_initial']);
+
+    const runSteps = await adapter.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='run_steps'",
+    );
+    expect(runSteps.rows).toHaveLength(0);
+  });
+
+  it('respects target even when that migration is already applied', async () => {
+    await adapter.migrate({ target: '001_initial' });
+
+    const result = await adapter.migrate({ target: '001_initial' });
+    expect(result.applied).toEqual([]);
+    expect(result.skipped).toEqual(['001_initial']);
+
+    const runSteps = await adapter.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='run_steps'",
+    );
+    expect(runSteps.rows).toHaveLength(0);
+  });
+});
+
+describe('runSqliteMigrations validation', () => {
+  it('fails fast before creating migration state when ids are duplicated', async () => {
+    const db = new Database(':memory:');
+    try {
+      const duplicateIdMigrations: ReadonlyArray<Migration> = [
+        { id: 'dup', up: "CREATE TABLE duplicate_id_a (id TEXT PRIMARY KEY);", checksum: 'checksum-a' },
+        { id: 'dup', up: "CREATE TABLE duplicate_id_b (id TEXT PRIMARY KEY);", checksum: 'checksum-b' },
+      ];
+
+      await expect(runSqliteMigrations(db, duplicateIdMigrations)).rejects.toThrow('duplicate id(s): dup');
+
+      const migrationTable = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='_migrations'")
+        .all();
+      expect(migrationTable).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('fails fast when checksums are duplicated', async () => {
+    const db = new Database(':memory:');
+    try {
+      const duplicateChecksumMigrations: ReadonlyArray<Migration> = [
+        { id: '001', up: "CREATE TABLE duplicate_checksum_a (id TEXT PRIMARY KEY);", checksum: 'dup-checksum' },
+        { id: '002', up: "CREATE TABLE duplicate_checksum_b (id TEXT PRIMARY KEY);", checksum: 'dup-checksum' },
+      ];
+
+      await expect(runSqliteMigrations(db, duplicateChecksumMigrations)).rejects.toThrow(
+        'duplicate checksum(s): dup-checksum',
+      );
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe('withTransaction', () => {
@@ -154,6 +259,58 @@ describe('withTransaction', () => {
     ).rejects.toThrow('fail');
     const result = await adapter.query('SELECT * FROM tx2');
     expect(result.rows).toHaveLength(0);
+  });
+
+  it('supports nested transactions with savepoints', async () => {
+    await adapter.query('CREATE TABLE tx_nested (id INTEGER PRIMARY KEY, v TEXT)');
+
+    await adapter.withTransaction(async (outerClient) => {
+      await outerClient.query("INSERT INTO tx_nested (id, v) VALUES (1, 'outer')");
+
+      await adapter.withTransaction(async (innerClient) => {
+        await innerClient.query("INSERT INTO tx_nested (id, v) VALUES (2, 'inner')");
+      });
+    });
+
+    const result = await adapter.query('SELECT id FROM tx_nested ORDER BY id');
+    expect(result.rows).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+
+  it('rolls back inner nested transaction without rolling back outer work when handled', async () => {
+    await adapter.query('CREATE TABLE tx_nested_rollback (id INTEGER PRIMARY KEY, v TEXT)');
+
+    await adapter.withTransaction(async (outerClient) => {
+      await outerClient.query("INSERT INTO tx_nested_rollback (id, v) VALUES (1, 'outer_before')");
+
+      await expect(
+        adapter.withTransaction(async (innerClient) => {
+          await innerClient.query("INSERT INTO tx_nested_rollback (id, v) VALUES (2, 'inner')");
+          throw new Error('inner fail');
+        }),
+      ).rejects.toThrow('inner fail');
+
+      await outerClient.query("INSERT INTO tx_nested_rollback (id, v) VALUES (3, 'outer_after')");
+    });
+
+    const result = await adapter.query('SELECT id FROM tx_nested_rollback ORDER BY id');
+    expect(result.rows).toEqual([{ id: 1 }, { id: 3 }]);
+  });
+
+  it('records query stats for both direct and transactional queries through one executor path', async () => {
+    await adapter.query('CREATE TABLE tx_stats (id INTEGER PRIMARY KEY, v TEXT)');
+    adapter.resetStats();
+
+    await adapter.query('SELECT 1');
+    await adapter.withTransaction(async (client) => {
+      await client.query("INSERT INTO tx_stats (id, v) VALUES (1, 'inside')");
+      await client.query('SELECT v FROM tx_stats WHERE id = 1');
+    });
+
+    const stats = adapter.getStats();
+    expect(stats.totalQueries).toBe(3);
+    expect(stats.totalErrors).toBe(0);
+    expect(stats.byType['SELECT'].count).toBe(2);
+    expect(stats.byType['INSERT'].count).toBe(1);
   });
 });
 
@@ -181,6 +338,19 @@ describe('getStats and resetStats', () => {
     expect(stats).toHaveProperty('totalDurationMs');
     expect(stats).toHaveProperty('byType');
     expect(stats.totalQueries).toBeGreaterThanOrEqual(1);
+  });
+
+  it('getStats returns a snapshot that cannot mutate internal state', async () => {
+    await adapter.query('SELECT 1');
+
+    const stats = adapter.getStats();
+    stats.byType['SELECT'].count = -999;
+    stats.byType['SELECT'].errors = -999;
+
+    const freshStats = adapter.getStats();
+    expect(freshStats.byType['SELECT']).toBeDefined();
+    expect(freshStats.byType['SELECT'].count).toBeGreaterThanOrEqual(1);
+    expect(freshStats.byType['SELECT'].errors).toBeGreaterThanOrEqual(0);
   });
 
   it('resetStats resets counters', async () => {

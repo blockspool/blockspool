@@ -8,7 +8,9 @@
  * The ast-grep parse() function is synchronous — no async needed.
  */
 
-import type { AstAnalysisResult, ExportEntry } from './shared.js';
+import type { AstAnalysisResult, ExportEntry, AstFinding } from './shared.js';
+import type { AstPattern } from './ast-patterns.js';
+import { scanPatterns } from './ast-patterns.js';
 
 // ---------------------------------------------------------------------------
 // Types for dependency injection
@@ -32,7 +34,7 @@ interface AstGrepRoot {
 }
 
 /** Minimal SgNode interface. */
-interface AstGrepNode {
+export interface AstGrepNode {
   kind(): string;
   text(): string;
   children(): AstGrepNode[];
@@ -87,6 +89,7 @@ export function analyzeFileAst(
   filePath: string,
   langKey: string,
   astGrep: AstGrepModule,
+  patterns?: AstPattern[],
 ): AstAnalysisResult | null {
   try {
     const lang = astGrep.Lang[langKey];
@@ -95,7 +98,12 @@ export function analyzeFileAst(
     const imports = extractImportsAst(root, langKey);
     const exports = extractExportsAst(root, langKey);
     const complexity = estimateCyclomaticComplexity(root, langKey);
-    return { imports, exports, complexity };
+    const findings: AstFinding[] | undefined = patterns
+      ? scanPatterns(root, langKey, content, patterns) || undefined
+      : undefined;
+    const result: AstAnalysisResult = { imports, exports, complexity };
+    if (findings && findings.length > 0) result.findings = findings;
+    return result;
   } catch {
     return null; // parse error — caller falls back to regex
   }
@@ -286,7 +294,7 @@ const DECISION_KINDS: Record<string, string[]> = {
   ],
 };
 
-function getLangFamily(langKey: string): string {
+export function getLangFamily(langKey: string): string {
   switch (langKey) {
     case 'TypeScript':
     case 'Tsx':
@@ -339,7 +347,7 @@ export function estimateCyclomaticComplexity(root: AstGrepNode, langKey: string)
 // ---------------------------------------------------------------------------
 
 /** Find all descendant nodes of a given kind using tree traversal. */
-function findAllByKind(root: AstGrepNode, kind: string): AstGrepNode[] {
+export function findAllByKind(root: AstGrepNode, kind: string): AstGrepNode[] {
   try {
     return root.findAll({ rule: { kind } });
   } catch {

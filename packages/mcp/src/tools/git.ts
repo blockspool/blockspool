@@ -4,9 +4,9 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { repos } from '@promptwheel/core';
 import { execFileSync } from 'node:child_process';
 import type { SessionManager } from '../state.js';
+import { validateTicketAndRunOwnership } from './execute.js';
 
 /**
  * Validates a git branch name to prevent command injection.
@@ -38,15 +38,12 @@ export function registerGitTools(server: McpServer, getState: () => SessionManag
         baseBranch: raw.baseBranch ?? raw.base_branch,
       };
       const state = getState();
-      state.requireActive(); // ensure session is active
-
-      const ticket = await repos.tickets.getById(state.db, params.ticketId);
-      if (!ticket) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Ticket not found.' }) }],
-          isError: true,
-        };
-      }
+      const ownership = await validateTicketAndRunOwnership(state, {
+        ticketId: params.ticketId,
+        requireCurrentTicket: false,
+      });
+      if (!ownership.ok) return ownership.response;
+      const ticket = ownership.ticket;
 
       const baseBranch = params.baseBranch ?? 'main';
 

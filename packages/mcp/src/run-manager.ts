@@ -31,6 +31,69 @@ import { loadLearnings } from './learnings.js';
 
 // All defaults imported from @promptwheel/core — see config/defaults.ts
 
+const MAX_PERSISTED_EVENT_PAYLOAD_BYTES = 128 * 1024;
+const MAX_PERSISTED_EVENT_PREVIEW_BYTES = 8192;
+
+function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
+  const safeMaxBytes = Math.max(0, maxBytes);
+  if (Buffer.byteLength(value, 'utf8') <= safeMaxBytes) {
+    return { value, truncated: false };
+  }
+
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const candidate = value.slice(0, mid);
+    if (Buffer.byteLength(candidate, 'utf8') <= safeMaxBytes) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return { value: value.slice(0, low), truncated: true };
+}
+
+function capEventPayloadForPersistence(payload: Record<string, unknown>): Record<string, unknown> {
+  let serialized = '';
+  try {
+    const maybeSerialized = JSON.stringify(payload);
+    if (typeof maybeSerialized !== 'string') {
+      return {
+        _payload_truncated: true,
+        _payload_original_bytes: -1,
+        _payload_max_bytes: MAX_PERSISTED_EVENT_PAYLOAD_BYTES,
+        _payload_preview: '[unserializable payload]',
+      };
+    }
+    serialized = maybeSerialized;
+  } catch {
+    return {
+      _payload_truncated: true,
+      _payload_original_bytes: -1,
+      _payload_max_bytes: MAX_PERSISTED_EVENT_PAYLOAD_BYTES,
+      _payload_preview: '[unserializable payload]',
+    };
+  }
+  const payloadBytes = Buffer.byteLength(serialized, 'utf8');
+  if (payloadBytes <= MAX_PERSISTED_EVENT_PAYLOAD_BYTES) {
+    return payload;
+  }
+
+  const preview = truncateUtf8(serialized, MAX_PERSISTED_EVENT_PREVIEW_BYTES).value;
+  const compact: Record<string, unknown> = {
+    _payload_truncated: true,
+    _payload_original_bytes: payloadBytes,
+    _payload_max_bytes: MAX_PERSISTED_EVENT_PAYLOAD_BYTES,
+    _payload_preview: preview,
+  };
+  const ticketId = payload['ticket_id'];
+  if (typeof ticketId === 'string' || (typeof ticketId === 'number' && Number.isFinite(ticketId))) {
+    compact['ticket_id'] = String(ticketId);
+  }
+  return compact;
+}
+
 function emptySpindle(): SpindleState {
   return {
     output_hashes: [],
@@ -529,11 +592,12 @@ export class RunManager {
   /** Append an event to events.ndjson */
   appendEvent(type: EventType, payload: Record<string, unknown>): void {
     const step = this.state?.step_count ?? 0;
+    const boundedPayload = capEventPayloadForPersistence(payload);
     const event: RunEvent = {
       ts: new Date().toISOString(),
       step,
       type,
-      payload,
+      payload: boundedPayload,
     };
 
     if (this.eventsPath) {

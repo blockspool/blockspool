@@ -11,8 +11,8 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import * as fs from 'node:fs';
-import { createGitService } from '../lib/git.js';
-import { isInitialized, loadConfig } from '../lib/solo-config.js';
+import { loadConfig } from '../lib/solo-config.js';
+import { ensureInitializedOrExit, exitCommandError, resolveRepoRootOrExit } from '../lib/command-runtime.js';
 import {
   DEFAULT_DAEMON_CONFIG,
   readDaemonState,
@@ -28,16 +28,14 @@ import {
 } from '../lib/daemon-fork.js';
 
 async function resolveRepoRoot(): Promise<string> {
-  const git = createGitService();
-  const repoRoot = await git.findRepoRoot(process.cwd());
-  if (!repoRoot) {
-    console.error(chalk.red('Not a git repository'));
-    process.exit(1);
-  }
-  if (!isInitialized(repoRoot)) {
-    console.error(chalk.red('PromptWheel not initialized. Run: promptwheel solo init'));
-    process.exit(1);
-  }
+  const repoRoot = await resolveRepoRootOrExit({
+    notRepoHumanPrefix: '',
+  });
+  await ensureInitializedOrExit({
+    repoRoot,
+    notInitializedMessage: 'PromptWheel not initialized. Run: promptwheel solo init',
+    notInitializedHumanPrefix: '',
+  });
   return repoRoot;
 }
 
@@ -68,9 +66,10 @@ export function registerDaemonCommands(solo: Command): void {
 
       if (isDaemonRunning(repoRoot)) {
         const pid = readDaemonPid(repoRoot);
-        console.log(chalk.yellow(`Daemon already running (pid=${pid})`));
-        console.log(chalk.gray('  Stop it first: promptwheel solo daemon stop'));
-        process.exit(1);
+        exitCommandError({
+          message: `Daemon already running (pid=${pid})`,
+          humanDetails: [chalk.gray('  Stop it first: promptwheel solo daemon stop')],
+        });
       }
 
       const interval = parseInt(options.interval ?? '30', 10);
@@ -109,8 +108,9 @@ export function registerDaemonCommands(solo: Command): void {
       if (stopped) {
         console.log(chalk.green('Daemon stopped'));
       } else {
-        console.log(chalk.red('Failed to stop daemon'));
-        process.exit(1);
+        exitCommandError({
+          message: 'Failed to stop daemon',
+        });
       }
     });
 
@@ -182,7 +182,17 @@ export function registerDaemonCommands(solo: Command): void {
 
       if (options.follow) {
         const tail = spawn('tail', ['-f', logPath], { stdio: 'inherit' });
-        process.on('SIGINT', () => { tail.kill(); process.exit(0); });
+        await new Promise<void>((resolve, reject) => {
+          const sigintHandler = () => {
+            tail.kill();
+          };
+          process.once('SIGINT', sigintHandler);
+          tail.once('error', reject);
+          tail.once('close', () => {
+            process.removeListener('SIGINT', sigintHandler);
+            resolve();
+          });
+        });
       } else {
         const lines = parseInt(options.n ?? '50', 10);
         const output = execSync(`tail -n ${lines} "${logPath}"`, { encoding: 'utf-8' });

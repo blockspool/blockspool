@@ -17,6 +17,11 @@ import { repos } from '@promptwheel/core';
 import type { DatabaseAdapter, Project } from '@promptwheel/core';
 import { RunManager } from '../run-manager.js';
 import { processEvent } from '../event-processor.js';
+import {
+  EVENT_MAX_ARTIFACT_BYTES,
+  EVENT_MAX_LARGE_STRING_BYTES,
+  EVENT_MAX_RECORD_ARRAY_ITEMS,
+} from '../event-helpers.js';
 import type { RawProposal } from '../proposals.js';
 
 let db: DatabaseAdapter;
@@ -71,6 +76,22 @@ function makeProposal(title: string, overrides?: Partial<RawProposal>): RawPropo
   };
 }
 
+function readArtifact(filename: string): string {
+  if (!run.dir) throw new Error('run dir not initialized');
+  return fs.readFileSync(path.join(run.dir, 'artifacts', filename), 'utf8');
+}
+
+function readEvents(): Array<{ type: string; payload: Record<string, unknown> }> {
+  if (!run.dir) throw new Error('run dir not initialized');
+  const eventsPath = path.join(run.dir, 'events.ndjson');
+  if (!fs.existsSync(eventsPath)) return [];
+  const lines = fs.readFileSync(eventsPath, 'utf8')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+  return lines.map(line => JSON.parse(line) as { type: string; payload: Record<string, unknown> });
+}
+
 // ---------------------------------------------------------------------------
 // SCOUT_OUTPUT handler
 // ---------------------------------------------------------------------------
@@ -91,6 +112,24 @@ describe('handleScoutOutput', () => {
     expect(s.pending_proposals).not.toBeNull();
     expect(s.pending_proposals!.length).toBe(1);
     expect(s.pending_proposals![0].title).toBe('Add input validation');
+  });
+
+  it('rejects oversized SCOUT_OUTPUT proposal arrays with deterministic message', async () => {
+    startRun();
+    const oversizedProposals = Array.from(
+      { length: EVENT_MAX_RECORD_ARRAY_ITEMS + 1 },
+      (_, idx) => makeProposal(`Oversized proposal ${idx + 1}`),
+    );
+
+    const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
+      proposals: oversizedProposals,
+    });
+
+    expect(result.processed).toBe(false);
+    expect(result.phase_changed).toBe(false);
+    expect(result.message).toBe(
+      `Invalid SCOUT_OUTPUT payload: \`proposals\` must contain at most ${EVENT_MAX_RECORD_ARRAY_ITEMS} items`,
+    );
   });
 
   it('creates tickets directly when skip_review is enabled', async () => {
@@ -699,6 +738,26 @@ describe('handleQaCommandResult', () => {
     expect(result.message).toContain('npm test');
   });
 
+  it('caps oversized QA_COMMAND_RESULT output artifacts', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'QA';
+
+    const oversizedOutput = 'x'.repeat(EVENT_MAX_LARGE_STRING_BYTES + 20_000);
+    const result = await processEvent(run, db, 'QA_COMMAND_RESULT', {
+      command: 'npm test',
+      success: false,
+      output: oversizedOutput,
+    });
+
+    expect(result.processed).toBe(true);
+    expect(result.phase_changed).toBe(false);
+
+    const artifact = readArtifact(`${s.step_count}-qa-npm-test-fail.log`);
+    expect(Buffer.byteLength(artifact, 'utf8')).toBeLessThanOrEqual(EVENT_MAX_ARTIFACT_BYTES);
+    expect(artifact).toContain('[output truncated:');
+  });
+
   it('records failed command result without phase change', async () => {
     startRun();
     const s = run.require();
@@ -769,6 +828,108 @@ describe('handleTicketResult', () => {
 
     expect(result.phase_changed).toBe(true);
     expect(result.new_phase).toBe('QA');
+  });
+
+  it('rejects changed files not declared in approved plan', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'EXECUTE';
+    s.current_ticket_id = 'tkt_test';
+    s.current_ticket_plan = {
+      ticket_id: 'tkt_test',
+      files_to_touch: [{ path: 'src/foo.ts', action: 'modify', reason: 'fix' }],
+      expected_tests: [],
+      risk_level: 'low',
+      estimated_lines: 10,
+    };
+
+    const result = await processEvent(run, db, 'TICKET_RESULT', {
+      status: 'done',
+      changed_files: ['src/foo.ts', 'src/bar.ts'],
+      lines_added: 3,
+      lines_removed: 1,
+    });
+
+    expect(result.phase_changed).toBe(false);
+    expect(result.message).toContain('not in plan');
+    expect(result.message).toContain('src/bar.ts');
+    expect(run.require().phase).toBe('EXECUTE');
+
+    const events = readEvents();
+    const scopeBlocked = events.find(e => e.type === 'SCOPE_BLOCKED');
+    expect(scopeBlocked).toBeDefined();
+    expect(scopeBlocked!.payload['surprise_files']).toEqual(['src/bar.ts']);
+  });
+
+  it('enforces line budget against approved plan', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'EXECUTE';
+    s.current_ticket_id = 'tkt_test';
+    s.max_lines_per_ticket = 5;
+    s.current_ticket_plan = {
+      ticket_id: 'tkt_test',
+      files_to_touch: [{ path: 'src/foo.ts', action: 'modify', reason: 'fix' }],
+      expected_tests: [],
+      risk_level: 'low',
+      estimated_lines: 5,
+    };
+
+    const result = await processEvent(run, db, 'TICKET_RESULT', {
+      status: 'done',
+      changed_files: ['src/foo.ts'],
+      lines_added: 4,
+      lines_removed: 2,
+    });
+
+    expect(result.phase_changed).toBe(false);
+    expect(result.message).toContain('exceeds budget');
+    expect(run.require().phase).toBe('EXECUTE');
+  });
+
+  it('caps oversized TICKET_RESULT artifacts and persisted events', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'EXECUTE';
+    s.current_ticket_id = 'tkt_test';
+
+    const oversizedSummary = 's'.repeat(EVENT_MAX_LARGE_STRING_BYTES + 30_000);
+    const oversizedDiff = 'd'.repeat(EVENT_MAX_LARGE_STRING_BYTES + 10_000);
+    const oversizedStdout = 'o'.repeat(EVENT_MAX_LARGE_STRING_BYTES + 10_000);
+
+    run.appendEvent('TICKET_RESULT', {
+      status: 'done',
+      summary: oversizedSummary,
+      diff: oversizedDiff,
+      stdout: oversizedStdout,
+    });
+
+    const result = await processEvent(run, db, 'TICKET_RESULT', {
+      status: 'done',
+      changed_files: ['src/foo.ts'],
+      lines_added: 3,
+      lines_removed: 1,
+      summary: oversizedSummary,
+      diff: oversizedDiff,
+      stdout: oversizedStdout,
+    });
+
+    expect(result.processed).toBe(true);
+    expect(result.new_phase).toBe('QA');
+
+    const artifact = readArtifact(`${s.step_count}-ticket-result.json`);
+    expect(Buffer.byteLength(artifact, 'utf8')).toBeLessThanOrEqual(EVENT_MAX_ARTIFACT_BYTES);
+    const parsedArtifact = JSON.parse(artifact) as Record<string, unknown>;
+    expect(parsedArtifact['_artifact_truncated']).toBe(true);
+
+    const events = readEvents();
+    const appended = events.filter(e => e.type === 'TICKET_RESULT');
+    expect(appended.length).toBeGreaterThan(0);
+    const lastTicketEvent = appended[appended.length - 1];
+    expect(lastTicketEvent.payload['_payload_truncated']).toBe(true);
+    const payloadMaxBytes = lastTicketEvent.payload['_payload_max_bytes'];
+    expect(typeof payloadMaxBytes).toBe('number');
+    expect(Buffer.byteLength(JSON.stringify(lastTicketEvent.payload), 'utf8')).toBeLessThanOrEqual(payloadMaxBytes as number);
   });
 
   it('transitions to NEXT_TICKET on ticket failure', async () => {

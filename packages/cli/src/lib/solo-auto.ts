@@ -464,6 +464,10 @@ function buildSectorMapData(
  * Runs until Ctrl+C, --hours expires, or cycle/PR limits are hit.
  */
 async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionState): Promise<void> {
+  // Push initial sector map so the TUI map view is populated immediately
+  const initialSmd = buildSectorMapData(state);
+  if (initialSmd) state.displayAdapter.sectorMapUpdate(initialSmd);
+
   do {
     const preCycle = await runPreCycleMaintenance(state);
     if (preCycle.shouldSkipCycle) continue;
@@ -605,6 +609,10 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
  * Natural bounded end: no Ctrl+C needed.
  */
 async function runPlanningRound(state: import('./solo-auto-state.js').AutoSessionState): Promise<void> {
+  // Push initial sector map so the TUI map view is populated immediately
+  const initialSmd = buildSectorMapData(state);
+  if (initialSmd) state.displayAdapter.sectorMapUpdate(initialSmd);
+
   const { scoutAllSectors, presentRoadmap } = await import('./solo-auto-planning.js');
 
   // Phase 1: Scout all sectors

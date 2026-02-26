@@ -243,7 +243,7 @@ export class NodeExecRunner implements ExecRunner {
       });
 
       // settleOnce callback above always sets this on the first settle.
-      return settledResultPromise as Promise<ExecResult>;
+      return settledResultPromise as unknown as Promise<ExecResult>;
     };
 
     try {

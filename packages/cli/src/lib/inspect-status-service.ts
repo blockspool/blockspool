@@ -184,7 +184,7 @@ export async function loadSpinTextSummary(repoRoot: string): Promise<SpinTextSum
     const processInsights = allLearnings.filter((learning) => learning.source.type === 'process_insight');
 
     const originalConfidence = 20;
-    const runStateRecord = runState as Record<string, unknown>;
+    const runStateRecord = runState as unknown as Record<string, unknown>;
     const effectiveMinConfidence = typeof runStateRecord.effectiveMinConfidence === 'number'
       ? runStateRecord.effectiveMinConfidence
       : undefined;

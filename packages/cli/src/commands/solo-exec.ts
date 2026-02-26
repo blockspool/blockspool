@@ -101,7 +101,7 @@ async function runPreflightOrExit(options: {
   if (!preflight.ok) {
     exitCommandError({
       json: options.json,
-      message: preflight.error,
+      message: preflight.error ?? 'Preflight check failed',
     });
   }
 

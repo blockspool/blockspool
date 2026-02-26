@@ -119,7 +119,7 @@ export async function runBackendHarness(opts: BackendHarnessOptions): Promise<Cl
     timeoutMs: opts.timeoutMs,
     onProgress: opts.onProgress,
     getProgressMessage: opts.getProgressPhase
-      ? ({ elapsedMs }) => formatProgressTick(opts.getProgressPhase() || 'Running', elapsedMs)
+      ? ({ elapsedMs }) => formatProgressTick(opts.getProgressPhase!() || 'Running', elapsedMs)
       : undefined,
   });
 

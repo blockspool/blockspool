@@ -13,7 +13,7 @@ import { runClaude, type ExecutionBackend } from './execution-backends/index.js'
 import {
   buildProposalReviewPrompt, parseReviewedProposals, applyReviewToProposals,
 } from './proposal-review.js';
-import { deferProposal, popDeferredForScope, recordFormulaResult } from './run-state.js';
+import { deferProposal, popDeferredForScope, recordFormulaResult, readRunState } from './run-state.js';
 import { addLearning, extractTags } from './learnings.js';
 import {
   isDuplicateProposal, getDeduplicationContext,
@@ -291,6 +291,24 @@ export async function filterProposals(
 
   pipelineCounts.dedup = approvedProposals.length;
 
+  // Per-category confidence adjustment — penalize low-success-rate categories
+  const { categoryStats } = readRunState(state.repoRoot);
+  if (categoryStats) {
+    for (const p of approvedProposals) {
+      const cat = (p.category || 'refactor').toLowerCase();
+      const catStats = categoryStats[cat];
+      if (catStats && catStats.confidenceAdjustment !== 0 && catStats.proposals >= 10) {
+        const original = p.confidence || 50;
+        p.confidence = Math.max(0, Math.min(100, original + catStats.confidenceAdjustment));
+        if (state.options.verbose && catStats.confidenceAdjustment < 0) {
+          state.displayAdapter.log(
+            chalk.gray(`  ↓ Category penalty (${cat} @ ${Math.round(catStats.successRate * 100)}%): ${p.title} ${original}→${p.confidence}`)
+          );
+        }
+      }
+    }
+  }
+
   // Bump dedup memory for rejected duplicates (including hard dedup rejects)
   const allRejected = [...rejectedDupTitles, ...hardDedupRejected];
   if (allRejected.length > 0) {
@@ -324,7 +342,9 @@ export async function filterProposals(
         });
         for (const p of approvedProposals) {
           if (suppressSet.has(p.category)) {
-            (p as any)._affinityConfidenceBoost = 15;
+            p.confidence = Math.max(0, (p.confidence || 50) - 15);
+          } else if (boostSet.has(p.category)) {
+            p.confidence = Math.min(100, (p.confidence || 50) + 5);
           }
         }
       }

@@ -566,6 +566,11 @@ ${context?.previousTrajectories ? '13' : '12'}. **Scope from file paths:** Each 
   - Use "npm test", "npx vitest run", "npx tsc --noEmit" — NOT hardcoded line numbers or fragile string matching
   - Do NOT reference specific test files unless they already exist in the codebase
   - Prefer running the full test suite or type checker over narrow assertions
+- Verification commands must be targeted:
+  - Prefer \`npm run typecheck\` for type-only or refactor steps
+  - Scope tests to specific files: \`npm test -- path/to/specific.test.ts\` not entire directories
+  - Never use commands that depend on git state (git log, git diff) — they may fail in execution contexts
+  - A passing typecheck is sufficient for type-only steps
 - Don't create too many tiny steps — merge closely related work into one step.
 
 ## Output Format

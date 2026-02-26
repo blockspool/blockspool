@@ -36,6 +36,23 @@ export interface FormulaStats {
   closedCount?: number;
 }
 
+export interface FormulaDisplayMetrics {
+  cycles: number;
+  proposalsPerCycle: number;
+  successRate: number;
+  recentSuccessRate: number;
+}
+
+export function getFormulaDisplayMetrics(stats: FormulaStats): FormulaDisplayMetrics {
+  return {
+    cycles: stats.cycles,
+    proposalsPerCycle: stats.cycles > 0 ? stats.proposalsGenerated / stats.cycles : 0,
+    successRate: stats.ticketsTotal > 0 ? stats.ticketsSucceeded / stats.ticketsTotal : 0,
+    recentSuccessRate: stats.recentTicketsTotal > 0
+      ? stats.recentTicketsSucceeded / stats.recentTicketsTotal : 0,
+  };
+}
+
 export interface CategorySuccessStats {
   proposals: number;
   success: number;
@@ -466,7 +483,7 @@ export function recordCategoryOutcome(repoRoot: string, category: string, succes
     }
     entry.successRate = entry.proposals > 0 ? entry.success / entry.proposals : 0;
     entry.confidenceAdjustment = Math.round(
-      Math.max(-20, Math.min(20, Math.round((entry.successRate - 0.70) / 0.10) * 5))
+      Math.max(-20, Math.min(20, Math.round((entry.successRate - 0.75) / 0.08) * 5))
     );
     entry.lastUpdatedCycle = state.totalCycles;
     writeRunState(repoRoot, state);

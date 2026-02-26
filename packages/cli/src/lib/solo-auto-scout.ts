@@ -63,7 +63,7 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
 
   // No sectors need scanning — all covered and no changes detected
   if (scope === null) {
-    if (state.lensFullyExhausted) {
+    if (state.lensRotationsCompleted > 0) {
       state.displayAdapter.log(chalk.gray(`  All sectors scanned across ${state.lensRotation.length} lens(es). Waiting for new code...`));
     } else {
       state.displayAdapter.log(chalk.gray('  All sectors scanned, no changes detected. Waiting for new code...'));

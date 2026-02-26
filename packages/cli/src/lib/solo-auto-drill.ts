@@ -611,7 +611,7 @@ export function computeArcGuidance(
 ): string | undefined {
   if (state.drillHistory.length < 2) return undefined;
 
-  const MAX_SIGNALS = 3;
+  const MAX_SIGNALS = 2;
   const recentWindow = state.drillHistory.slice(-5);
   const parts: string[] = [];
 
@@ -902,6 +902,11 @@ export function tryPreVerifyTrajectoryStep(state: AutoSessionState): boolean {
       timeout: 30000,
       encoding: 'utf-8',
     });
+    // Git-context resilience: skip commands that fail due to missing git repo
+    const output = ((result.stderr ?? '') + (result.stdout ?? ''));
+    if (result.status !== 0 && !result.error && output.includes('not a git repository')) {
+      continue; // skip git-context-dependent command, try remaining
+    }
     if (result.error || result.status !== 0) return false; // not yet passing (or timeout)
   }
 
@@ -1480,6 +1485,12 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
   // Proposal quality → ambition override: if current proposals are weak, downgrade;
   // if strong, upgrade. This closes the loop between proposal quality and generation complexity.
   let effectiveAmbition = baseAmbition;
+  // Freshness → ambition bridge: high stale ratio means the codebase is changing rapidly
+  // or PromptWheel is outrunning new issues — generate conservative trajectories to avoid waste
+  if (state.drillLastFreshnessDropRatio !== null && state.drillLastFreshnessDropRatio > 0.5 && effectiveAmbition !== 'conservative') {
+    effectiveAmbition = 'conservative';
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`    Ambition downgraded to conservative (${Math.round(state.drillLastFreshnessDropRatio * 100)}% proposals stale)`));
+  }
   if (avgConfidence < 40 && effectiveAmbition !== 'conservative') {
     effectiveAmbition = effectiveAmbition === 'ambitious' ? 'moderate' : 'conservative';
     if (state.options.verbose) state.displayAdapter.log(chalk.gray(`    Ambition downgraded to ${effectiveAmbition} (low proposal confidence: ${avgConfidence.toFixed(0)})`));

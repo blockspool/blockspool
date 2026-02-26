@@ -125,8 +125,8 @@ describe('measureGoals', () => {
       vi.mocked(execFileSync).mockReturnValue('80\n');
       const goals = [makeGoal({ measure: { cmd: 'echo 80', target: 20, direction: 'down' } })];
       const [m] = measureGoals(goals, '/repo');
-      // gap = (80 - 20) / 80 * 100 = 75%
-      expect(m.gapPercent).toBe(75);
+      // gap = min(100, (80 - 20) / 20 * 100) = min(100, 300) = 100%
+      expect(m.gapPercent).toBe(100);
       expect(m.met).toBe(false);
     });
 
@@ -146,12 +146,12 @@ describe('measureGoals', () => {
       expect(m.met).toBe(true);
     });
 
-    it('target = 0, value > 0: gap = 100%', () => {
+    it('target = 0, value > 0: gap = absolute value (capped at 100)', () => {
       vi.mocked(execFileSync).mockReturnValue('42\n');
       const goals = [makeGoal({ measure: { cmd: 'echo 42', target: 0, direction: 'down' } })];
       const [m] = measureGoals(goals, '/repo');
-      // special case: target=0 and value>0 → 100%
-      expect(m.gapPercent).toBe(100);
+      // target=0: gap = min(100, value - target) = min(100, 42) = 42%
+      expect(m.gapPercent).toBe(42);
       expect(m.met).toBe(false);
     });
 

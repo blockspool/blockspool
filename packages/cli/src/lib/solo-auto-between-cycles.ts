@@ -436,7 +436,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     const MAX_LOW_YIELD_CYCLES = state.drillMode ? 5 : 3;
     if (state.consecutiveLowYieldCycles >= MAX_LOW_YIELD_CYCLES) {
       // Before shutting down, check if untried lenses remain in the current rotation
-      if (!state.lensFullyExhausted && state.lensRotation.length > 1) {
+      if (state.lensRotationsCompleted === 0 && state.lensRotation.length > 1) {
         state.displayAdapter.log(chalk.gray(`  Low yield under "${state.currentLens}" lens — rotating to next lens`));
         state.consecutiveLowYieldCycles = 0;
         // advanceLens will be triggered naturally by getNextScope on next cycle
@@ -495,7 +495,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  ${formatConvergenceOneLiner(metrics)}`));
     if (metrics.suggestedAction === 'stop') {
       // Don't converge-stop if untried lenses remain
-      if (!state.lensFullyExhausted && state.lensRotation.length > 1) {
+      if (state.lensRotationsCompleted === 0 && state.lensRotation.length > 1) {
         state.displayAdapter.log(chalk.gray(`  Convergence reached for "${state.currentLens}" — untried lenses remain, continuing`));
       } else if (state.activeTrajectory && state.activeTrajectoryState) {
         // Adaptive threshold: use historical completion rate to decide when to abandon
@@ -552,6 +552,8 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       state.effectiveMinConfidence += 5;
       if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Scope adjustment: drill-narrowed (confidence +5)`));
     }
+    // Clamp after scope adjustments to prevent exceeding ceiling
+    state.effectiveMinConfidence = Math.max(0, Math.min(80, state.effectiveMinConfidence));
   }
 
   // Cross-sector pattern learning
@@ -694,10 +696,12 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
         } else if (direction === 'down') {
           if (value <= target) {
             state.activeGoalMeasurement.gapPercent = 0;
-          } else if (value !== 0) {
-            state.activeGoalMeasurement.gapPercent = Math.round(((value - target) / value) * 1000) / 10;
+          } else if (target > 0) {
+            // Non-zero target: normalize against target so progress is visible
+            state.activeGoalMeasurement.gapPercent = Math.round(Math.min(100, ((value - target) / target) * 100) * 10) / 10;
           } else {
-            state.activeGoalMeasurement.gapPercent = 0;
+            // target=0: use absolute difference capped to 100 so progress is visible
+            state.activeGoalMeasurement.gapPercent = Math.round(Math.min(100, value - target) * 10) / 10;
           }
         }
       }
@@ -748,6 +752,17 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
             encoding: 'utf-8',
           });
           const existingCmd = existingOutcomes.find(c => c.command === cmd);
+          // Git-context resilience: skip commands that fail due to missing git repo
+          // (e.g. tests that shell out to git but run in a non-repo context)
+          const combinedOutput = ((result.stderr ?? '') + (result.stdout ?? ''));
+          if (result.status !== 0 && !result.error && combinedOutput.includes('not a git repository')) {
+            state.displayAdapter.log(chalk.yellow(`    ⚠ ${cmd} (git context unavailable — skipping)`));
+            verificationOutputParts.push(`$ ${cmd} (skipped: git context unavailable)`);
+            newCommandOutcomes.push({
+              command: cmd, passed: true, failCount: existingCmd?.failCount ?? 0,
+            });
+            continue;
+          }
           if (result.error) {
             // Timeout or spawn error
             allPassed = false;

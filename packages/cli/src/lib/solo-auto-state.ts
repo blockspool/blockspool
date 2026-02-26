@@ -1319,6 +1319,8 @@ export function getNextScope(state: AutoSessionState, _depth = 0): string | null
     state.sessionScannedSectors.clear();
     state.lensIndex = 0;
     state.currentLens = state.lensRotation[0];
+    // Reset exhaustion flag after clearing — the fresh rotation has untried pairs again
+    state.lensFullyExhausted = false;
     // Pick the first sector of the fresh rotation immediately
     // (avoid a wasted 30s idle cycle). Guard against infinite recursion
     // in case all sectors are exhausted even after reset.

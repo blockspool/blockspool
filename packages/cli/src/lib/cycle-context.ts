@@ -114,7 +114,7 @@ export function computeConvergenceMetrics(
   drillContext?: { completionRate: number; step1FailureRate: number; consecutiveInsufficient: number; trajectoryCount: number },
 ): ConvergenceMetrics {
   const prodSectors = sectorState.sectors.filter(s => s.production && s.fileCount > 0);
-  const polishedCount = prodSectors.filter(s => (s as any).polishedAt > 0).length;
+  const polishedCount = prodSectors.filter(s => (s.polishedAt ?? 0) > 0).length;
   const polishedSectorPct = prodSectors.length > 0
     ? Math.round((polishedCount / prodSectors.length) * 100)
     : 0;

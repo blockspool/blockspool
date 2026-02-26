@@ -1,6 +1,6 @@
 {
   "name": "@promptwheel/sqlite",
-  "version": "0.7.21",
+  "version": "0.7.22",
   "description": "SQLite adapter for PromptWheel - zero-config local mode",
   "author": "PromptWheel",
   "homepage": "https://promptwheel.com",

@@ -511,14 +511,15 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
             state.drillMode = false;
             state.displayAdapter.drillStateChanged(null);
           }
-        } else if (drillResult === 'stale') {
-          // Proposals dropped by freshness filter — don't count toward disable
-          // (external changes will eventually un-stale, so just wait)
+        } else if (drillResult === 'stale' || drillResult === 'cooldown') {
+          // Stale: proposals dropped by freshness filter — wait for external changes.
+          // Cooldown: timer hasn't expired — system is waiting, not failing.
+          // Neither should count toward disable, and both should recover the counter.
           if (state.drillConsecutiveInsufficient > 0) {
             state.drillConsecutiveInsufficient--; // recover toward 0
           }
         }
-        // 'cooldown', 'failed', 'insufficient', 'low_quality', 'stale' → fall through to normal cycle
+        // 'failed' → fall through to normal cycle (don't change counter)
       } catch (err) {
         if (state.options.verbose) {
           const msg = err instanceof Error ? err.message : String(err);

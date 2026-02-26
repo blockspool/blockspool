@@ -282,12 +282,14 @@ export function measureGoals(goals: Formula[], repoRoot: string): GoalMeasuremen
         if (value <= target) {
           gapPercent = 0;
           met = true;
-        } else if (value !== 0) {
-          gapPercent = ((value - target) / value) * 100;
+        } else if (target > 0) {
+          // Non-zero target: normalize against target so progress is visible
+          // target=10, value=15 → 50%; value=12 → 20%; value=10 → 0%
+          gapPercent = Math.min(100, ((value - target) / target) * 100);
         } else {
-          // value is 0 but > target (target is negative): shouldn't happen, treat as met
-          gapPercent = 0;
-          met = true;
+          // target=0: use absolute difference capped to 100 so progress is visible
+          // value=50 → 50%, value=10 → 10%, value=1 → 1%
+          gapPercent = Math.min(100, value - target);
         }
       }
     }

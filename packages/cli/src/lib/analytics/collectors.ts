@@ -2,7 +2,7 @@ import { analyzeErrorLedger } from '../error-ledger.js';
 import type { MetricsSummary } from '../metrics.js';
 import { analyzePrOutcomes } from '../pr-outcomes.js';
 import type { RunHistoryEntry } from '../run-history.js';
-import { readRunState } from '../run-state.js';
+import { readRunState, getFormulaDisplayMetrics } from '../run-state.js';
 import { analyzeSpindleIncidents } from '../spindle-incidents.js';
 import { loadTrajectoryState, loadTrajectories } from '../trajectory.js';
 
@@ -58,6 +58,7 @@ const COLLECTORS: CollectorRegistration[] = [
   { collect: collectShutdownReasonInsights },
   { collect: collectDrillPerformanceInsights },
   { collect: collectTrajectoryProgressInsights, failSoft: true },
+  { collect: collectFormulaPerformanceInsights, failSoft: true },
 ];
 
 export function collectCompactAnalyticsInsights(context: CompactAnalyticsCollectorContext): CompactAnalyticsInsight[] {
@@ -442,8 +443,8 @@ export function collectDrillPerformanceInsights(
 
   if (drillSessions.length >= 4) {
     const mid = Math.floor(drillSessions.length / 2);
-    const firstHalf = drillSessions.slice(mid);
-    const secondHalf = drillSessions.slice(0, mid);
+    const firstHalf = drillSessions.slice(0, mid);
+    const secondHalf = drillSessions.slice(mid);
 
     const firstTotal = firstHalf.reduce((sum, entry) => sum + entry.drillStats.stepsTotal, 0);
     const firstRate = firstTotal > 0
@@ -505,6 +506,32 @@ export function collectTrajectoryProgressInsights(
   return [
     attention(`Trajectory "${trajectoryState.trajectoryName}": ${statusParts.join(', ')}${paused} | stalled`),
   ];
+}
+
+export function collectFormulaPerformanceInsights(
+  context: CompactAnalyticsCollectorContext,
+): CompactAnalyticsInsight[] {
+  const runState = readRunState(context.repoRoot);
+  const formulaStats = runState.formulaStats;
+
+  if (!formulaStats || Object.keys(formulaStats).length === 0) {
+    return [];
+  }
+
+  const formulaLines: string[] = [];
+  for (const [name, stats] of Object.entries(formulaStats).sort((a, b) => b[1].cycles - a[1].cycles)) {
+    if (stats.cycles === 0) continue;
+    const metrics = getFormulaDisplayMetrics(stats);
+    const successPct = Math.round(metrics.successRate * 100);
+    const yieldStr = metrics.proposalsPerCycle.toFixed(1);
+    formulaLines.push(`${name}: ${successPct}% success (${stats.ticketsSucceeded}/${stats.ticketsTotal}), ${yieldStr}/cycle`);
+  }
+
+  if (formulaLines.length === 0) {
+    return [];
+  }
+
+  return [working(`Formulas: ${formulaLines.slice(0, 4).join(' | ')}`)];
 }
 
 function working(message: string): CompactAnalyticsInsight {

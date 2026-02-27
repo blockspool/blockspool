@@ -51,18 +51,24 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
       dry_run: z.boolean().optional().describe('Dry-run mode: scout only, no ticket creation or execution (default: false).'),
       qa_commands: z.array(z.string()).optional().describe('QA commands to always run after every ticket (e.g. ["pytest", "cargo test"]).'),
       enable_custom_tools: z.boolean().optional().describe('Explicitly enable repository custom tools from .promptwheel/tools/*.json (default: false, unless PROMPTWHEEL_ENABLE_CUSTOM_TOOLS is set).'),
+      safe: z.boolean().optional().describe('Safe mode: restrict to low-risk categories only (refactor, docs, types, perf). Blocks security, fix, cleanup, deps, auth, config, migration.'),
     },
     async (params) => {
       const state = getState();
 
       // Load and apply formula if specified
+      // Safe mode: restrict to low-risk categories
+      const safeCategories = params.safe
+        ? ['refactor', 'docs', 'types', 'perf']
+        : params.categories;
+
       let config: SessionConfig = {
         hours: params.hours,
         formula: params.formula,
         deep: params.deep,
         continuous: params.continuous,
         scope: params.scope,
-        categories: params.categories,
+        categories: safeCategories,
         min_confidence: params.min_confidence,
         max_proposals: params.max_proposals,
         step_budget: params.step_budget,

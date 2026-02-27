@@ -15,9 +15,9 @@ import type { ChildProcess } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import { soloRunTicket } from '../lib/solo-ticket.js';
 import { buildTicketPrompt } from '../lib/solo-prompt-builder.js';
-import { runClaude } from '../lib/execution-backends/index.js';
+import { runClaudeCli } from '../lib/execution-backends/index.js';
 import type { RunTicketOptions } from '../lib/solo-ticket-types.js';
-import type { ClaudeResult } from '../lib/execution-backends/index.js';
+import type { ExecutionResult } from '../lib/execution-backends/index.js';
 
 // Mock all external dependencies
 vi.mock('node:child_process');
@@ -176,7 +176,7 @@ describe('solo-ticket: buildTicketPrompt', () => {
   });
 });
 
-describe('solo-ticket: runClaude', () => {
+describe('solo-ticket: runClaudeCli', () => {
   let mockSpawn: ReturnType<typeof vi.fn>;
   const originalEnv = process.env.ANTHROPIC_API_KEY;
 
@@ -203,7 +203,7 @@ describe('solo-ticket: runClaude', () => {
     });
     mockSpawn.mockReturnValue(mockChild as any);
 
-    const promise = runClaude({
+    const promise = runClaudeCli({
       worktreePath: '/tmp/worktree',
       prompt: 'Test prompt',
       timeoutMs: 5000,
@@ -235,7 +235,7 @@ describe('solo-ticket: runClaude', () => {
     });
     mockSpawn.mockReturnValue(mockChild as any);
 
-    const promise = runClaude({
+    const promise = runClaudeCli({
       worktreePath: '/tmp/worktree',
       prompt: 'Test prompt',
       timeoutMs: 5000,
@@ -263,7 +263,7 @@ describe('solo-ticket: runClaude', () => {
     });
     mockSpawn.mockReturnValue(mockChild as any);
 
-    const promise = runClaude({
+    const promise = runClaudeCli({
       worktreePath: '/tmp/worktree',
       prompt: 'Test prompt',
       timeoutMs: 5000,
@@ -287,7 +287,7 @@ describe('solo-ticket: runClaude', () => {
     });
     mockSpawn.mockReturnValue(mockChild as any);
 
-    const promise = runClaude({
+    const promise = runClaudeCli({
       worktreePath: '/tmp/worktree',
       prompt: 'Test prompt',
       timeoutMs: 100, // Very short timeout
@@ -314,7 +314,7 @@ describe('solo-ticket: runClaude', () => {
     });
     mockSpawn.mockReturnValue(mockChild as any);
 
-    const promise = runClaude({
+    const promise = runClaudeCli({
       worktreePath: '/tmp/worktree',
       prompt: 'Test prompt',
       timeoutMs: 5000,
@@ -337,7 +337,7 @@ describe('solo-ticket: runClaude', () => {
     });
     mockSpawn.mockReturnValue(mockChild as any);
 
-    const promise = runClaude({
+    const promise = runClaudeCli({
       worktreePath: '/tmp/worktree',
       prompt: 'Test prompt content',
       timeoutMs: 5000,
@@ -361,7 +361,7 @@ describe('solo-ticket: runClaude', () => {
     mockSpawn.mockReturnValue(mockChild as any);
 
     const onProgress = vi.fn();
-    const promise = runClaude({
+    const promise = runClaudeCli({
       worktreePath: '/tmp/worktree',
       prompt: 'Test prompt',
       timeoutMs: 5000,
@@ -387,7 +387,7 @@ describe('solo-ticket: runClaude', () => {
     mockSpawn.mockReturnValue(mockChild as any);
 
     const onProgress = vi.fn();
-    const promise = runClaude({
+    const promise = runClaudeCli({
       worktreePath: '/tmp/worktree',
       prompt: 'Test prompt',
       timeoutMs: 5000,
@@ -410,7 +410,7 @@ describe('solo-ticket: runClaude', () => {
     });
     mockSpawn.mockReturnValue(mockChild as any);
 
-    const promise = runClaude({
+    const promise = runClaudeCli({
       worktreePath: '/tmp/worktree',
       prompt: 'Test prompt',
       timeoutMs: 5000,
@@ -436,7 +436,7 @@ describe('solo-ticket: runClaude', () => {
     });
     mockSpawn.mockReturnValue(mockChild as any);
 
-    const promise = runClaude({
+    const promise = runClaudeCli({
       worktreePath: '/tmp/worktree',
       prompt: 'Test prompt',
       timeoutMs: 5000,

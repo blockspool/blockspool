@@ -1,7 +1,7 @@
 ---
 name: run
 description: Run PromptWheel — autonomous agent orchestration with human review. Default is spin+drill. Use `plan` for human-in-the-loop mode.
-argument-hint: "[plan] [hours=N] [formula=name] [cycles=N] [deep] [parallel=N] [no-drill]"
+argument-hint: "[plan] [hours=N] [formula=name] [cycles=N] [deep] [parallel=N] [no-drill] [safe]"
 ---
 
 Start a PromptWheel session. Default mode is **spin+drill**: scout, fix, repeat with auto-generated trajectories and parallel subagents.
@@ -18,6 +18,7 @@ Parse from `$ARGUMENTS` (all optional, key=value format):
 - **scope** — Directory to scan (auto-detected)
 - **deep** — Enable deep architectural review mode
 - **no-drill** — Disable drill mode (auto-trajectory generation in spin)
+- **safe** — Safe mode: restrict to low-risk categories only (refactor, docs, types, perf)
 
 **Advanced (rarely needed):**
 - **cycles** — Number of scout→execute cycles (default: 1)

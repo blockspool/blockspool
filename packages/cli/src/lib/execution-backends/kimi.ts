@@ -6,7 +6,7 @@
  */
 
 import { runBackendHarness } from './process-runner.js';
-import type { BackendRunOptions, ClaudeResult, ExecutionBackend } from './types.js';
+import type { BackendRunOptions, ExecutionResult, ExecutionBackend } from './types.js';
 
 export class KimiExecutionBackend implements ExecutionBackend {
   readonly name = 'kimi';
@@ -18,7 +18,7 @@ export class KimiExecutionBackend implements ExecutionBackend {
     this.model = opts?.model ?? 'kimi-k2.5';
   }
 
-  async run(opts: BackendRunOptions): Promise<ClaudeResult> {
+  async run(opts: BackendRunOptions): Promise<ExecutionResult> {
     const { worktreePath, prompt, timeoutMs, verbose, onProgress, onRawOutput } = opts;
     const args = ['--print', '--model', this.model];
 

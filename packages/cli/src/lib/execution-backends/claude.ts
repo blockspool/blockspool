@@ -3,7 +3,7 @@
  */
 
 import { formatProgressTick, runBackendHarness } from './process-runner.js';
-import type { BackendRunOptions, ClaudeResult, ExecutionBackend } from './types.js';
+import type { BackendRunOptions, ExecutionResult, ExecutionBackend } from './types.js';
 import {
   parseStreamJsonLine,
   isStreamJsonOutput,
@@ -29,15 +29,15 @@ function detectPhase(text: string): string | null {
 export class ClaudeExecutionBackend implements ExecutionBackend {
   readonly name = 'claude';
 
-  run(opts: BackendRunOptions): Promise<ClaudeResult> {
-    return runClaude(opts);
+  run(opts: BackendRunOptions): Promise<ExecutionResult> {
+    return runClaudeCli(opts);
   }
 }
 
 /**
  * Run Claude Code CLI
  */
-export async function runClaude(opts: BackendRunOptions): Promise<ClaudeResult> {
+export async function runClaudeCli(opts: BackendRunOptions): Promise<ExecutionResult> {
   const { worktreePath, prompt, timeoutMs, verbose, onProgress, onRawOutput } = opts;
 
   // Gate: require ANTHROPIC_API_KEY for automated Claude Code usage

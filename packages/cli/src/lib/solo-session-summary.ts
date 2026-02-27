@@ -24,7 +24,7 @@ export interface SessionSummaryContext {
   milestoneMode: boolean;
   isContinuous: boolean;
   shutdownRequested: boolean;
-  shutdownReason?: 'user_signal' | 'user_quit' | 'convergence' | 'low_yield' | 'branch_diverged' | 'time_limit' | 'pr_limit' | 'completed' | null;
+  shutdownReason?: 'user_signal' | 'user_quit' | 'convergence' | 'low_yield' | 'idle' | 'branch_diverged' | 'time_limit' | 'pr_limit' | 'rate_limited' | 'completed' | null;
   maxPrs: number;
   endTime: number | null | undefined;
   totalMinutes: number | undefined;
@@ -292,7 +292,11 @@ export function displayFinalSummary(ctx: SessionSummaryContext): void {
 
   if (ctx.isContinuous) {
     console.log();
-    if (ctx.shutdownRequested) {
+    if (ctx.shutdownReason === 'rate_limited') {
+      console.log(chalk.gray('Stopped: API rate/usage limit reached'));
+    } else if (ctx.shutdownReason === 'idle') {
+      console.log(chalk.gray('Stopped: No productive work for 15 consecutive cycles'));
+    } else if (ctx.shutdownRequested) {
       console.log(chalk.gray('Stopped: User requested shutdown'));
     } else if (ctx.totalPrsCreated >= ctx.maxPrs) {
       console.log(chalk.gray(`Stopped: Reached PR limit (${ctx.maxPrs})`));

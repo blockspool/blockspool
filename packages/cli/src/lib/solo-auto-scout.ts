@@ -290,10 +290,29 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
       },
     });
   } catch (scoutErr) {
+    const errMsg = scoutErr instanceof Error ? scoutErr.message : String(scoutErr);
+
+    // Rate limit → graceful shutdown instead of re-throwing
+    const { isRateLimitError } = await import('./execution-backends/process-runner.js');
+    if (isRateLimitError(errMsg)) {
+      state.shutdownRequested = true;
+      state.shutdownReason = 'rate_limited';
+      state.displayAdapter.log(chalk.red('  API rate/usage limit reached — shutting down gracefully'));
+      return {
+        proposals: [],
+        scoutResult: { proposals: [], project: state.project, scannedFiles: 0, errors: [errMsg], durationMs: 0, success: false, run: {} as never, tickets: [] },
+        scope,
+        cycleFormula,
+        isDeepCycle,
+        isDocsAuditCycle,
+        shouldRetry: false,
+        shouldBreak: true,
+      };
+    }
+
     state.displayAdapter.scoutFailed('Scout failed');
     // Error ledger for scout failures
     try {
-      const errMsg = scoutErr instanceof Error ? scoutErr.message : String(scoutErr);
       appendErrorLedger(state.repoRoot, {
         ts: Date.now(),
         ticketId: '',

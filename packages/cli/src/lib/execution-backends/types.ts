@@ -18,13 +18,15 @@ export interface BackendRunOptions {
 /**
  * Execution result with full details for artifact storage
  */
-export interface ClaudeResult {
+export interface ExecutionResult {
   success: boolean;
   error?: string;
   stdout: string;
   stderr: string;
   exitCode: number | null;
   timedOut: boolean;
+  /** True when the backend process failed due to an API rate or usage limit */
+  rateLimited?: boolean;
   durationMs: number;
   /** Parsed JSONL events when using --output-format stream-json (undefined if text mode) */
   traceEvents?: StreamJsonEvent[];
@@ -39,7 +41,7 @@ export interface ExecutionBackend {
   /** Human-readable name for logging */
   readonly name: string;
   /** Run a prompt against a worktree and return the result */
-  run(opts: BackendRunOptions): Promise<ClaudeResult>;
+  run(opts: BackendRunOptions): Promise<ExecutionResult>;
 }
 
 export interface ProcessRunnerChunkContext {

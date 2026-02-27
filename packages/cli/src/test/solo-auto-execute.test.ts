@@ -244,6 +244,8 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
 
     effectiveMinConfidence: 20,
     consecutiveLowYieldCycles: 0,
+    consecutiveIdleCycles: 0,
+    _prevCycleCompleted: 0,
 
     sessionPhase: 'deep',
     allTicketOutcomes: [],

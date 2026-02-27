@@ -128,6 +128,8 @@ export interface AutoConfig {
    * - 'relaxed': Only direct file overlap + glob overlap (most parallel, riskier)
    */
   conflictSensitivity?: 'strict' | 'normal' | 'relaxed';
+  /** Max consecutive idle cycles (no completed tickets) before spin stops (default: 15) */
+  maxIdleCycles?: number;
   /**
    * MCP integration providers invoked on cadence during spin.
    * Alternative to standalone `.promptwheel/integrations.yaml`.
@@ -257,6 +259,7 @@ export const DEFAULT_AUTO_CONFIG: AutoConfig = {
   learningsBudget: 2000,
   learningsDecayRate: 3,
   conflictSensitivity: 'relaxed',
+  maxIdleCycles: 15,
   drill: {
     enabled: true,
     minProposals: 3,

@@ -143,6 +143,8 @@ function makeState(overrides: Partial<any> = {}): any {
     runMode: 'planning' as const,
     effectiveMinConfidence: 20,
     consecutiveLowYieldCycles: 0,
+    consecutiveIdleCycles: 0,
+    _prevCycleCompleted: 0,
     pendingPrUrls: [],
     maxPrs: 10,
     deliveryMode: 'pr',

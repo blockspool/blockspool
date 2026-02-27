@@ -60,6 +60,26 @@ export interface PreCycleResult {
 }
 
 export async function runPreCycleMaintenance(state: AutoSessionState): Promise<PreCycleResult> {
+  // Save previous cycle's completed count before resetting outcomes.
+  // This lets us detect idle cycles even when retry paths skip post-cycle.
+  state._prevCycleCompleted = state.cycleOutcomes.filter(o => o.status === 'completed').length;
+
+  // Idle cycle budget — catches ALL empty-cycle paths (including retry continues)
+  if (state.cycleCount >= 2) {
+    if (state._prevCycleCompleted > 0) {
+      state.consecutiveIdleCycles = 0;
+    } else {
+      state.consecutiveIdleCycles++;
+    }
+    const MAX_IDLE_CYCLES = state.autoConf.maxIdleCycles ?? 15;
+    if (state.consecutiveIdleCycles >= MAX_IDLE_CYCLES) {
+      state.shutdownRequested = true;
+      if (state.shutdownReason === null) state.shutdownReason = 'idle';
+      state.displayAdapter.log(chalk.yellow(`  ${state.consecutiveIdleCycles} consecutive cycles without completed work — stopping`));
+      return { shouldSkipCycle: true };
+    }
+  }
+
   state.cycleCount++;
   state.cycleOutcomes = [];
   // scope is computed in scout phase; pre-cycle doesn't need it
@@ -431,7 +451,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
 
   // Low-yield cycle detection — primary Nash equilibrium stop signal
   const completedThisCount = state.cycleOutcomes.filter(o => o.status === 'completed').length;
-  if (completedThisCount === 0 && state.cycleCount >= 2 && !state.currentTrajectoryStep) {
+  if (completedThisCount === 0 && state.cycleCount >= 2) {
     state.consecutiveLowYieldCycles++;
     const MAX_LOW_YIELD_CYCLES = state.drillMode ? 5 : 3;
     if (state.consecutiveLowYieldCycles >= MAX_LOW_YIELD_CYCLES) {

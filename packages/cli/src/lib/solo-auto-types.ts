@@ -167,13 +167,17 @@ export interface SessionRuntime {
   sessionScannedSectors: Set<string>;
   effectiveMinConfidence: number;
   consecutiveLowYieldCycles: number;
+  /** Consecutive main-loop iterations with zero completed tickets (catches all empty-cycle paths) */
+  consecutiveIdleCycles: number;
+  /** Completed ticket count from previous cycle — set before resetting cycleOutcomes */
+  _prevCycleCompleted: number;
   sessionPhase: 'warmup' | 'deep' | 'cooldown';
   allTicketOutcomes: TicketOutcome[];
   cycleOutcomes: TicketOutcome[];
   prMetaMap: Map<string, { sectorId: string; formula: string }>;
   qaBaseline: Map<string, boolean> | null;
   shutdownRequested: boolean;
-  shutdownReason: 'user_signal' | 'user_quit' | 'convergence' | 'low_yield' | 'branch_diverged' | 'time_limit' | 'pr_limit' | 'completed' | null;
+  shutdownReason: 'user_signal' | 'user_quit' | 'convergence' | 'low_yield' | 'idle' | 'branch_diverged' | 'time_limit' | 'pr_limit' | 'rate_limited' | 'completed' | null;
   currentlyProcessing: boolean;
   pullInterval: number;
   pullPolicy: 'halt' | 'warn';

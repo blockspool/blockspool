@@ -615,6 +615,12 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       state.cycleOutcomes.push(outcome);
     } else {
       state.totalFailed++;
+      // Rate limit → graceful shutdown
+      if (result.failureReason === 'rate_limited') {
+        state.shutdownRequested = true;
+        state.shutdownReason = 'rate_limited';
+        state.displayAdapter.log(chalk.red('  API rate/usage limit reached — shutting down gracefully'));
+      }
       recordDedupEntry(state.repoRoot, proposal.title, false, (result.failureReason as any) ?? 'agent_error', undefined, proposal.files ?? proposal.allowed_paths);
       if (state.sectorState && state.currentSectorId) recordTicketOutcome(state.sectorState, state.currentSectorId, false, proposal.category);
       recordFormulaTicketOutcome(state.repoRoot, state.currentFormulaName, false);

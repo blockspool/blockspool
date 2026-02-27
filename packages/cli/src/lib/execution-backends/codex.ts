@@ -7,7 +7,7 @@
  */
 
 import { formatElapsed, runBackendHarness } from './process-runner.js';
-import type { BackendRunOptions, ClaudeResult, ExecutionBackend } from './types.js';
+import type { BackendRunOptions, ExecutionResult, ExecutionBackend } from './types.js';
 
 /** Parse Codex JSONL output to extract meaningful progress info */
 function parseCodexEvent(line: string): { phase?: string; detail?: string; message?: string } | null {
@@ -85,7 +85,7 @@ export class CodexExecutionBackend implements ExecutionBackend {
     this.unsafeBypassSandbox = opts?.unsafeBypassSandbox ?? false;
   }
 
-  async run(opts: BackendRunOptions): Promise<ClaudeResult> {
+  async run(opts: BackendRunOptions): Promise<ExecutionResult> {
     const { worktreePath, prompt, timeoutMs, onProgress, onRawOutput } = opts;
 
     const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');

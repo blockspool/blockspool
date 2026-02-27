@@ -1073,6 +1073,8 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
         ? persisted : configured;
     })(),
     consecutiveLowYieldCycles: 0,
+    consecutiveIdleCycles: 0,
+    _prevCycleCompleted: 0,
 
     sessionPhase,
     allTicketOutcomes: [],
@@ -1317,6 +1319,15 @@ export function getNextScope(state: AutoSessionState, _depth = 0): string | null
     state.lensFullyExhausted = true;  // signals shutdown logic that a full rotation completed
     state.lensMatrix.clear();
     state.sessionScannedSectors.clear();
+    // Pre-mark unchanged sectors as already scanned — only sectors with
+    // actual git changes become eligible for rescanning after a full rotation.
+    if (state.sectorState) {
+      for (const sector of state.sectorState.sectors) {
+        if (!sectorHasChanges(state.repoRoot, sector)) {
+          state.sessionScannedSectors.add(sector.path);
+        }
+      }
+    }
     state.lensIndex = 0;
     state.currentLens = state.lensRotation[0];
     // Reset exhaustion flag after clearing — the fresh rotation has untried pairs again

@@ -9,7 +9,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
-import type { ClaudeResult, ExecutionBackend } from './execution-backends/index.js';
+import type { ExecutionResult, ExecutionBackend } from './execution-backends/index.js';
 
 const TOOL_OUTPUT_CAP = 10_000;
 const COMMAND_TIMEOUT_MS = 60_000;
@@ -181,7 +181,7 @@ export class OpenAILocalExecutionBackend implements ExecutionBackend {
     timeoutMs: number;
     verbose: boolean;
     onProgress: (msg: string) => void;
-  }): Promise<ClaudeResult> {
+  }): Promise<ExecutionResult> {
     const { worktreePath, prompt, timeoutMs, verbose, onProgress } = opts;
     const startTime = Date.now();
 

@@ -216,6 +216,39 @@ describe('validatePlanScope', () => {
     );
     expect(result.valid).toBe(true);
   });
+
+  it('validates plan with Next.js dynamic route bracket paths', () => {
+    const bracketPolicy = deriveScopePolicy({
+      allowedPaths: [
+        'cloud/app/api/projects/[projectId]/proposals/[proposalId]/approve/route.ts',
+        'cloud/app/api/projects/[projectId]/proposals/[proposalId]/reject/route.ts',
+      ],
+      category: 'security',
+      maxLinesPerTicket: 500,
+    });
+    const result = validatePlanScope(
+      [
+        { path: 'cloud/app/api/projects/[projectId]/proposals/[proposalId]/approve/route.ts', action: 'modify', reason: 'add role check' },
+        { path: 'cloud/app/api/projects/[projectId]/proposals/[proposalId]/reject/route.ts', action: 'modify', reason: 'add role check' },
+      ],
+      20, 'low', bracketPolicy,
+    );
+    expect(result.valid).toBe(true);
+    expect(result.violations).toEqual([]);
+  });
+
+  it('rejects files not matching bracket paths', () => {
+    const bracketPolicy = deriveScopePolicy({
+      allowedPaths: ['cloud/app/api/projects/[projectId]/route.ts'],
+      category: 'security',
+      maxLinesPerTicket: 500,
+    });
+    const result = validatePlanScope(
+      [{ path: 'cloud/app/api/projects/other/route.ts', action: 'modify', reason: 'test' }],
+      10, 'low', bracketPolicy,
+    );
+    expect(result.valid).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -251,6 +284,24 @@ describe('isFileAllowed', () => {
 
   it('denies files with credentials in name', () => {
     expect(isFileAllowed('src/credentials.json', policy)).toBe(false);
+  });
+
+  it('allows files with Next.js bracket paths (literal match)', () => {
+    const bracketPolicy = deriveScopePolicy({
+      allowedPaths: ['cloud/app/api/projects/[projectId]/proposals/[proposalId]/approve/route.ts'],
+      category: 'security',
+      maxLinesPerTicket: 500,
+    });
+    expect(isFileAllowed('cloud/app/api/projects/[projectId]/proposals/[proposalId]/approve/route.ts', bracketPolicy)).toBe(true);
+  });
+
+  it('denies non-matching paths when allowed_paths contain brackets', () => {
+    const bracketPolicy = deriveScopePolicy({
+      allowedPaths: ['cloud/app/api/projects/[projectId]/route.ts'],
+      category: 'security',
+      maxLinesPerTicket: 500,
+    });
+    expect(isFileAllowed('cloud/app/api/projects/other/route.ts', bracketPolicy)).toBe(false);
   });
 
   it('allows files inside directory-style allowed_paths (trailing slash)', () => {

@@ -32,8 +32,14 @@ export { detectCredentialInContent as containsCredentials } from '@promptwheel/c
  * - Everything else is left as-is
  */
 function normalizeAllowedGlob(glob: string): string {
-  if (glob.endsWith('/')) return glob + '**';
-  return glob;
+  let result = glob;
+  if (result.endsWith('/')) result = result + '**';
+  // Escape brackets in non-glob paths so Next.js dynamic route dirs like
+  // [projectId] are matched literally instead of as character classes.
+  if (!/[*?]/.test(result)) {
+    result = result.replace(/\[/g, '\\[').replace(/\]/g, '\\]');
+  }
+  return result;
 }
 
 function normalizePathForMatch(filePath: string): string {

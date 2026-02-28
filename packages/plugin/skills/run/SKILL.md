@@ -193,9 +193,10 @@ This returns an `output_file` path immediately. Use `Read` to check progress. Fo
 
 1. Wait for ALL Task tool results to return (or read background output files)
 2. Parse each subagent's output for the result block (TICKET_ID, STATUS, PR_URL, BRANCH, SUMMARY)
-3. For each ticket, call `promptwheel_ticket_event` to record the outcome:
-   - Success: `type: "PR_CREATED"`, `payload: { ticket_id, url: "<pr-url>", branch: "<branch>" }`
-   - Failure: `type: "TICKET_RESULT"`, `payload: { ticket_id, status: "failed", reason: "..." }`
+3. For each ticket, call `promptwheel_ticket_event` to record the outcome. **Always include the `inline_completion` contract** to bypass phase checks (subagents may complete work before the state machine reaches EXECUTE):
+   - Success: `type: "TICKET_RESULT"`, `payload: { ticket_id, status: "success", changed_files: [...], inline_completion: { contract_version: 1, mode: "full", ticket_id: "<ticket_id>", event_type: "TICKET_RESULT" } }`
+   - Success with PR: `type: "PR_CREATED"`, `payload: { ticket_id, url: "<pr-url>", branch: "<branch>", inline_completion: { contract_version: 1, mode: "full", ticket_id: "<ticket_id>", event_type: "PR_CREATED" } }`
+   - Failure: `type: "TICKET_RESULT"`, `payload: { ticket_id, status: "failed", reason: "...", inline_completion: { contract_version: 1, mode: "full", ticket_id: "<ticket_id>", event_type: "TICKET_RESULT" } }`
 4. Update task tracking: mark each ticket task as completed
 5. Call `promptwheel_advance` to continue (next batch or next scout cycle)
 

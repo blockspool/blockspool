@@ -464,7 +464,7 @@ describe('Fix 4 — ticket cleanup on session end', () => {
     run.end();
 
     // Simulate the cleanup logic from end_session
-    for (const status of ['ready', 'in_progress'] as const) {
+    for (const status of ['ready', 'in_progress', 'blocked'] as const) {
       const staleTickets = await repos.tickets.listByProject(db, projectId, { status });
       for (const ticket of staleTickets) {
         await repos.tickets.updateStatus(db, ticket.id, 'aborted');
@@ -497,7 +497,7 @@ describe('Fix 4 — ticket cleanup on session end', () => {
     run.end();
 
     // Simulate cleanup
-    for (const status of ['ready', 'in_progress'] as const) {
+    for (const status of ['ready', 'in_progress', 'blocked'] as const) {
       const staleTickets = await repos.tickets.listByProject(db, projectId, { status });
       for (const t of staleTickets) {
         await repos.tickets.updateStatus(db, t.id, 'aborted');
@@ -508,7 +508,36 @@ describe('Fix 4 — ticket cleanup on session end', () => {
     expect(t!.status).toBe('aborted');
   });
 
-  it('does not abort done or blocked tickets', async () => {
+  it('aborts blocked tickets on session end', async () => {
+    startRun();
+
+    const blockedTicket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Blocked ticket',
+      description: 'Stuck on scope validation',
+      status: 'ready',
+      priority: 70,
+      category: 'refactor',
+      allowedPaths: [],
+      verificationCommands: [],
+    });
+    await repos.tickets.updateStatus(db, blockedTicket.id, 'blocked');
+
+    const projectId = run.require().project_id;
+    run.end();
+
+    for (const status of ['ready', 'in_progress', 'blocked'] as const) {
+      const staleTickets = await repos.tickets.listByProject(db, projectId, { status });
+      for (const t of staleTickets) {
+        await repos.tickets.updateStatus(db, t.id, 'aborted');
+      }
+    }
+
+    const blocked = await repos.tickets.getById(db, blockedTicket.id);
+    expect(blocked!.status).toBe('aborted');
+  });
+
+  it('does not abort done tickets', async () => {
     startRun();
 
     const doneTicket = await repos.tickets.create(db, {
@@ -523,23 +552,10 @@ describe('Fix 4 — ticket cleanup on session end', () => {
     });
     await repos.tickets.updateStatus(db, doneTicket.id, 'done');
 
-    const blockedTicket = await repos.tickets.create(db, {
-      projectId: project.id,
-      title: 'Blocked ticket',
-      description: 'Needs human review',
-      status: 'ready',
-      priority: 70,
-      category: 'refactor',
-      allowedPaths: [],
-      verificationCommands: [],
-    });
-    await repos.tickets.updateStatus(db, blockedTicket.id, 'blocked');
-
     const projectId = run.require().project_id;
     run.end();
 
-    // Simulate cleanup — only targets ready and in_progress
-    for (const status of ['ready', 'in_progress'] as const) {
+    for (const status of ['ready', 'in_progress', 'blocked'] as const) {
       const staleTickets = await repos.tickets.listByProject(db, projectId, { status });
       for (const t of staleTickets) {
         await repos.tickets.updateStatus(db, t.id, 'aborted');
@@ -547,9 +563,7 @@ describe('Fix 4 — ticket cleanup on session end', () => {
     }
 
     const done = await repos.tickets.getById(db, doneTicket.id);
-    const blocked = await repos.tickets.getById(db, blockedTicket.id);
     expect(done!.status).toBe('done');
-    expect(blocked!.status).toBe('blocked');
   });
 });
 

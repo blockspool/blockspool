@@ -25,21 +25,42 @@ import {
 // Re-export for existing consumers
 export { detectCredentialInContent as containsCredentials } from '@promptwheel/core/scope/shared';
 
+/** True when a path contains glob metacharacters (`*` or `?`). */
+function isGlobPattern(p: string): boolean {
+  return /[*?]/.test(p);
+}
+
 /**
- * Normalize an allowed_path for minimatch:
+ * Normalize an allowed_path for minimatch (only called for actual globs):
  * - Directory-style paths ending with `/` become `dir/**` (match anything inside)
- * - Paths without globs or extensions that look like directories get `/**` appended
- * - Everything else is left as-is
  */
 function normalizeAllowedGlob(glob: string): string {
   let result = glob;
   if (result.endsWith('/')) result = result + '**';
-  // Escape brackets in non-glob paths so Next.js dynamic route dirs like
-  // [projectId] are matched literally instead of as character classes.
-  if (!/[*?]/.test(result)) {
-    result = result.replace(/\[/g, '\\[').replace(/\]/g, '\\]');
-  }
   return result;
+}
+
+/**
+ * Check whether `candidate` matches `allowedPath`.
+ *
+ * Exact paths (no `*` or `?`) are string-compared after normalization.
+ * Glob patterns are passed through minimatch.
+ *
+ * This avoids routing literal file paths through a glob engine that
+ * misinterprets special characters (brackets, parentheses) common in
+ * framework conventions (Next.js `[param]`, route groups `(group)`).
+ */
+function matchesAllowedPath(candidate: string, allowedPath: string): boolean {
+  if (isGlobPattern(allowedPath)) {
+    return minimatch(candidate, normalizeAllowedGlob(allowedPath), { dot: true });
+  }
+  // Exact path — string compare after normalization.
+  // Also check with trailing-slash expansion for directory-style paths.
+  const normalizedAllowed = normalizePathForMatch(allowedPath);
+  if (candidate === normalizedAllowed) return true;
+  // Directory match: "cloud/app/foo" allows "cloud/app/foo/bar.ts"
+  if (allowedPath.endsWith('/') && candidate.startsWith(normalizedAllowed + '/')) return true;
+  return false;
 }
 
 function normalizePathForMatch(filePath: string): string {
@@ -264,8 +285,8 @@ export function validatePlanScope(
   // 7. Check each file is within allowed_paths (if any specified)
   if (policy.allowed_paths.length > 0) {
     for (const f of files) {
-      const isAllowed = policy.allowed_paths.some(glob =>
-        minimatch(f.path, normalizeAllowedGlob(glob), { dot: true }),
+      const isAllowed = policy.allowed_paths.some(allowed =>
+        matchesAllowedPath(f.path, allowed),
       );
       if (!isAllowed) {
         violations.push(`File ${f.path} is outside allowed paths: ${policy.allowed_paths.join(', ')}`);
@@ -324,12 +345,9 @@ export function isFileAllowed(filePath: string, policy: ScopePolicy): boolean {
 
   // Check allowed paths (empty = everything allowed)
   if (policy.allowed_paths.length > 0) {
-    return policy.allowed_paths.some(glob => {
-      const normalizedGlob = normalizeAllowedGlob(glob);
-      return pathCandidates.some(candidate =>
-        minimatch(candidate, normalizedGlob, { dot: true }),
-      );
-    });
+    return policy.allowed_paths.some(allowed =>
+      pathCandidates.some(candidate => matchesAllowedPath(candidate, allowed)),
+    );
   }
 
   return true;

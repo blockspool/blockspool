@@ -394,10 +394,10 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
         const finalState = state.end();
         const durationMs = Date.now() - new Date(finalState.started_at).getTime();
 
-        // Abort remaining ready/in_progress tickets to prevent stale accumulation
+        // Abort remaining ready/in_progress/blocked tickets to prevent stale accumulation
         let ticketsAborted = 0;
         try {
-          for (const status of ['ready', 'in_progress'] as const) {
+          for (const status of ['ready', 'in_progress', 'blocked'] as const) {
             const staleTickets = await repos.tickets.listByProject(db, projectId, { status });
             for (const ticket of staleTickets) {
               await repos.tickets.updateStatus(db, ticket.id, 'aborted');

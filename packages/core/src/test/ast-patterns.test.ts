@@ -267,6 +267,227 @@ describe('bare-except pattern', () => {
 });
 
 // ---------------------------------------------------------------------------
+// New patterns: console-log, hardcoded-secret, todo-fixme, deeply-nested,
+// non-null-assertion-heavy, unreachable-code
+// ---------------------------------------------------------------------------
+
+describe('console-log pattern', () => {
+  const patterns = getPatterns();
+
+  it('detects console.log calls', () => {
+    const content = 'function foo() { console.log("debug"); }';
+    const callNode = mockNode('call_expression', 'console.log("debug")', []);
+    const root = mockNode('program', content, [callNode]);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'console-log');
+    expect(match).toBeDefined();
+    expect(match!.severity).toBe('low');
+    expect(match!.category).toBe('cleanup');
+  });
+
+  it('detects console.warn and console.error', () => {
+    const content = 'console.warn("x"); console.error("y");';
+    const nodes = [
+      mockNode('call_expression', 'console.warn("x")', []),
+      mockNode('call_expression', 'console.error("y")', []),
+    ];
+    const root = mockNode('program', content, nodes);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const matches = findings.filter(f => f.patternId === 'console-log');
+    expect(matches.length).toBe(2);
+  });
+
+  it('does NOT flag non-console call expressions', () => {
+    const content = 'logger.log("ok");';
+    const callNode = mockNode('call_expression', 'logger.log("ok")', []);
+    const root = mockNode('program', content, [callNode]);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'console-log');
+    expect(match).toBeUndefined();
+  });
+
+  it('does NOT fire for Python', () => {
+    const content = 'console.log("test")';
+    const callNode = mockNode('call_expression', 'console.log("test")', []);
+    const root = mockNode('program', content, [callNode]);
+    const findings = scanPatterns(root, 'Python', content, patterns);
+    const match = findings.find(f => f.patternId === 'console-log');
+    expect(match).toBeUndefined();
+  });
+});
+
+describe('hardcoded-secret pattern', () => {
+  const patterns = getPatterns();
+
+  it('detects hardcoded API keys', () => {
+    const content = 'const api_key = "sk-1234567890abcdef";';
+    const root = mockNode('program', content, []);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'hardcoded-secret');
+    expect(match).toBeDefined();
+    expect(match!.severity).toBe('high');
+    expect(match!.category).toBe('security');
+  });
+
+  it('detects password assignments', () => {
+    const content = 'password = "super_secret_password_123"';
+    const root = mockNode('program', content, []);
+    const findings = scanPatterns(root, 'Python', content, patterns);
+    const match = findings.find(f => f.patternId === 'hardcoded-secret');
+    expect(match).toBeDefined();
+  });
+
+  it('skips test/mock values', () => {
+    const content = 'const api_key = "test-mock-placeholder-key";';
+    const root = mockNode('program', content, []);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'hardcoded-secret');
+    expect(match).toBeUndefined();
+  });
+
+  it('skips short values (< 8 chars)', () => {
+    const content = 'const token = "short";';
+    const root = mockNode('program', content, []);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'hardcoded-secret');
+    expect(match).toBeUndefined();
+  });
+});
+
+describe('todo-fixme pattern', () => {
+  const patterns = getPatterns();
+
+  it('detects TODO comments', () => {
+    const content = '// TODO: fix this later';
+    const commentNode = mockNode('comment', '// TODO: fix this later', []);
+    const root = mockNode('program', content, [commentNode]);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'todo-fixme');
+    expect(match).toBeDefined();
+    expect(match!.severity).toBe('low');
+    expect(match!.category).toBe('cleanup');
+    expect(match!.message).toContain('TODO');
+  });
+
+  it('detects FIXME and HACK comments', () => {
+    const content = '// FIXME: broken\n// HACK: workaround';
+    const nodes = [
+      mockNode('comment', '// FIXME: broken', []),
+      mockNode('comment', '// HACK: workaround', []),
+    ];
+    const root = mockNode('program', content, nodes);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const matches = findings.filter(f => f.patternId === 'todo-fixme');
+    expect(matches.length).toBe(2);
+  });
+
+  it('works for Python comments', () => {
+    const content = '# TODO: implement this';
+    const commentNode = mockNode('comment', '# TODO: implement this', []);
+    const root = mockNode('program', content, [commentNode]);
+    const findings = scanPatterns(root, 'Python', content, patterns);
+    const match = findings.find(f => f.patternId === 'todo-fixme');
+    expect(match).toBeDefined();
+  });
+});
+
+describe('deeply-nested pattern', () => {
+  const patterns = getPatterns();
+
+  it('detects deeply indented code (>= 8 indent levels)', () => {
+    const indent = ' '.repeat(16); // 8 levels of 2-space indent
+    const content = `function foo() {\n  if (true) {\n    if (true) {\n      if (true) {\n${indent}doSomething();\n      }\n    }\n  }\n}`;
+    const root = mockNode('program', content, []);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'deeply-nested');
+    expect(match).toBeDefined();
+    expect(match!.severity).toBe('medium');
+    expect(match!.category).toBe('refactor');
+  });
+
+  it('does NOT trigger for moderately nested code', () => {
+    const content = `function foo() {\n  if (true) {\n    doSomething();\n  }\n}`;
+    const root = mockNode('program', content, []);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'deeply-nested');
+    expect(match).toBeUndefined();
+  });
+});
+
+describe('non-null-assertion-heavy pattern', () => {
+  const patterns = getPatterns();
+
+  it('does NOT trigger with 5 or fewer non-null assertions', () => {
+    const nodes = Array.from({ length: 5 }, () =>
+      mockNode('non_null_expression', 'foo!', []),
+    );
+    const root = mockNode('program', 'code', nodes);
+    const findings = scanPatterns(root, 'TypeScript', 'code', patterns);
+    const match = findings.find(f => f.patternId === 'non-null-assertion-heavy');
+    expect(match).toBeUndefined();
+  });
+
+  it('triggers with more than 5 non-null assertions', () => {
+    const nodes = Array.from({ length: 8 }, () =>
+      mockNode('non_null_expression', 'foo!', []),
+    );
+    const root = mockNode('program', 'code', nodes);
+    const findings = scanPatterns(root, 'TypeScript', 'code', patterns);
+    const match = findings.find(f => f.patternId === 'non-null-assertion-heavy');
+    expect(match).toBeDefined();
+    expect(match!.message).toContain('8');
+    expect(match!.category).toBe('types');
+  });
+});
+
+describe('unreachable-code pattern', () => {
+  const patterns = getPatterns();
+
+  it('detects code after return statement', () => {
+    const returnStmt = mockNode('return_statement', 'return 1', []);
+    returnStmt.isNamed = () => true;
+    const deadCode = mockNode('expression_statement', 'console.log("dead")', []);
+    deadCode.isNamed = () => true;
+    const block = mockNode('statement_block', '{ return 1; console.log("dead"); }', [returnStmt, deadCode]);
+    const content = '{ return 1; console.log("dead"); }';
+    const root = mockNode('program', content, [block]);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'unreachable-code');
+    expect(match).toBeDefined();
+    expect(match!.severity).toBe('medium');
+    expect(match!.category).toBe('fix');
+    expect(match!.message).toContain('return');
+  });
+
+  it('detects code after throw statement', () => {
+    const throwStmt = mockNode('throw_statement', 'throw new Error()', []);
+    throwStmt.isNamed = () => true;
+    const deadCode = mockNode('expression_statement', 'cleanup()', []);
+    deadCode.isNamed = () => true;
+    const block = mockNode('statement_block', '{ throw new Error(); cleanup(); }', [throwStmt, deadCode]);
+    const content = '{ throw new Error(); cleanup(); }';
+    const root = mockNode('program', content, [block]);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'unreachable-code');
+    expect(match).toBeDefined();
+    expect(match!.message).toContain('throw');
+  });
+
+  it('does NOT trigger when return is last statement', () => {
+    const stmt = mockNode('expression_statement', 'doStuff()', []);
+    stmt.isNamed = () => true;
+    const returnStmt = mockNode('return_statement', 'return 1', []);
+    returnStmt.isNamed = () => true;
+    const block = mockNode('statement_block', '{ doStuff(); return 1; }', [stmt, returnStmt]);
+    const content = '{ doStuff(); return 1; }';
+    const root = mockNode('program', content, [block]);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'unreachable-code');
+    expect(match).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Symbol-scoped patterns (2.2)
 // ---------------------------------------------------------------------------
 

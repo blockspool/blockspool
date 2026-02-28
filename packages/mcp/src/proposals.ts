@@ -253,6 +253,8 @@ export async function filterAndCreateTickets(
       scoutConfidence: p.confidence,
       estimatedComplexity: p.estimated_complexity,
       ...(p.target_symbols?.length ? { targetSymbols: p.target_symbols } : {}),
+      ...(s.active_trajectory ? { trajectory_name: s.active_trajectory } : {}),
+      ...(s.trajectory_step_id ? { trajectory_step_id: s.trajectory_step_id } : {}),
     },
   }));
 

@@ -232,6 +232,177 @@ const bareExceptPattern: AstPattern = {
   },
 };
 
+const consoleLogPattern: AstPattern = {
+  id: 'console-log',
+  version: 1,
+  langs: ['js'],
+  scan(root, _langKey, content, symbols) {
+    const findings: AstFinding[] = [];
+    const callNodes = findAllByKind(root, 'call_expression');
+    for (const node of callNodes) {
+      const text = node.text();
+      if (/^console\.(log|warn|error|debug|info|trace)\s*\(/.test(text)) {
+        const line = countLinesBefore(content, text);
+        findings.push(annotateWithSymbol({
+          patternId: 'console-log',
+          message: `console.${text.match(/console\.(\w+)/)?.[1] ?? 'log'} statement — remove or replace with proper logging`,
+          line,
+          severity: 'low',
+          category: 'cleanup',
+        }, symbols));
+      }
+      if (findings.length >= MAX_FINDINGS_PER_FILE) return findings;
+    }
+    return findings;
+  },
+};
+
+const hardcodedSecretPattern: AstPattern = {
+  id: 'hardcoded-secret',
+  version: 1,
+  langs: ['js', 'python'],
+  scan(_root, _langKey, content, symbols) {
+    const findings: AstFinding[] = [];
+    const secretRegex = /(?:api[_-]?key|secret|password|token|auth|credential)s?\s*[:=]\s*['"][^'"]{8,}['"]/gi;
+    let match: RegExpExecArray | null;
+    while ((match = secretRegex.exec(content)) !== null) {
+      // Skip test files and example/mock values
+      if (/test|spec|mock|example|fixture|xxx|placeholder/i.test(match[0])) continue;
+      const line = countLinesBefore(content, match[0]);
+      findings.push(annotateWithSymbol({
+        patternId: 'hardcoded-secret',
+        message: 'possible hardcoded secret — use environment variable instead',
+        line,
+        severity: 'high',
+        category: 'security',
+      }, symbols));
+      if (findings.length >= MAX_FINDINGS_PER_FILE) return findings;
+    }
+    return findings;
+  },
+};
+
+const todoFixmePattern: AstPattern = {
+  id: 'todo-fixme',
+  version: 1,
+  langs: ['js', 'python'],
+  scan(root, _langKey, content, symbols) {
+    const findings: AstFinding[] = [];
+    const commentKinds = ['comment', 'line_comment', 'block_comment'];
+    for (const kind of commentKinds) {
+      const nodes = findAllByKind(root, kind);
+      for (const node of nodes) {
+        const text = node.text();
+        const match = text.match(/\b(TODO|FIXME|HACK|XXX)\b/i);
+        if (match) {
+          const line = countLinesBefore(content, text);
+          findings.push(annotateWithSymbol({
+            patternId: 'todo-fixme',
+            message: `${match[1].toUpperCase()}: ${text.replace(/^\/[/*]\s*/, '').replace(/\*\/\s*$/, '').trim().slice(0, 80)}`,
+            line,
+            severity: 'low',
+            category: 'cleanup',
+          }, symbols));
+        }
+        if (findings.length >= MAX_FINDINGS_PER_FILE) return findings;
+      }
+    }
+    return findings;
+  },
+};
+
+const deeplyNestedPattern: AstPattern = {
+  id: 'deeply-nested',
+  version: 1,
+  langs: ['js', 'python'],
+  scan(_root, _langKey, content, symbols) {
+    const findings: AstFinding[] = [];
+    const lines = content.split('\n');
+    let maxDepth = 0;
+    let maxDepthLine = 0;
+    let currentDepthStart = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const stripped = line.replace(/^\s*/, '');
+      if (stripped.length === 0) continue;
+      const indent = line.length - stripped.length;
+      // Estimate nesting depth from indentation (2-space or 4-space)
+      const depth = Math.floor(indent / 2);
+      if (depth > maxDepth) {
+        maxDepth = depth;
+        maxDepthLine = i + 1; // 1-based
+        currentDepthStart = i + 1;
+      }
+    }
+    if (maxDepth >= 8) { // ~4 logical nesting levels at 2-space indent
+      findings.push(annotateWithSymbol({
+        patternId: 'deeply-nested',
+        message: `deeply nested code (indent level ${maxDepth}) — consider extracting or flattening`,
+        line: maxDepthLine,
+        severity: 'medium',
+        category: 'refactor',
+      }, symbols));
+    }
+    return findings;
+  },
+};
+
+const nonNullAssertionPattern: AstPattern = {
+  id: 'non-null-assertion-heavy',
+  version: 1,
+  langs: ['js'],
+  scan(root, _langKey, _content) {
+    const nodes = findAllByKind(root, 'non_null_expression');
+    if (nodes.length > 5) {
+      return [{
+        patternId: 'non-null-assertion-heavy',
+        message: `${nodes.length} non-null assertions (!) — consider null checks or optional chaining`,
+        line: null,
+        severity: 'medium',
+        category: 'types',
+      }];
+    }
+    return [];
+  },
+};
+
+const unreachableCodePattern: AstPattern = {
+  id: 'unreachable-code',
+  version: 1,
+  langs: ['js'],
+  scan(root, _langKey, content, symbols) {
+    const findings: AstFinding[] = [];
+    // Look for statement blocks where a return/throw is followed by more statements
+    const blockKinds = ['statement_block'];
+    for (const blockKind of blockKinds) {
+      const blocks = findAllByKind(root, blockKind);
+      for (const block of blocks) {
+        const children = block.children().filter(c => c.isNamed());
+        for (let i = 0; i < children.length - 1; i++) {
+          const kind = children[i].kind();
+          if (kind === 'return_statement' || kind === 'throw_statement') {
+            // Next sibling is unreachable
+            const nextText = children[i + 1].text().trim();
+            if (nextText && nextText !== '}') {
+              const line = countLinesBefore(content, children[i + 1].text());
+              findings.push(annotateWithSymbol({
+                patternId: 'unreachable-code',
+                message: `unreachable code after ${kind === 'return_statement' ? 'return' : 'throw'}`,
+                line,
+                severity: 'medium',
+                category: 'fix',
+              }, symbols));
+            }
+            break; // Only report first unreachable in each block
+          }
+        }
+        if (findings.length >= MAX_FINDINGS_PER_FILE) return findings;
+      }
+    }
+    return findings;
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -242,6 +413,12 @@ const PATTERNS: AstPattern[] = [
   largeFunctionPattern,
   anyAnnotationPattern,
   bareExceptPattern,
+  consoleLogPattern,
+  hardcodedSecretPattern,
+  todoFixmePattern,
+  deeplyNestedPattern,
+  nonNullAssertionPattern,
+  unreachableCodePattern,
 ];
 
 /** Return all registered AST patterns. */

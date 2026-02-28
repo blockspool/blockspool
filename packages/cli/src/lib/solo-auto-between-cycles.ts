@@ -897,7 +897,9 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
           } else {
             state.displayAdapter.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" finished with some failed steps`));
           }
-          // Save final state before clearing (so completed status persists on disk)
+          // Save final state with completed status (persists on disk for history)
+          state.activeTrajectoryState.status = 'completed';
+          state.activeTrajectoryState.currentStepId = null;
           saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
           if (state.drillMode) {
             try { finishDrillTrajectory(state, outcome); }
@@ -910,6 +912,8 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
           // No next step available but trajectory isn't complete — shouldn't happen now
           // (failed deps unblock dependents), but handle as fallback
           state.displayAdapter.log(chalk.yellow(`  Trajectory "${state.activeTrajectory.name}" stalled (remaining steps blocked)`));
+          state.activeTrajectoryState.status = 'abandoned';
+          state.activeTrajectoryState.currentStepId = null;
           saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
           if (state.drillMode) {
             try { finishDrillTrajectory(state, 'stalled'); }

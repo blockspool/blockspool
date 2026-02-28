@@ -20,6 +20,7 @@ import { activateTrajectory, loadTrajectory, saveTrajectoryState } from './traje
 import {
   getNextStep as getTrajectoryNextStep,
   trajectoryComplete,
+  preVerifyAndAdvanceSteps as preVerifyAndAdvanceStepsFn,
 } from '@promptwheel/core/trajectory/shared';
 import { runMeasurement } from './goals.js';
 import { formatTasteForPrompt } from './taste-profile.js';
@@ -896,43 +897,53 @@ export function tryPreVerifyTrajectoryStep(state: AutoSessionState): boolean {
   const step = state.currentTrajectoryStep;
   if (step.verification_commands.length === 0) return false;
 
-  for (const cmd of step.verification_commands) {
-    const result = spawnSync('sh', ['-c', cmd], {
-      cwd: state.repoRoot,
-      timeout: 30000,
-      encoding: 'utf-8',
-    });
-    // Git-context resilience: skip commands that fail due to missing git repo
-    const output = ((result.stderr ?? '') + (result.stdout ?? ''));
-    if (result.status !== 0 && !result.error && output.includes('not a git repository')) {
-      continue; // skip git-context-dependent command, try remaining
-    }
-    if (result.error || result.status !== 0) return false; // not yet passing (or timeout)
-  }
+  // Optional measure gate — checked before delegating to shared logic
+  // (shared function handles verification commands only; measure is CLI-specific)
+  const exec = (cmd: string, cwd: string) => {
+    const r = spawnSync('sh', ['-c', cmd], { cwd, timeout: 30000, encoding: 'utf-8' });
+    return {
+      exitCode: r.status ?? 1,
+      timedOut: !!r.error?.message?.includes('TIMEOUT'),
+      output: (r.stderr ?? '') + (r.stdout ?? ''),
+    };
+  };
 
-  // Optional measure gate
+  // Run verification commands via shared logic (cap at 1 step)
+  const prevStepId = state.activeTrajectoryState.currentStepId;
+  const result = preVerifyAndAdvanceStepsFn(
+    state.activeTrajectory, state.activeTrajectoryState, state.repoRoot, exec,
+  );
+  // We only want one step per call — if shared advanced more, that's fine, we'll just report it
+  if (result.advanced === 0) return false;
+
+  // Measure gate for the step we just advanced (if it had one)
   if (step.measure) {
     const { value } = runMeasurement(step.measure.cmd, state.repoRoot);
-    if (value === null) return false;
+    if (value === null) {
+      // Revert — measure failed, step shouldn't be considered complete
+      const ss = state.activeTrajectoryState.stepStates[step.id];
+      if (ss) { ss.status = 'active'; ss.completedAt = undefined; }
+      state.activeTrajectoryState.currentStepId = prevStepId;
+      state.currentTrajectoryStep = step;
+      saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
+      return false;
+    }
     const met = step.measure.direction === 'up' ? value >= step.measure.target : value <= step.measure.target;
-    if (!met) return false;
+    if (!met) {
+      const ss = state.activeTrajectoryState.stepStates[step.id];
+      if (ss) { ss.status = 'active'; ss.completedAt = undefined; }
+      state.activeTrajectoryState.currentStepId = prevStepId;
+      state.currentTrajectoryStep = step;
+      saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
+      return false;
+    }
   }
 
-  // All verification passes — mark complete and advance
-  const stepState = state.activeTrajectoryState.stepStates[step.id];
-  if (!stepState) return false;
-
-  stepState.status = 'completed';
-  stepState.completedAt = Date.now();
   state.displayAdapter.log(chalk.green(`  Trajectory step "${step.title}" already passing — advancing`));
 
   const next = getTrajectoryNextStep(state.activeTrajectory, state.activeTrajectoryState.stepStates);
   state.currentTrajectoryStep = next;
   if (next) {
-    state.activeTrajectoryState.currentStepId = next.id;
-    if (state.activeTrajectoryState.stepStates[next.id]) {
-      state.activeTrajectoryState.stepStates[next.id].status = 'active';
-    }
     state.displayAdapter.log(chalk.cyan(`  -> Next step: ${next.title}`));
   } else if (trajectoryComplete(state.activeTrajectory, state.activeTrajectoryState.stepStates)) {
     state.displayAdapter.log(chalk.green(`  Trajectory "${state.activeTrajectory.name}" complete!`));

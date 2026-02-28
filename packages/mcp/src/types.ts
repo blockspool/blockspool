@@ -255,41 +255,171 @@ export interface DeferredProposal {
 // ---------------------------------------------------------------------------
 
 export type EventType =
+  // Session lifecycle
+  /** Session initialized. Payload: { config, project_id } */
   | 'SESSION_START'
+  /** Session finished. Payload: { tickets_completed, tickets_failed, prs_created, step_count } */
+  | 'SESSION_END'
+
+  // Advance loop
+  /** advance() called. Payload: { phase, step } */
   | 'ADVANCE_CALLED'
+  /** advance() returned. Payload: { phase, has_prompt } or { old_phase, new_phase } */
   | 'ADVANCE_RETURNED'
+
+  // Scout phase
+  /** Scout produced proposals. Payload: { proposals, explored_dirs, exploration_summary? } */
   | 'SCOUT_OUTPUT'
-  | 'PROPOSALS_FILTERED'
-  | 'TICKETS_CREATED'
-  | 'TICKET_ASSIGNED'
-  | 'PLAN_SUBMITTED'
-  | 'PLAN_APPROVED'
-  | 'PLAN_REJECTED'
-  | 'TOOL_CALL_ATTEMPTED'
-  | 'SCOPE_ALLOWED'
-  | 'SCOPE_BLOCKED'
-  | 'TICKET_RESULT'
-  | 'QA_STARTED'
-  | 'QA_COMMAND_RESULT'
-  | 'QA_PASSED'
-  | 'QA_FAILED'
-  | 'PR_CREATED'
-  | 'TICKET_COMPLETED'
-  | 'TICKET_COMPLETED_NO_PR'
-  | 'TICKET_FAILED'
-  | 'BUDGET_WARNING'
-  | 'BUDGET_EXHAUSTED'
-  | 'SPINDLE_WARNING'
-  | 'SPINDLE_ABORT'
-  | 'TRACE_ANALYSIS'
-  | 'HINT_CONSUMED'
-  | 'USER_OVERRIDE'
+  /** Adversarial review completed. Payload: { reviewed_proposals } */
   | 'PROPOSALS_REVIEWED'
-  | 'SECTOR_ROTATION_FAILED'
-  | 'WORKER_TIMEOUT'
-  | 'LEARNINGS_LOAD_FAILED'
+  /** Proposals filtered through validation pipeline. Payload: { submitted, valid, after_confidence, after_impact, after_category, after_dedup, accepted, rejected_count } */
+  | 'PROPOSALS_FILTERED'
+  /** Tickets created from proposals. Payload: { count, ids, titles } */
+  | 'TICKETS_CREATED'
+  /** Ticket assigned for execution. Payload: { ticket_id, parallel? } */
+  | 'TICKET_ASSIGNED'
+
+  // Plan phase
+  /** Execution plan submitted. Payload: { ticket_id?, files_to_touch, expected_tests?, risk_level?, estimated_lines? } */
+  | 'PLAN_SUBMITTED'
+  /** Plan approved (auto or manual). Payload: { risk_level, auto } */
+  | 'PLAN_APPROVED'
+  /** Plan rejected. Payload: { reason, attempt, risk_level? } */
+  | 'PLAN_REJECTED'
+
+  // Scope enforcement
+  /** Tool call intercepted by hook-driver. Payload: { tool, file_path? } */
+  | 'TOOL_CALL_ATTEMPTED'
+  /** File access within scope. Payload: { ticket_id, path?, files? } */
+  | 'SCOPE_ALLOWED'
+  /** File access outside scope. Payload: { ticket_id, violations?, surprise_files?, allowed_paths?, path? } */
+  | 'SCOPE_BLOCKED'
+
+  // Execution
+  /** Ticket execution result. Payload: { status, changed_files, lines_added?, lines_removed?, summary?, diff?, reason? } */
+  | 'TICKET_RESULT'
+  /** Execution trace analyzed. Payload: { ticket_id, is_stream_json, compaction_count, total_tokens, tool_count } */
+  | 'TRACE_ANALYSIS'
+
+  // QA phase
+  /** QA started for ticket. Payload: { ticket_id } */
+  | 'QA_STARTED'
+  /** Single QA command result. Payload: { command, success, output?, durationMs?, timedOut? } */
+  | 'QA_COMMAND_RESULT'
+  /** All QA commands passed. Payload: { ticket_id } */
+  | 'QA_PASSED'
+  /** QA failed. Payload: { ticket_id, reason?, failed_commands?, error?, results? } */
+  | 'QA_FAILED'
+
+  // PR / completion
+  /** PR created. Payload: { url?, branch? } */
+  | 'PR_CREATED'
+  /** Ticket fully completed (PR created or direct mode). Payload: { ticket_id, parallel? } */
+  | 'TICKET_COMPLETED'
+  /** Ticket completed without PR (direct mode). Payload: { ticket_id } */
+  | 'TICKET_COMPLETED_NO_PR'
+  /** Ticket failed. Payload: { ticket_id, reason, parallel? } */
+  | 'TICKET_FAILED'
+
+  // Budget & spindle
+  /** Budget approaching limit (80%). Payload: { warnings } */
+  | 'BUDGET_WARNING'
+  /** Budget exhausted. Payload: { which: 'step_budget' | 'time_budget', value? } */
+  | 'BUDGET_EXHAUSTED'
+  /** Loop detection warning. Payload: { file_edit_warnings?, reason?, diagnostics?, action? } */
+  | 'SPINDLE_WARNING'
+  /** Spindle triggered abort. Payload: { reason, confidence, diagnostics } */
+  | 'SPINDLE_ABORT'
+
+  // Trajectory lifecycle
+  /** Trajectory step pre-verified and auto-completed. Payload: { trajectory, step_id, step_title, source } */
+  | 'TRAJECTORY_STEP_COMPLETED'
+  /** One or more steps auto-advanced via pre-verification. Payload: { steps_advanced } */
+  | 'TRAJECTORY_PRE_VERIFIED'
+  /** Work started on a trajectory step. Payload: { trajectory, step_id, step_title } */
+  | 'TRAJECTORY_STEP_STARTED'
+  /** Trajectory step marked as failed (stuck detection). Payload: { trajectory, step_id, step_title, reason } */
+  | 'TRAJECTORY_STEP_FAILED'
+  /** All trajectory steps in terminal state. Payload: { trajectory, steps_completed, steps_skipped, steps_failed } */
+  | 'TRAJECTORY_COMPLETED'
+
+  // Hints & overrides
+  /** Hint consumed from queue. Payload: { hint } */
+  | 'HINT_CONSUMED'
+  /** User override applied. Payload: { hint } */
+  | 'USER_OVERRIDE'
+
+  // Parallel execution
+  /** Parallel tickets deconflicted. Payload: { candidates, selected, skipped } */
   | 'PARALLEL_DECONFLICTED'
-  | 'SESSION_END';
+  /** Parallel worker timed out. Payload: { ticket_id, stalled_for } */
+  | 'WORKER_TIMEOUT'
+
+  // Errors & degraded states
+  /** Sector rotation failed. Payload: { error } */
+  | 'SECTOR_ROTATION_FAILED'
+  /** Cross-run learnings failed to load. Payload: { error } */
+  | 'LEARNINGS_LOAD_FAILED';
+
+// ---------------------------------------------------------------------------
+// Event Payload Map — maps each EventType to its expected payload shape.
+// Payloads vary by emission site; fields marked with ? are context-dependent.
+// ---------------------------------------------------------------------------
+
+export interface EventPayloadMap {
+  SESSION_START: { config: SessionConfig; project_id: string };
+  SESSION_END: { tickets_completed: number; tickets_failed: number; prs_created: number; step_count: number };
+
+  ADVANCE_CALLED: { phase: Phase; step: number };
+  ADVANCE_RETURNED: { phase?: Phase; has_prompt?: boolean; old_phase?: Phase; new_phase?: Phase };
+
+  SCOUT_OUTPUT: { proposals: unknown[]; explored_dirs: string[]; exploration_summary?: string; text?: string };
+  PROPOSALS_REVIEWED: { reviewed_proposals: Array<{ title?: string; confidence?: number; impact_score?: number; review_note?: string }> };
+  PROPOSALS_FILTERED: { submitted: number; valid: number; after_confidence: number; after_impact: number; after_category: number; after_dedup: number; accepted: number; rejected_count: number };
+  TICKETS_CREATED: { count: number; ids: string[]; titles: string[] };
+  TICKET_ASSIGNED: { ticket_id: string; parallel?: boolean };
+
+  PLAN_SUBMITTED: { ticket_id?: string; files_to_touch: unknown[]; expected_tests?: string[]; risk_level?: 'low' | 'medium' | 'high'; estimated_lines?: number };
+  PLAN_APPROVED: { risk_level: 'low' | 'medium' | 'high'; auto: boolean };
+  PLAN_REJECTED: { reason: string; attempt: number; risk_level?: 'high' };
+
+  TOOL_CALL_ATTEMPTED: { tool: string; file_path?: string };
+  SCOPE_ALLOWED: { ticket_id: string; path?: string; files?: string[] };
+  SCOPE_BLOCKED: { ticket_id: string; violations?: string[]; surprise_files?: string[]; planned_files?: string[]; allowed_paths?: string[]; path?: string; category_violations?: string[] };
+
+  TICKET_RESULT: { status: string; changed_files: string[]; lines_added?: number; lines_removed?: number; summary?: string; diff?: string; reason?: string };
+  TRACE_ANALYSIS: { ticket_id: string; is_stream_json: boolean; compaction_count: number; total_tokens: number; tool_count: number };
+
+  QA_STARTED: { ticket_id: string };
+  QA_COMMAND_RESULT: { command: string; success: boolean; output?: string; durationMs?: number; timedOut?: boolean };
+  QA_PASSED: { ticket_id: string };
+  QA_FAILED: { ticket_id: string; reason?: string; failed_commands?: string | string[]; error?: string; results?: Array<{ command: string; success: boolean; output: string }> };
+
+  PR_CREATED: { url?: string; branch?: string };
+  TICKET_COMPLETED: { ticket_id: string; parallel?: boolean };
+  TICKET_COMPLETED_NO_PR: { ticket_id: string };
+  TICKET_FAILED: { ticket_id: string; reason: string; parallel?: boolean };
+
+  BUDGET_WARNING: { warnings: string[] };
+  BUDGET_EXHAUSTED: { which: 'step_budget' | 'time_budget'; value?: number };
+  SPINDLE_WARNING: { file_edit_warnings?: string[]; reason?: string; diagnostics?: unknown; action?: string };
+  SPINDLE_ABORT: { reason: string; confidence: number; diagnostics: unknown };
+
+  TRAJECTORY_STEP_COMPLETED: { trajectory: string; step_id: string; step_title: string; source: string };
+  TRAJECTORY_PRE_VERIFIED: { steps_advanced: number };
+  TRAJECTORY_STEP_STARTED: { trajectory: string; step_id: string; step_title: string };
+  TRAJECTORY_STEP_FAILED: { trajectory: string; step_id: string; step_title: string; reason: string };
+  TRAJECTORY_COMPLETED: { trajectory: string; steps_completed: number; steps_skipped: number; steps_failed: number };
+
+  HINT_CONSUMED: { hint: string };
+  USER_OVERRIDE: { hint: string };
+
+  PARALLEL_DECONFLICTED: { candidates: number; selected: number; skipped: number };
+  WORKER_TIMEOUT: { ticket_id: string; stalled_for: number };
+
+  SECTOR_ROTATION_FAILED: { error: string };
+  LEARNINGS_LOAD_FAILED: { error: string };
+}
 
 export interface RunEvent {
   ts: string;

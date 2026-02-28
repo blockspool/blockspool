@@ -17,7 +17,7 @@ import {
   clearTrajectoryState,
   activateTrajectory,
 } from '../trajectory-io.js';
-import { getNextStep } from '@promptwheel/core/trajectory/shared';
+import { getNextStep, skipStep, trajectoryStuck, trajectoryComplete } from '@promptwheel/core/trajectory/shared';
 
 let tmpDir: string;
 
@@ -258,29 +258,24 @@ describe('trajectory_pause / trajectory_resume', () => {
 
 // ── skip ────────────────────────────────────────────────────────────────────
 
-describe('trajectory_skip', () => {
-  it('marks a step as skipped', () => {
+describe('trajectory_skip (via shared skipStep)', () => {
+  it('marks a step as skipped and advances to next', () => {
     writeTrajectory('test-traj', SIMPLE_TRAJECTORY);
     activateTrajectory(tmpDir, 'test-traj');
 
     const state = loadTrajectoryState(tmpDir)!;
+    const trajectory = loadTrajectory(tmpDir, 'test-traj')!;
     expect(state.stepStates['step-1'].status).toBe('active');
 
-    state.stepStates['step-1'].status = 'skipped';
-    state.stepStates['step-1'].completedAt = Date.now();
-
-    // Advance to next step
-    const trajectory = loadTrajectory(tmpDir, 'test-traj')!;
-    const next = getNextStep(trajectory, state.stepStates);
-    if (next) {
-      state.stepStates[next.id].status = 'active';
-      state.currentStepId = next.id;
-    }
+    const result = skipStep(trajectory, state, 'step-1');
+    expect(result.skipped).toBe(true);
+    expect(result.nextStep).toEqual({ id: 'step-2', title: 'Second step' });
 
     saveTrajectoryState(tmpDir, state);
 
     const reloaded = loadTrajectoryState(tmpDir)!;
     expect(reloaded.stepStates['step-1'].status).toBe('skipped');
+    expect(reloaded.stepStates['step-1'].completedAt).toBeDefined();
     expect(reloaded.currentStepId).toBe('step-2');
     expect(reloaded.stepStates['step-2'].status).toBe('active');
   });
@@ -290,22 +285,41 @@ describe('trajectory_skip', () => {
     activateTrajectory(tmpDir, 'no-deps');
 
     const state = loadTrajectoryState(tmpDir)!;
-    state.stepStates['alpha'].status = 'skipped';
-    state.stepStates['alpha'].completedAt = Date.now();
-
     const trajectory = loadTrajectory(tmpDir, 'no-deps')!;
-    const next = getNextStep(trajectory, state.stepStates);
-    if (next) {
-      state.stepStates[next.id].status = 'active';
-      state.currentStepId = next.id;
-    } else {
-      state.currentStepId = null;
-    }
+
+    const result = skipStep(trajectory, state, 'alpha');
+    expect(result.skipped).toBe(true);
+    expect(result.nextStep).toBeNull();
 
     saveTrajectoryState(tmpDir, state);
 
     const reloaded = loadTrajectoryState(tmpDir)!;
     expect(reloaded.currentStepId).toBeNull();
+  });
+
+  it('returns error for already-completed step', () => {
+    writeTrajectory('test-traj', SIMPLE_TRAJECTORY);
+    activateTrajectory(tmpDir, 'test-traj');
+
+    const state = loadTrajectoryState(tmpDir)!;
+    const trajectory = loadTrajectory(tmpDir, 'test-traj')!;
+    state.stepStates['step-1'].status = 'completed';
+
+    const result = skipStep(trajectory, state, 'step-1');
+    expect(result.skipped).toBe(false);
+    expect(result.error).toContain('already completed');
+  });
+
+  it('returns error for non-existent step', () => {
+    writeTrajectory('test-traj', SIMPLE_TRAJECTORY);
+    activateTrajectory(tmpDir, 'test-traj');
+
+    const state = loadTrajectoryState(tmpDir)!;
+    const trajectory = loadTrajectory(tmpDir, 'test-traj')!;
+
+    const result = skipStep(trajectory, state, 'nonexistent');
+    expect(result.skipped).toBe(false);
+    expect(result.error).toContain('not found');
   });
 });
 
@@ -369,5 +383,107 @@ describe('trajectory state persistence', () => {
     const recovered = loadTrajectoryState(tmpDir);
     expect(recovered).not.toBeNull();
     expect(recovered!.trajectoryName).toBe('test-traj');
+  });
+});
+
+// ── heal_trajectory ──────────────────────────────────────────────────────────
+
+describe('heal_trajectory', () => {
+  it('diagnoses a stuck step', () => {
+    writeTrajectory('test-traj', SIMPLE_TRAJECTORY);
+    activateTrajectory(tmpDir, 'test-traj');
+
+    const state = loadTrajectoryState(tmpDir)!;
+    // Simulate stuck: exhaust retries
+    state.stepStates['step-1'].cyclesAttempted = 5;
+    state.stepStates['step-1'].consecutiveFailures = 3;
+    state.stepStates['step-1'].lastVerificationOutput = 'Error: tests failed';
+    saveTrajectoryState(tmpDir, state);
+
+    const trajectory = loadTrajectory(tmpDir, 'test-traj')!;
+    const stuckId = trajectoryStuck(state.stepStates, undefined, trajectory.steps);
+    expect(stuckId).toBe('step-1');
+  });
+
+  it('retry resets attempt counter on a stuck step', () => {
+    writeTrajectory('test-traj', SIMPLE_TRAJECTORY);
+    activateTrajectory(tmpDir, 'test-traj');
+
+    const state = loadTrajectoryState(tmpDir)!;
+    state.stepStates['step-1'].status = 'failed';
+    state.stepStates['step-1'].cyclesAttempted = 5;
+    state.stepStates['step-1'].failureReason = 'max retries exceeded';
+    saveTrajectoryState(tmpDir, state);
+
+    // Heal: retry
+    const healState = loadTrajectoryState(tmpDir)!;
+    healState.stepStates['step-1'].status = 'active';
+    healState.stepStates['step-1'].cyclesAttempted = 0;
+    healState.stepStates['step-1'].consecutiveFailures = 0;
+    healState.stepStates['step-1'].failureReason = undefined;
+    healState.currentStepId = 'step-1';
+    saveTrajectoryState(tmpDir, healState);
+
+    const reloaded = loadTrajectoryState(tmpDir)!;
+    expect(reloaded.stepStates['step-1'].status).toBe('active');
+    expect(reloaded.stepStates['step-1'].cyclesAttempted).toBe(0);
+    expect(reloaded.currentStepId).toBe('step-1');
+  });
+
+  it('force_complete marks a step as completed and advances', () => {
+    writeTrajectory('test-traj', SIMPLE_TRAJECTORY);
+    activateTrajectory(tmpDir, 'test-traj');
+
+    const state = loadTrajectoryState(tmpDir)!;
+    // Force complete step-1
+    state.stepStates['step-1'].status = 'completed';
+    state.stepStates['step-1'].completedAt = Date.now();
+
+    // Advance to next step
+    const trajectory = loadTrajectory(tmpDir, 'test-traj')!;
+    const next = getNextStep(trajectory, state.stepStates);
+    expect(next).not.toBeNull();
+    expect(next!.id).toBe('step-2');
+
+    state.stepStates[next!.id].status = 'active';
+    state.currentStepId = next!.id;
+    saveTrajectoryState(tmpDir, state);
+
+    const reloaded = loadTrajectoryState(tmpDir)!;
+    expect(reloaded.stepStates['step-1'].status).toBe('completed');
+    expect(reloaded.currentStepId).toBe('step-2');
+    expect(reloaded.stepStates['step-2'].status).toBe('active');
+  });
+
+  it('skip (via heal) moves past a step and advances to the next', () => {
+    writeTrajectory('test-traj', SIMPLE_TRAJECTORY);
+    activateTrajectory(tmpDir, 'test-traj');
+
+    const state = loadTrajectoryState(tmpDir)!;
+    const trajectory = loadTrajectory(tmpDir, 'test-traj')!;
+
+    const result = skipStep(trajectory, state, 'step-1');
+    expect(result.skipped).toBe(true);
+    expect(result.nextStep).toEqual({ id: 'step-2', title: 'Second step' });
+
+    saveTrajectoryState(tmpDir, state);
+
+    const reloaded = loadTrajectoryState(tmpDir)!;
+    expect(reloaded.stepStates['step-1'].status).toBe('skipped');
+    expect(reloaded.currentStepId).toBe('step-2');
+  });
+
+  it('force_complete on last step results in trajectory complete', () => {
+    writeTrajectory('no-deps', SIMPLE_NO_DEPS);
+    activateTrajectory(tmpDir, 'no-deps');
+
+    const state = loadTrajectoryState(tmpDir)!;
+    state.stepStates['alpha'].status = 'completed';
+    state.stepStates['alpha'].completedAt = Date.now();
+    state.currentStepId = null;
+    saveTrajectoryState(tmpDir, state);
+
+    const trajectory = loadTrajectory(tmpDir, 'no-deps')!;
+    expect(trajectoryComplete(trajectory, state.stepStates)).toBe(true);
   });
 });

@@ -15,7 +15,7 @@ import {
   loadTrajectory,
 } from '../lib/trajectory.js';
 import type { StepStatus } from '@promptwheel/core/trajectory/shared';
-import { getNextStep, trajectoryComplete } from '@promptwheel/core/trajectory/shared';
+import { skipStep, trajectoryComplete } from '@promptwheel/core/trajectory/shared';
 
 async function getRepoRoot(): Promise<string> {
   const git = createGitService();
@@ -220,34 +220,24 @@ export function registerTrajectoryCommands(solo: Command): void {
         console.log(chalk.gray('No active trajectory.'));
         return;
       }
-      const stepState = state.stepStates[stepId];
-      if (!stepState) {
-        console.error(chalk.red(`Step not found: ${stepId}`));
+
+      const trajectory = loadTrajectory(repoRoot, state.trajectoryName);
+      if (!trajectory) {
+        console.error(chalk.red('Trajectory definition not found.'));
         process.exit(1);
       }
-      if (stepState.status === 'completed' || stepState.status === 'skipped') {
-        console.log(chalk.gray(`Step "${stepId}" is already ${stepState.status}.`));
+
+      const result = skipStep(trajectory, state, stepId);
+      if (!result.skipped) {
+        console.log(chalk.gray(result.error ?? `Cannot skip step "${stepId}".`));
         return;
-      }
-
-      stepState.status = 'skipped';
-      stepState.completedAt = Date.now();
-
-      // Advance to next step
-      const trajectory = loadTrajectory(repoRoot, state.trajectoryName);
-      if (trajectory) {
-        const next = getNextStep(trajectory, state.stepStates);
-        state.currentStepId = next?.id ?? null;
-        if (next) {
-          state.stepStates[next.id].status = 'active';
-        }
       }
 
       saveTrajectoryState(repoRoot, state);
       console.log(chalk.yellow(`Step "${stepId}" skipped.`));
       if (state.currentStepId) {
         console.log(chalk.cyan(`  Next step: ${state.currentStepId}`));
-      } else if (trajectory && trajectoryComplete(trajectory, state.stepStates)) {
+      } else if (trajectoryComplete(trajectory, state.stepStates)) {
         console.log(chalk.green(`  All steps complete!`));
       } else {
         console.log(chalk.yellow(`  No remaining executable steps (blocked by failed dependencies).`));

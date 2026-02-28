@@ -25,9 +25,12 @@ import {
   createInitialStepStates,
   detectCycle,
   enforceGraphOrdering,
+  preVerifyAndAdvanceSteps,
   type Trajectory,
   type TrajectoryStep,
+  type TrajectoryState,
   type StepState,
+  type CommandResult,
 } from '../trajectory/shared.js';
 
 function makeStep(partial: Partial<TrajectoryStep> & Pick<TrajectoryStep, 'id'>): TrajectoryStep {
@@ -1259,6 +1262,184 @@ describe('enforceGraphOrdering', () => {
     expect(original.steps[1].depends_on).toEqual([]);
     // Result should have the new edge
     expect(result.steps[1].depends_on).toContain('a');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preVerifyAndAdvanceSteps
+// ---------------------------------------------------------------------------
+
+describe('preVerifyAndAdvanceSteps', () => {
+  function makeState(trajectory: Trajectory): TrajectoryState {
+    const stepStates: Record<string, StepState> = {};
+    for (const step of trajectory.steps) {
+      stepStates[step.id] = {
+        stepId: step.id,
+        status: 'pending',
+        cyclesAttempted: 0,
+        lastAttemptedCycle: 0,
+      };
+    }
+    const first = trajectory.steps[0];
+    if (first) stepStates[first.id].status = 'active';
+    return {
+      trajectoryName: trajectory.name,
+      startedAt: Date.now(),
+      stepStates,
+      currentStepId: first?.id ?? null,
+      paused: false,
+    };
+  }
+
+  const pass: CommandResult = { exitCode: 0, timedOut: false, output: '' };
+  const fail: CommandResult = { exitCode: 1, timedOut: false, output: 'error' };
+
+  it('auto-completes steps whose commands return exit 0', () => {
+    const steps = [
+      makeStep({ id: 'a', verification_commands: ['test -f a.ts'] }),
+      makeStep({ id: 'b', verification_commands: ['test -f b.ts'] }),
+    ];
+    const traj = makeTrajectory(steps);
+    const state = makeState(traj);
+
+    const exec = vi.fn(() => pass);
+    const { advanced } = preVerifyAndAdvanceSteps(traj, state, '/tmp', exec);
+
+    expect(advanced).toBe(2);
+    expect(state.stepStates['a'].status).toBe('completed');
+    expect(state.stepStates['b'].status).toBe('completed');
+    expect(state.currentStepId).toBeNull();
+  });
+
+  it('stops at first step whose command fails', () => {
+    const steps = [
+      makeStep({ id: 'a', verification_commands: ['test -f a.ts'] }),
+      makeStep({ id: 'b', verification_commands: ['test -f b.ts'] }),
+    ];
+    const traj = makeTrajectory(steps);
+    const state = makeState(traj);
+
+    const exec = vi.fn()
+      .mockReturnValueOnce(pass)   // step a passes
+      .mockReturnValueOnce(fail);  // step b fails
+    const { advanced } = preVerifyAndAdvanceSteps(traj, state, '/tmp', exec);
+
+    expect(advanced).toBe(1);
+    expect(state.stepStates['a'].status).toBe('completed');
+    expect(state.stepStates['b'].status).toBe('active');
+    expect(state.currentStepId).toBe('b');
+  });
+
+  it('does not advance steps with no verification commands', () => {
+    const steps = [
+      makeStep({ id: 'a', verification_commands: [] }),
+    ];
+    const traj = makeTrajectory(steps);
+    const state = makeState(traj);
+
+    const exec = vi.fn();
+    const { advanced } = preVerifyAndAdvanceSteps(traj, state, '/tmp', exec);
+
+    expect(advanced).toBe(0);
+    expect(exec).not.toHaveBeenCalled();
+    expect(state.stepStates['a'].status).toBe('active');
+  });
+
+  it('is bounded by trajectory step count', () => {
+    const steps = [
+      makeStep({ id: 'a', verification_commands: ['echo ok'] }),
+    ];
+    const traj = makeTrajectory(steps);
+    const state = makeState(traj);
+
+    const exec = vi.fn(() => pass);
+    const { advanced } = preVerifyAndAdvanceSteps(traj, state, '/tmp', exec);
+
+    // Only 1 step in trajectory, so at most 1 iteration
+    expect(advanced).toBe(1);
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('respects depends_on ordering', () => {
+    const steps = [
+      makeStep({ id: 'a', verification_commands: ['echo ok'] }),
+      makeStep({ id: 'b', verification_commands: ['echo ok'], depends_on: ['a'] }),
+    ];
+    const traj = makeTrajectory(steps);
+    const state = makeState(traj);
+
+    const exec = vi.fn(() => pass);
+    const { advanced } = preVerifyAndAdvanceSteps(traj, state, '/tmp', exec);
+
+    // Both should be advanced: a first, then b becomes ready and passes
+    expect(advanced).toBe(2);
+    expect(state.stepStates['a'].status).toBe('completed');
+    expect(state.stepStates['b'].status).toBe('completed');
+  });
+
+  it('does not check step B before step A completes (dependency gate)', () => {
+    const steps = [
+      makeStep({ id: 'a', verification_commands: ['echo ok'] }),
+      makeStep({ id: 'b', verification_commands: ['echo ok'], depends_on: ['a'] }),
+    ];
+    const traj = makeTrajectory(steps);
+    const state = makeState(traj);
+
+    // Step a fails — step b should never be checked
+    const exec = vi.fn(() => fail);
+    const { advanced } = preVerifyAndAdvanceSteps(traj, state, '/tmp', exec);
+
+    expect(advanced).toBe(0);
+    // Only step a's command was run (step b blocked by dependency)
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips git-context failures gracefully', () => {
+    const steps = [
+      makeStep({ id: 'a', verification_commands: ['git log', 'test -f a.ts'] }),
+    ];
+    const traj = makeTrajectory(steps);
+    const state = makeState(traj);
+
+    const exec = vi.fn()
+      .mockReturnValueOnce({ exitCode: 128, timedOut: false, output: 'fatal: not a git repository' })
+      .mockReturnValueOnce(pass);
+    const { advanced } = preVerifyAndAdvanceSteps(traj, state, '/tmp', exec);
+
+    expect(advanced).toBe(1);
+    expect(state.stepStates['a'].status).toBe('completed');
+  });
+
+  it('treats timed-out commands as failure', () => {
+    const steps = [
+      makeStep({ id: 'a', verification_commands: ['sleep 999'] }),
+    ];
+    const traj = makeTrajectory(steps);
+    const state = makeState(traj);
+
+    const exec = vi.fn(() => ({ exitCode: 1, timedOut: true, output: '' }));
+    const { advanced } = preVerifyAndAdvanceSteps(traj, state, '/tmp', exec);
+
+    expect(advanced).toBe(0);
+    expect(state.stepStates['a'].status).toBe('active');
+  });
+
+  it('sets completedAt timestamp on advanced steps', () => {
+    const steps = [
+      makeStep({ id: 'a', verification_commands: ['echo ok'] }),
+    ];
+    const traj = makeTrajectory(steps);
+    const state = makeState(traj);
+
+    const before = Date.now();
+    const { advanced, completedSteps } = preVerifyAndAdvanceSteps(traj, state, '/tmp', () => pass);
+    const after = Date.now();
+
+    expect(advanced).toBe(1);
+    expect(completedSteps).toEqual([{ id: 'a', title: 'a' }]);
+
+    expect(state.stepStates['a'].completedAt).toBeGreaterThanOrEqual(before);
+    expect(state.stepStates['a'].completedAt).toBeLessThanOrEqual(after);
   });
 });
 

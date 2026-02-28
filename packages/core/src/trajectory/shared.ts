@@ -61,12 +61,15 @@ export interface StepState {
   }>;
 }
 
+export type TrajectoryStatus = 'active' | 'completed' | 'abandoned';
+
 export interface TrajectoryState {
   trajectoryName: string;
   startedAt: number;
   stepStates: Record<string, StepState>;
   currentStepId: string | null;
   paused: boolean;
+  status?: TrajectoryStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -604,6 +607,114 @@ export function enforceGraphOrdering(
     ...trajectory,
     steps: newSteps,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Skip / force-complete helpers — shared across CLI + MCP
+// ---------------------------------------------------------------------------
+
+export interface SkipStepResult {
+  skipped: boolean;
+  error?: string;
+  nextStep: { id: string; title: string } | null;
+}
+
+/**
+ * Mark a step as skipped and advance to the next eligible step.
+ * Shared logic used by trajectory_skip tool, heal_trajectory skip action,
+ * and CLI `solo trajectory skip` command.
+ *
+ * Returns the result with next step info. Does NOT persist state — caller
+ * must call saveTrajectoryState() after.
+ */
+export function skipStep(
+  trajectory: Trajectory,
+  state: TrajectoryState,
+  stepId: string,
+): SkipStepResult {
+  const stepState = state.stepStates[stepId];
+  if (!stepState) {
+    return { skipped: false, error: `Step "${stepId}" not found in trajectory`, nextStep: null };
+  }
+  if (stepState.status === 'completed' || stepState.status === 'skipped') {
+    return { skipped: false, error: `Step "${stepId}" is already ${stepState.status}`, nextStep: null };
+  }
+
+  stepState.status = 'skipped';
+  stepState.completedAt = Date.now();
+
+  const next = getNextStep(trajectory, state.stepStates);
+  if (next) {
+    state.stepStates[next.id].status = 'active';
+    state.currentStepId = next.id;
+  } else {
+    state.currentStepId = null;
+  }
+
+  return {
+    skipped: true,
+    nextStep: next ? { id: next.id, title: next.title } : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Pre-verification — auto-advance steps whose commands already pass
+// ---------------------------------------------------------------------------
+
+export interface CommandResult { exitCode: number; timedOut: boolean; output: string }
+export type CommandExecutor = (cmd: string, cwd: string) => CommandResult;
+
+export interface PreVerifyResult {
+  advanced: number;
+  completedSteps: Array<{ id: string; title: string }>;
+}
+
+/**
+ * Loop through trajectory steps, auto-completing any whose verification
+ * commands already pass. Shared between CLI and MCP so both code paths
+ * catch stale state before wasting a scout cycle.
+ *
+ * Returns the count and details of steps advanced.
+ */
+export function preVerifyAndAdvanceSteps(
+  trajectory: Trajectory,
+  state: TrajectoryState,
+  cwd: string,
+  exec: CommandExecutor,
+): PreVerifyResult {
+  const completedSteps: PreVerifyResult['completedSteps'] = [];
+  const maxIterations = trajectory.steps.length;
+  for (let i = 0; i < maxIterations; i++) {
+    const step = getNextStep(trajectory, state.stepStates);
+    if (!step || step.verification_commands.length === 0) break;
+
+    let allPass = true;
+    for (const cmd of step.verification_commands) {
+      const r = exec(cmd, cwd);
+      // Git-context resilience: skip commands that fail due to missing git repo
+      if (r.exitCode !== 0 && !r.timedOut && r.output.includes('not a git repository')) {
+        continue;
+      }
+      if (r.exitCode !== 0 || r.timedOut) {
+        allPass = false;
+        break;
+      }
+    }
+    if (!allPass) break;
+
+    const ss = state.stepStates[step.id];
+    if (!ss) break;
+    ss.status = 'completed';
+    ss.completedAt = Date.now();
+    completedSteps.push({ id: step.id, title: step.title });
+
+    const next = getNextStep(trajectory, state.stepStates);
+    state.currentStepId = next?.id ?? null;
+    if (next && state.stepStates[next.id]) {
+      state.stepStates[next.id].status = 'active';
+    }
+  }
+  return { advanced: completedSteps.length, completedSteps };
 }
 
 // ---------------------------------------------------------------------------

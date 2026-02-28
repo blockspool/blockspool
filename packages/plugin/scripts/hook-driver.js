@@ -129,6 +129,16 @@ if (hookType === 'stop') {
       process.exit(0);
     }
 
+    // PID liveness check — if the session's process is dead, this is a stale file
+    if (typeof loopState.pid === 'number') {
+      let alive = false;
+      try { process.kill(loopState.pid, 0); alive = true; } catch { /* ESRCH = dead */ }
+      if (!alive) {
+        try { unlinkSync(loopStatePath); } catch { /* ignore */ }
+        process.exit(0);
+      }
+    }
+
     // Session is still active — block exit and instruct Claude to continue
     process.stdout.write(JSON.stringify({
       decision: 'block',

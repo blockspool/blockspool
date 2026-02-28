@@ -3,7 +3,7 @@
  */
 
 import { join, resolve } from 'node:path';
-import { unlinkSync, existsSync, readdirSync, statSync, rmSync, readFileSync, appendFileSync } from 'node:fs';
+import { unlinkSync, existsSync, readdirSync, statSync, rmSync, readFileSync, appendFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { loadGuidelines } from '../guidelines.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -179,7 +179,40 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
         }
       }
 
+      // Clean up stale loop-state.json from crashed sessions
+      const loopStatePath = join(state.projectPath, '.promptwheel', 'loop-state.json');
+      try {
+        if (existsSync(loopStatePath)) {
+          const staleState = JSON.parse(readFileSync(loopStatePath, 'utf8'));
+          if (staleState.pid && typeof staleState.pid === 'number') {
+            let alive = false;
+            try { process.kill(staleState.pid, 0); alive = true; } catch { /* ESRCH = dead */ }
+            if (!alive) {
+              unlinkSync(loopStatePath);
+              warnings.push(`Cleaned up stale loop-state.json from dead process (PID ${staleState.pid}).`);
+            }
+          }
+        }
+      } catch {
+        // Best effort — don't block session start
+      }
+
       const runState = state.start(config);
+
+      // Write loop-state.json with PID so the Stop hook and future sessions
+      // can detect stale state from crashed processes
+      try {
+        const pwDir = join(state.projectPath, '.promptwheel');
+        if (!existsSync(pwDir)) mkdirSync(pwDir, { recursive: true });
+        writeFileSync(loopStatePath, JSON.stringify({
+          run_id: runState.run_id,
+          session_id: runState.session_id,
+          phase: runState.phase,
+          pid: process.pid,
+        }));
+      } catch (err) {
+        warnings.push(`Could not write loop-state.json: ${err instanceof Error ? err.message : 'unknown error'}`);
+      }
 
       // Test runner info
       if (!runState.project_metadata?.test_run_command) {
@@ -226,14 +259,27 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
           project: state.project,
         });
 
-        // Clean up loop-state.json on terminal responses so stop hook doesn't deadlock
+        // Update loop-state.json with current phase (or delete on terminal)
+        const advLoopStatePath = join(state.projectPath, '.promptwheel', 'loop-state.json');
         if (response.next_action === 'STOP') {
           try {
-            unlinkSync(join(state.projectPath, '.promptwheel', 'loop-state.json'));
+            unlinkSync(advLoopStatePath);
           } catch (err) {
             if (err instanceof Error && !('code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT')) {
               console.warn(`[promptwheel] failed to clean up loop-state.json: ${err.message}`);
             }
+          }
+        } else {
+          try {
+            const s = state.run.require();
+            writeFileSync(advLoopStatePath, JSON.stringify({
+              run_id: s.run_id,
+              session_id: s.session_id,
+              phase: response.phase,
+              pid: process.pid,
+            }));
+          } catch {
+            // Best effort — don't fail the advance call
           }
         }
 
@@ -356,12 +402,43 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
           }
         } catch { /* non-fatal */ }
 
+        // Trajectory context
+        let trajectory: { name: string; step_id: string | null; step_title: string | null; progress?: string } | undefined;
+        if (s.active_trajectory) {
+          trajectory = {
+            name: s.active_trajectory,
+            step_id: s.trajectory_step_id,
+            step_title: s.trajectory_step_title,
+          };
+          // Add progress (e.g., "3/7") by loading trajectory state
+          try {
+            const { loadTrajectoryState, loadTrajectory } = await import('../trajectory-io.js');
+            const trajState = loadTrajectoryState(state.projectPath);
+            const trajDef = trajState ? loadTrajectory(state.projectPath, trajState.trajectoryName) : null;
+            if (trajState && trajDef) {
+              const completed = Object.values(trajState.stepStates).filter(ss => ss.status === 'completed' || ss.status === 'skipped').length;
+              trajectory.progress = `${completed}/${trajDef.steps.length}`;
+            }
+          } catch { /* non-fatal */ }
+        }
+
+        // Codebase index stats
+        const indexStats = s.codebase_index ? {
+          modules_indexed: s.codebase_index.modules.length,
+          files_scanned: s.codebase_index.modules.reduce((sum, m) => sum + m.files.length, 0),
+        } : undefined;
+
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({
               ...status,
               digest,
+              scope: s.scope !== '**' ? s.scope : undefined,
+              formula: s.formula ?? undefined,
+              categories: s.categories.length > 0 ? s.categories : undefined,
+              trajectory,
+              codebase_index: indexStats,
               budget_warnings: warnings.length > 0 ? warnings : undefined,
               last_qa_failure: lastFailure,
               last_plan_rejection: s.last_plan_rejection_reason ?? undefined,

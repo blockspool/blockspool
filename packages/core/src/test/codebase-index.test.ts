@@ -547,6 +547,88 @@ describe('formatIndexForPrompt', () => {
     const result = formatIndexForPrompt(idx, 0);
     expect(result).not.toContain('symbols:');
   });
+
+  it('includes AST findings section when findings exist', () => {
+    const idx = makeIndex({
+      modules: [{
+        path: 'src/auth',
+        file_count: 2,
+        files: [],
+        production_file_count: 2,
+        purpose: 'services',
+        production: true,
+        classification_confidence: 'high',
+        exported_names: [],
+      }],
+      ast_findings: [
+        { file: 'src/auth.ts', patternId: 'hardcoded-secret', message: 'possible hardcoded secret', line: 42, severity: 'high', category: 'security' },
+        { file: 'src/utils.ts', patternId: 'empty-catch', message: 'empty catch in handleError()', line: 10, severity: 'medium', category: 'fix' },
+        { file: 'src/main.ts', patternId: 'console-log', message: 'console.log statement', line: 5, severity: 'low', category: 'cleanup' },
+      ],
+    });
+    const result = formatIndexForPrompt(idx, 0);
+    expect(result).toContain('AST Findings');
+    expect(result).toContain('HIGH');
+    expect(result).toContain('[security] src/auth.ts:42: possible hardcoded secret');
+    expect(result).toContain('MEDIUM');
+    expect(result).toContain('LOW');
+  });
+
+  it('omits AST findings section when no findings', () => {
+    const idx = makeIndex({
+      modules: [{
+        path: 'src/mod',
+        file_count: 1,
+        files: [],
+        production_file_count: 1,
+        purpose: 'unknown',
+        production: true,
+        classification_confidence: 'high',
+        exported_names: [],
+      }],
+      ast_findings: [],
+    });
+    const result = formatIndexForPrompt(idx, 0);
+    expect(result).not.toContain('AST Findings');
+  });
+
+  it('includes cyclomatic complexity hotspots when avg_complexity is present', () => {
+    const idx = makeIndex({
+      modules: [
+        { path: 'src/complex', file_count: 5, files: [], production_file_count: 5, purpose: 'services', production: true, classification_confidence: 'high' as const, exported_names: [], avg_complexity: 12.5 },
+        { path: 'src/simple', file_count: 3, files: [], production_file_count: 3, purpose: 'utils', production: true, classification_confidence: 'high' as const, exported_names: [], avg_complexity: 2.1 },
+        { path: 'src/medium', file_count: 4, files: [], production_file_count: 4, purpose: 'api', production: true, classification_confidence: 'high' as const, exported_names: [], avg_complexity: 7.3 },
+      ],
+    });
+    const result = formatIndexForPrompt(idx, 0);
+    expect(result).toContain('Cyclomatic Complexity Hotspots');
+    expect(result).toContain('12.5');
+    // Sorted by complexity — complex first within the hotspots section
+    const hotspotStart = result.indexOf('Cyclomatic Complexity Hotspots');
+    const section = result.slice(hotspotStart);
+    const complexPos = section.indexOf('src/complex/');
+    const mediumPos = section.indexOf('src/medium/');
+    const simplePos = section.indexOf('src/simple/');
+    expect(complexPos).toBeLessThan(mediumPos);
+    expect(mediumPos).toBeLessThan(simplePos);
+  });
+
+  it('omits complexity hotspots when no modules have avg_complexity', () => {
+    const idx = makeIndex({
+      modules: [{
+        path: 'src/mod',
+        file_count: 1,
+        files: [],
+        production_file_count: 1,
+        purpose: 'unknown',
+        production: true,
+        classification_confidence: 'high',
+        exported_names: [],
+      }],
+    });
+    const result = formatIndexForPrompt(idx, 0);
+    expect(result).not.toContain('Cyclomatic Complexity Hotspots');
+  });
 });
 
 // ---------------------------------------------------------------------------

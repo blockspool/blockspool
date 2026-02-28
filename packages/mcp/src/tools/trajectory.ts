@@ -16,7 +16,12 @@ import {
   clearTrajectoryState,
   activateTrajectory,
 } from '../trajectory-io.js';
-import { getNextStep } from '@promptwheel/core/trajectory/shared';
+import {
+  getNextStep,
+  skipStep,
+  trajectoryStuck,
+  trajectoryComplete,
+} from '@promptwheel/core/trajectory/shared';
 
 export function registerTrajectoryTools(server: McpServer, getState: () => SessionManager) {
   // ── promptwheel_trajectory_list ────────────────────────────────────────────
@@ -321,6 +326,7 @@ export function registerTrajectoryTools(server: McpServer, getState: () => Sessi
   );
 
   // ── promptwheel_trajectory_skip ────────────────────────────────────────────
+  // Delegates to heal_trajectory(action=skip). Kept for backward compat.
   server.tool(
     'promptwheel_trajectory_skip',
     'Skip a trajectory step. Marks it as skipped and advances to the next eligible step.',
@@ -332,53 +338,17 @@ export function registerTrajectoryTools(server: McpServer, getState: () => Sessi
       try {
         const trajState = loadTrajectoryState(state.projectPath);
         if (!trajState) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({ error: 'No active trajectory' }),
-            }],
-            isError: true,
-          };
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No active trajectory' }) }], isError: true };
         }
 
-        const stepState = trajState.stepStates[params.step_id];
-        if (!stepState) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({ error: `Step "${params.step_id}" not found in trajectory` }),
-            }],
-            isError: true,
-          };
-        }
-
-        if (stepState.status === 'completed' || stepState.status === 'skipped') {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({ error: `Step "${params.step_id}" is already ${stepState.status}` }),
-            }],
-            isError: true,
-          };
-        }
-
-        // Mark as skipped
-        stepState.status = 'skipped';
-        stepState.completedAt = Date.now();
-
-        // Find the next step
         const trajectory = loadTrajectory(state.projectPath, trajState.trajectoryName);
-        let nextStep: { id: string; title: string } | null = null;
+        if (!trajectory) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Trajectory definition not found' }) }], isError: true };
+        }
 
-        if (trajectory) {
-          const next = getNextStep(trajectory, trajState.stepStates);
-          if (next) {
-            trajState.stepStates[next.id].status = 'active';
-            trajState.currentStepId = next.id;
-            nextStep = { id: next.id, title: next.title };
-          } else {
-            trajState.currentStepId = null;
-          }
+        const result = skipStep(trajectory, trajState, params.step_id);
+        if (!result.skipped) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ error: result.error }) }], isError: true };
         }
 
         saveTrajectoryState(state.projectPath, trajState);
@@ -386,21 +356,11 @@ export function registerTrajectoryTools(server: McpServer, getState: () => Sessi
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify({
-              skipped: true,
-              stepId: params.step_id,
-              nextStep,
-            }, null, 2),
+            text: JSON.stringify({ skipped: true, stepId: params.step_id, nextStep: result.nextStep }, null, 2),
           }],
         };
       } catch (e) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({ error: (e as Error).message }),
-          }],
-          isError: true,
-        };
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ error: (e as Error).message }) }], isError: true };
       }
     },
   );
@@ -440,6 +400,197 @@ export function registerTrajectoryTools(server: McpServer, getState: () => Sessi
             text: JSON.stringify({
               reset: true,
               name: params.name,
+            }, null, 2),
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ error: (e as Error).message }),
+          }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // ── promptwheel_heal_trajectory ──────────────────────────────────────────
+  server.tool(
+    'promptwheel_heal_trajectory',
+    'Diagnose and recover stuck trajectory steps. Actions: diagnose (default), skip, retry, force_complete.',
+    {
+      step_id: z.string().describe('The step ID to diagnose or heal.'),
+      action: z.enum(['diagnose', 'skip', 'retry', 'force_complete']).optional()
+        .describe('Action: diagnose (default), skip (mark skipped), retry (reset attempts), force_complete (mark completed).'),
+    },
+    async (params) => {
+      const state = getState();
+      try {
+        const trajState = loadTrajectoryState(state.projectPath);
+        if (!trajState) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({ error: 'No active trajectory' }),
+            }],
+            isError: true,
+          };
+        }
+
+        const stepState = trajState.stepStates[params.step_id];
+        if (!stepState) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({ error: `Step "${params.step_id}" not found in trajectory` }),
+            }],
+            isError: true,
+          };
+        }
+
+        const trajectory = loadTrajectory(state.projectPath, trajState.trajectoryName);
+        const step = trajectory?.steps.find(s => s.id === params.step_id);
+        const action = params.action ?? 'diagnose';
+
+        // ── Diagnose ──
+        if (action === 'diagnose') {
+          const issues: string[] = [];
+          const suggestions: string[] = [];
+
+          if (stepState.status === 'completed') {
+            issues.push('Step is already completed');
+          } else if (stepState.status === 'skipped') {
+            issues.push('Step was skipped');
+          } else if (stepState.status === 'failed') {
+            issues.push(`Step failed: ${stepState.failureReason ?? 'unknown reason'}`);
+            suggestions.push('Use action "retry" to reset attempt counter, or "skip" to move past it');
+          } else if (stepState.status === 'active' || stepState.status === 'pending') {
+            const maxRetries = step?.max_retries ?? 3;
+            if (stepState.cyclesAttempted >= maxRetries) {
+              issues.push(`Stuck: ${stepState.cyclesAttempted}/${maxRetries} attempts exhausted`);
+              suggestions.push('Use action "retry" to reset attempts, "skip" to bypass, or "force_complete" if work is done');
+            }
+            if (stepState.consecutiveFailures && stepState.consecutiveFailures >= 2) {
+              issues.push(`${stepState.consecutiveFailures} consecutive verification failures`);
+            }
+            if (stepState.totalFailures && stepState.totalFailures >= maxRetries * 2) {
+              issues.push(`Flaky: ${stepState.totalFailures} total failures (threshold: ${maxRetries * 2})`);
+            }
+            if (stepState.lastVerificationOutput) {
+              issues.push(`Last verification output: ${stepState.lastVerificationOutput.slice(0, 500)}`);
+            }
+            if (issues.length === 0) {
+              issues.push(`Step is ${stepState.status} (${stepState.cyclesAttempted}/${maxRetries} attempts)`);
+            }
+          }
+
+          // Check global stuck detection
+          if (trajectory) {
+            const stuckId = trajectoryStuck(trajState.stepStates, undefined, trajectory.steps);
+            if (stuckId === params.step_id) {
+              issues.push('Detected as stuck by trajectoryStuck() — would be auto-failed on next advance');
+            }
+          }
+
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                step_id: params.step_id,
+                title: step?.title ?? params.step_id,
+                status: stepState.status,
+                cyclesAttempted: stepState.cyclesAttempted,
+                issues,
+                suggestions,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // ── Skip (delegates to shared skipStep) ──
+        if (action === 'skip') {
+          const skipResult = skipStep(trajectory!, trajState, params.step_id);
+          if (!skipResult.skipped) {
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({ error: skipResult.error }) }],
+              isError: true,
+            };
+          }
+          // skipStep already advanced state — save and return
+          saveTrajectoryState(state.projectPath, trajState);
+          const isComplete = trajectory ? trajectoryComplete(trajectory, trajState.stepStates) : false;
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                action,
+                step_id: params.step_id,
+                title: step?.title ?? params.step_id,
+                new_status: 'skipped',
+                nextStep: skipResult.nextStep,
+                trajectory_complete: isComplete,
+              }, null, 2),
+            }],
+          };
+        }
+
+        // ── Retry ──
+        if (action === 'retry') {
+          if (stepState.status === 'completed' || stepState.status === 'skipped') {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: JSON.stringify({ error: `Cannot retry a ${stepState.status} step` }),
+              }],
+              isError: true,
+            };
+          }
+          stepState.status = 'active';
+          stepState.cyclesAttempted = 0;
+          stepState.consecutiveFailures = 0;
+          stepState.failureReason = undefined;
+          stepState.lastVerificationOutput = undefined;
+        }
+
+        // ── Force complete ──
+        if (action === 'force_complete') {
+          stepState.status = 'completed';
+          stepState.completedAt = Date.now();
+        }
+
+        // Advance to next step after force_complete (skip returns early above)
+        let nextStep: { id: string; title: string } | null = null;
+        if (trajectory && action === 'force_complete') {
+          const next = getNextStep(trajectory, trajState.stepStates);
+          if (next) {
+            trajState.stepStates[next.id].status = 'active';
+            trajState.currentStepId = next.id;
+            nextStep = { id: next.id, title: next.title };
+          } else {
+            trajState.currentStepId = null;
+          }
+        }
+
+        // For retry, keep current step as active
+        if (action === 'retry') {
+          trajState.currentStepId = params.step_id;
+        }
+
+        saveTrajectoryState(state.projectPath, trajState);
+
+        const isComplete = trajectory ? trajectoryComplete(trajectory, trajState.stepStates) : false;
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              action,
+              step_id: params.step_id,
+              title: step?.title ?? params.step_id,
+              new_status: stepState.status,
+              nextStep,
+              trajectory_complete: isComplete,
             }, null, 2),
           }],
         };

@@ -103,21 +103,18 @@ Drill mode is enabled by default in spin — it auto-generates multi-step trajec
 ### Setup
 
 1. Call `promptwheel_start_session` with the provided arguments.
-2. After receiving the response, write `.promptwheel/loop-state.json` with:
-   ```json
-   { "run_id": "<run_id>", "session_id": "<session_id>", "phase": "SCOUT" }
-   ```
-   This file is read by the Stop hook to prevent premature exit.
+   - The MCP server writes `.promptwheel/loop-state.json` automatically (with PID for crash detection).
+   - **Do NOT** write `loop-state.json` yourself — the server manages it.
 
 ### Main Loop
 
-3. Call `promptwheel_advance` to get the next action.
-4. Check `next_action` in the response:
+2. Call `promptwheel_advance` to get the next action.
+3. Check `next_action` in the response:
    - `"PROMPT"` → Execute the prompt (scout, plan, code, test, git), then report via `promptwheel_ingest_event`
    - `"PARALLEL_EXECUTE"` → Spawn subagents (see Parallel Execution below)
    - `"STOP"` → Session is done, clean up
-5. Update `.promptwheel/loop-state.json` with the current phase after each advance.
-6. Repeat until advance returns `next_action: "STOP"`.
+4. Repeat until advance returns `next_action: "STOP"`.
+   - The MCP server updates `loop-state.json` phase after each advance call automatically.
 
 ### Task Tracking
 
@@ -212,5 +209,5 @@ When `parallel` is 1 (or only 1 ticket is ready), advance returns `"PROMPT"` ins
 - Always output structured XML blocks when requested (`<proposals>`, `<commit-plan>`, `<ticket-result>`).
 - In spin mode, the Stop hook will block premature exit while the session is active.
 - In orchestration mode, no `.promptwheel/loop-state.json` exists — the Stop hook is a no-op and the user can exit freely.
-- When the session ends in spin mode, delete `.promptwheel/loop-state.json`.
+- When the session ends in spin mode, the MCP server automatically deletes `.promptwheel/loop-state.json`.
 - **Trajectory awareness:** If a trajectory is active, the session follows its steps. The advance loop automatically injects trajectory context into scout prompts. You can check trajectory status with `/promptwheel:trajectory list` or `/promptwheel:status`.

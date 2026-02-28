@@ -1,7 +1,7 @@
 ---
 name: trajectory
 description: Manage trajectories — list, show, activate, pause, resume, skip, reset, or generate new ones
-argument-hint: "list | show <name> | activate <name> | pause | resume | skip <step-id> | reset <name> | generate <goal>"
+argument-hint: "list | show <name> | activate <name> | pause | resume | skip <step-id> | heal <step-id> [action] | reset <name> | generate <goal>"
 ---
 
 Manage PromptWheel trajectories. Trajectories are ordered multi-step plans that guide the wheel across cycles.
@@ -16,6 +16,7 @@ Parse from `$ARGUMENTS` to determine the subcommand:
 - **pause** — Pause the active trajectory
 - **resume** — Resume a paused trajectory
 - **skip `<step-id>`** — Skip a step and advance to the next
+- **heal `<step-id>` `[action]`** — Diagnose and recover stuck steps (actions: diagnose, skip, retry, force_complete)
 - **reset `<name>`** — Reset all step state for a trajectory
 - **generate `<goal>`** — Generate a new trajectory from a high-level goal (see below)
 
@@ -52,6 +53,19 @@ Call `promptwheel_trajectory_resume`. Confirm resumption and show the current st
 
 ### skip `<step-id>`
 Call `promptwheel_trajectory_skip` with `step_id`. Show which step was skipped and what's next.
+
+> **Tip:** For richer recovery options (diagnose, skip, retry, force_complete), use `heal <step-id> [action]` instead.
+
+### heal `<step-id>` `[action]`
+Call `promptwheel_heal_trajectory` with `step_id` and optional `action`. The primary recovery tool for stuck trajectory steps.
+
+**Actions:**
+- **diagnose** (default) — Analyze why a step is stuck: shows attempt count, failure reasons, verification output, and suggestions
+- **skip** — Mark the step as skipped and advance to the next eligible step
+- **retry** — Reset the attempt counter and failure state so the step gets re-attempted
+- **force_complete** — Mark the step as completed (use when work was done outside the session)
+
+Display the result including current step status, next step, and whether the trajectory is complete.
 
 ### reset `<name>`
 Call `promptwheel_trajectory_reset` with `name`. Confirm the reset.

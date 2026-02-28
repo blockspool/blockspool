@@ -12,6 +12,7 @@ import {
   touchesSamePackage,
   proposalsConflict,
   hasImportChainConflict,
+  hasCallGraphConflict,
   partitionIntoWaves,
   buildScoutEscalation,
   predictMergeConflict,
@@ -864,6 +865,112 @@ describe('hasImportChainConflict', () => {
   it('returns false for empty file lists', () => {
     expect(hasImportChainConflict([], ['src/core/index.ts'], edges)).toBe(false);
     expect(hasImportChainConflict(['src/core/index.ts'], [], edges)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasCallGraphConflict
+// ---------------------------------------------------------------------------
+
+describe('hasCallGraphConflict', () => {
+  const callEdges = [
+    { caller: 'authenticate', callee: 'hashPassword', line: 15 },
+    { caller: 'handleRequest', callee: 'authenticate', line: 22 },
+    { caller: 'validateInput', callee: 'sanitize', line: 8, importSource: './utils' },
+  ];
+
+  it('detects caller→callee relationship between symbol sets', () => {
+    expect(hasCallGraphConflict(
+      ['authenticate'], ['hashPassword'], callEdges,
+    )).toBe(true);
+  });
+
+  it('detects reverse callee→caller relationship', () => {
+    expect(hasCallGraphConflict(
+      ['hashPassword'], ['authenticate'], callEdges,
+    )).toBe(true);
+  });
+
+  it('detects transitive edges when both are in the edge list', () => {
+    // handleRequest calls authenticate, authenticate calls hashPassword
+    // but we only check direct edges, so handleRequest↔hashPassword is not detected
+    expect(hasCallGraphConflict(
+      ['handleRequest'], ['hashPassword'], callEdges,
+    )).toBe(false);
+  });
+
+  it('returns false for unrelated symbols', () => {
+    expect(hasCallGraphConflict(
+      ['validateInput'], ['hashPassword'], callEdges,
+    )).toBe(false);
+  });
+
+  it('returns false for empty symbol sets', () => {
+    expect(hasCallGraphConflict([], ['hashPassword'], callEdges)).toBe(false);
+    expect(hasCallGraphConflict(['authenticate'], [], callEdges)).toBe(false);
+  });
+
+  it('returns false for empty call edges', () => {
+    expect(hasCallGraphConflict(
+      ['authenticate'], ['hashPassword'], [],
+    )).toBe(false);
+  });
+
+  it('detects cross-file call edges via importSource', () => {
+    expect(hasCallGraphConflict(
+      ['validateInput'], ['sanitize'], callEdges,
+    )).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// proposalsConflict with call graph edges
+// ---------------------------------------------------------------------------
+
+describe('proposalsConflict with callEdges', () => {
+  const callEdges = [
+    { caller: 'processOrder', callee: 'validatePayment', line: 30 },
+    { caller: 'validatePayment', callee: 'checkFraud', line: 45 },
+  ];
+
+  it('detects conflict when target_symbols are connected by call edge', () => {
+    expect(proposalsConflict(
+      { files: ['src/orders/process.ts'], target_symbols: ['processOrder'] },
+      { files: ['src/payments/validate.ts'], target_symbols: ['validatePayment'] },
+      { sensitivity: 'normal', callEdges },
+    )).toBe(true);
+  });
+
+  it('no conflict without call edge connection', () => {
+    expect(proposalsConflict(
+      { files: ['src/orders/process.ts'], target_symbols: ['processOrder'] },
+      { files: ['src/fraud/check.ts'], target_symbols: ['checkFraud'] },
+      { sensitivity: 'normal', callEdges },
+    )).toBe(false); // no direct edge between processOrder and checkFraud
+  });
+
+  it('no conflict when callEdges not provided', () => {
+    expect(proposalsConflict(
+      { files: ['src/orders/process.ts'], target_symbols: ['processOrder'] },
+      { files: ['src/payments/validate.ts'], target_symbols: ['validatePayment'] },
+      { sensitivity: 'normal' },
+    )).toBe(false);
+  });
+
+  it('no conflict when target_symbols missing from one proposal', () => {
+    expect(proposalsConflict(
+      { files: ['src/orders/process.ts'], target_symbols: ['processOrder'] },
+      { files: ['src/payments/validate.ts'] },
+      { sensitivity: 'normal', callEdges },
+    )).toBe(false);
+  });
+
+  it('skipped at relaxed sensitivity', () => {
+    expect(proposalsConflict(
+      { files: ['src/orders/process.ts'], target_symbols: ['processOrder'] },
+      { files: ['src/payments/validate.ts'], target_symbols: ['validatePayment'] },
+      { sensitivity: 'relaxed', callEdges },
+    )).toBe(false);
   });
 });
 

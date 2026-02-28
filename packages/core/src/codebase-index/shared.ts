@@ -644,10 +644,47 @@ export function formatIndexForPrompt(index: CodebaseIndex, scoutCycle: number): 
     parts.push(large_files.map(f => `${f.path} (${f.lines})`).join(', '));
   }
 
+  // Cyclomatic complexity hotspots — top modules by avg_complexity
+  const complexModules = modules
+    .filter(m => m.avg_complexity !== null && m.avg_complexity !== undefined && m.avg_complexity > 0)
+    .sort((a, b) => (b.avg_complexity ?? 0) - (a.avg_complexity ?? 0))
+    .slice(0, 10);
+  if (complexModules.length > 0) {
+    parts.push('');
+    parts.push('### Cyclomatic Complexity Hotspots (refactoring candidates)');
+    for (const mod of complexModules) {
+      parts.push(`- ${mod.path}/ — avg complexity: ${(mod.avg_complexity ?? 0).toFixed(1)} (${mod.file_count} files, ${mod.purpose})`);
+    }
+  }
+
   if (entrypoints.length > 0) {
     parts.push('');
     parts.push('### Entrypoints');
     parts.push(entrypoints.join(', '));
+  }
+
+  // AST findings — mechanically detected issues for targeted proposals
+  if (index.ast_findings && index.ast_findings.length > 0) {
+    parts.push('');
+    parts.push('### AST Findings (mechanically detected — prioritize high severity)');
+    // Group by severity, high first
+    const bySeverity: Record<string, typeof index.ast_findings> = {};
+    for (const f of index.ast_findings) {
+      (bySeverity[f.severity] ??= []).push(f);
+    }
+    for (const sev of ['high', 'medium', 'low'] as const) {
+      const group = bySeverity[sev];
+      if (!group?.length) continue;
+      parts.push(`**${sev.toUpperCase()}** (${group.length}):`);
+      // Show up to 15 findings per severity, avoid overwhelming the prompt
+      for (const f of group.slice(0, 15)) {
+        const loc = f.line ? `:${f.line}` : '';
+        parts.push(`- [${f.category}] ${f.file}${loc}: ${f.message}`);
+      }
+      if (group.length > 15) {
+        parts.push(`  ... and ${group.length - 15} more`);
+      }
+    }
   }
 
   // Graph insights — compact section from dependency graph analysis

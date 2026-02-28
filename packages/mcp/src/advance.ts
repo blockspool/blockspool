@@ -16,6 +16,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import type { DatabaseAdapter } from '@promptwheel/core';
 import { repos, EXECUTION_DEFAULTS } from '@promptwheel/core';
 import type { Project } from '@promptwheel/core';
@@ -52,6 +53,9 @@ import { loadAstCache } from '@promptwheel/core/codebase-index';
 import {
   getNextStep as getTrajectoryNextStep,
   formatTrajectoryForPrompt,
+  preVerifyAndAdvanceSteps,
+  trajectoryStuck,
+  trajectoryComplete,
 } from '@promptwheel/core/trajectory/shared';
 import {
   buildScoutPrompt,
@@ -72,6 +76,7 @@ import {
   getQaAutoApprove,
   getPrAutoApprove,
 } from './advance-helpers.js';
+import { saveTrajectoryState, completeTrajectory } from './trajectory-io.js';
 
 const MAX_PLAN_REJECTIONS = 3;
 const MAX_QA_RETRIES = EXECUTION_DEFAULTS.MAX_QA_RETRIES;
@@ -331,21 +336,115 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     ? { scannedSectors: cov.sectors_scanned, totalSectors: cov.sectors_total, percent: cov.percent, sectorPercent, sectorSummary }
     : undefined;
 
-  // Trajectory context
+  // Pre-verify trajectory steps — auto-advance any whose verification commands already pass.
+  // This prevents wasting a scout cycle on work that was completed manually or in a prior session.
+  try {
+    const trajData = loadTrajectoryData(ctx.project.rootPath);
+    if (trajData) {
+      const { advanced, completedSteps } = preVerifyAndAdvanceSteps(
+        trajData.trajectory, trajData.state, ctx.project.rootPath,
+        (cmd, cwd) => {
+          const r = spawnSync('sh', ['-c', cmd], { cwd, timeout: 30000, encoding: 'utf-8' });
+          return {
+            exitCode: r.status ?? 1,
+            timedOut: !!r.error?.message?.includes('TIMEOUT'),
+            output: (r.stderr ?? '') + (r.stdout ?? ''),
+          };
+        },
+      );
+      if (advanced > 0) {
+        saveTrajectoryState(ctx.project.rootPath, trajData.state);
+        for (const cs of completedSteps) {
+          run.appendEvent('TRAJECTORY_STEP_COMPLETED', {
+            trajectory: trajData.trajectory.name,
+            step_id: cs.id,
+            step_title: cs.title,
+            source: 'pre_verify',
+          });
+        }
+        run.appendEvent('TRAJECTORY_PRE_VERIFIED', { steps_advanced: advanced });
+        // Check if the entire trajectory is now complete
+        if (trajectoryComplete(trajData.trajectory, trajData.state.stepStates)) {
+          completeTrajectory(ctx.project.rootPath);
+          run.appendEvent('TRAJECTORY_COMPLETED', {
+            trajectory: trajData.trajectory.name,
+            total_steps: trajData.trajectory.steps.length,
+            source: 'pre_verify',
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[promptwheel] Trajectory pre-verify failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Trajectory context — reload from disk to pick up any pre-verified state changes
   let trajectoryBlock = '';
   try {
     const trajData = loadTrajectoryData(ctx.project.rootPath);
     if (trajData) {
-      const currentStep = getTrajectoryNextStep(trajData.trajectory, trajData.state.stepStates);
+      let currentStep = getTrajectoryNextStep(trajData.trajectory, trajData.state.stepStates);
       if (currentStep) {
-        trajectoryBlock = formatTrajectoryForPrompt(trajData.trajectory, trajData.state.stepStates, currentStep) + '\n\n';
-        s.active_trajectory = trajData.trajectory.name;
-        s.trajectory_step_id = currentStep.id;
-        s.trajectory_step_title = currentStep.title;
-        // Override scope and categories from step
-        if (currentStep.scope) s.scope = currentStep.scope;
-        if (currentStep.categories && currentStep.categories.length > 0) {
-          s.categories = currentStep.categories;
+        // Increment cyclesAttempted so trajectoryStuck() can detect stuck steps
+        const stepState = trajData.state.stepStates[currentStep.id];
+        if (stepState) {
+          stepState.cyclesAttempted++;
+          stepState.lastAttemptedCycle = s.scout_cycles;
+        }
+
+        // Check for stuck step — auto-fail and advance (mirrors CLI solo-auto-between-cycles behavior)
+        const stuckId = trajectoryStuck(trajData.state.stepStates, undefined, trajData.trajectory.steps);
+        if (stuckId) {
+          const stuckState = trajData.state.stepStates[stuckId];
+          const stuckStep = trajData.trajectory.steps.find(st => st.id === stuckId);
+          if (stuckState) {
+            stuckState.status = 'failed';
+            stuckState.failureReason = 'max retries exceeded';
+            run.appendEvent('TRAJECTORY_STEP_FAILED', {
+              trajectory: trajData.trajectory.name,
+              step_id: stuckId,
+              step_title: stuckStep?.title ?? stuckId,
+              reason: `stuck after ${stuckState.cyclesAttempted} cycles`,
+            });
+          }
+          // Advance to next eligible step
+          currentStep = getTrajectoryNextStep(trajData.trajectory, trajData.state.stepStates);
+          trajData.state.currentStepId = currentStep?.id ?? null;
+          if (currentStep && trajData.state.stepStates[currentStep.id]) {
+            trajData.state.stepStates[currentStep.id].status = 'active';
+          }
+          // Check if stuck step was the last one → trajectory complete
+          if (trajectoryComplete(trajData.trajectory, trajData.state.stepStates)) {
+            completeTrajectory(ctx.project.rootPath);
+            run.appendEvent('TRAJECTORY_COMPLETED', {
+              trajectory: trajData.trajectory.name,
+              total_steps: trajData.trajectory.steps.length,
+              source: 'stuck_detection',
+            });
+          }
+        }
+
+        saveTrajectoryState(ctx.project.rootPath, trajData.state);
+
+        if (currentStep) {
+          // Emit TRAJECTORY_STEP_STARTED when beginning work on a new step
+          const prevStepId = s.trajectory_step_id;
+          if (currentStep.id !== prevStepId) {
+            run.appendEvent('TRAJECTORY_STEP_STARTED', {
+              trajectory: trajData.trajectory.name,
+              step_id: currentStep.id,
+              step_title: currentStep.title,
+            });
+          }
+          trajectoryBlock = formatTrajectoryForPrompt(trajData.trajectory, trajData.state.stepStates, currentStep) + '\n\n';
+          s.active_trajectory = trajData.trajectory.name;
+          s.trajectory_step_id = currentStep.id;
+          s.trajectory_step_title = currentStep.title;
+          // Override scope and categories from step
+          if (currentStep.scope) s.scope = currentStep.scope;
+          if (currentStep.categories && currentStep.categories.length > 0) {
+            s.categories = currentStep.categories;
+          }
         }
       }
     }

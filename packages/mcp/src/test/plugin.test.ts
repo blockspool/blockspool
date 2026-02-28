@@ -113,6 +113,47 @@ describe('Stop hook', () => {
     expect(stdout).toBe('');
   });
 
+  it('allows exit and cleans up when PID is dead (crashed session)', () => {
+    const loopStatePath = path.join(tmpDir, '.promptwheel', 'loop-state.json');
+    // Use PID 999999 which almost certainly doesn't exist
+    fs.writeFileSync(
+      loopStatePath,
+      JSON.stringify({ run_id: 'run_crashed', phase: 'SCOUT', pid: 999999 }),
+    );
+
+    const { exitCode, stdout } = runHook('stop');
+    expect(exitCode).toBe(0);
+    expect(stdout).toBe(''); // Allow exit (no block)
+    expect(fs.existsSync(loopStatePath)).toBe(false); // Cleaned up stale file
+  });
+
+  it('blocks exit when PID is alive (active session)', () => {
+    const loopStatePath = path.join(tmpDir, '.promptwheel', 'loop-state.json');
+    // Use our own PID — we know it's alive
+    fs.writeFileSync(
+      loopStatePath,
+      JSON.stringify({ run_id: 'run_live', phase: 'EXECUTE', pid: process.pid }),
+    );
+
+    const { exitCode, stdout } = runHook('stop');
+    expect(exitCode).toBe(0);
+    const result = JSON.parse(stdout);
+    expect(result.decision).toBe('block');
+    expect(fs.existsSync(loopStatePath)).toBe(true); // Not cleaned up
+  });
+
+  it('falls back to phase-based check when no PID present', () => {
+    // Old-format loop-state without PID — should still block on active phase
+    fs.writeFileSync(
+      path.join(tmpDir, '.promptwheel', 'loop-state.json'),
+      JSON.stringify({ run_id: 'run_old', phase: 'SCOUT' }),
+    );
+
+    const { stdout } = runHook('stop');
+    const result = JSON.parse(stdout);
+    expect(result.decision).toBe('block');
+  });
+
   it('allows exit on corrupt loop-state.json', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.promptwheel', 'loop-state.json'),

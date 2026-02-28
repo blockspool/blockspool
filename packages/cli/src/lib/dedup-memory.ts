@@ -16,7 +16,12 @@ import {
   type DedupEntry as CoreDedupEntry,
   applyDecay,
   DEDUP_DEFAULTS,
+  isUnblockedByCompletion,
+  resolveBlockingModules,
 } from '@promptwheel/core/dedup/shared';
+
+// Re-export for use by filter/execute modules
+export { isUnblockedByCompletion, resolveBlockingModules };
 
 // ---------------------------------------------------------------------------
 // Types (extends core with CLI-specific fields)
@@ -105,6 +110,7 @@ export function recordDedupEntry(
   failureReason?: 'qa_failed' | 'scope_violation' | 'spindle_abort' | 'agent_error' | 'no_changes',
   relatedTitles?: string[],
   files?: string[],
+  blockedByModules?: string[],
 ): void {
   const entries = readEntries(projectRoot);
   const now = new Date().toISOString();
@@ -118,10 +124,15 @@ export function recordDedupEntry(
     existing.weight = Math.min(MAX_WEIGHT, existing.weight + BUMP_AMOUNT);
     existing.last_seen_at = now;
     existing.hit_count++;
-    if (completed) existing.completed = true;
+    if (completed) {
+      existing.completed = true;
+      // Clear blocking info on success — the dependency issue is resolved
+      existing.blocked_by_modules = undefined;
+    }
     if (failureReason) existing.failureReason = failureReason;
     if (relatedTitles?.length) existing.relatedTitles = relatedTitles;
     if (normalizedFiles?.length) existing.files = normalizedFiles;
+    if (blockedByModules?.length) existing.blocked_by_modules = blockedByModules;
 
     // Instrument: duplicate detected
     metric('dedup', 'duplicate_found', { hitCount: existing.hit_count, completed });
@@ -136,6 +147,7 @@ export function recordDedupEntry(
       failureReason,
       relatedTitles,
       files: normalizedFiles,
+      blocked_by_modules: blockedByModules,
     });
   }
 

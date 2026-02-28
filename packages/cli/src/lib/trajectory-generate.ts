@@ -12,6 +12,7 @@ import {
   serializeTrajectoryToYaml,
   parseTrajectoryYaml,
   detectCycle,
+  enforceGraphOrdering,
   type Trajectory,
   type TrajectoryStep,
 } from '@promptwheel/core/trajectory/shared';
@@ -119,7 +120,12 @@ export async function generateTrajectory(opts: GenerateOptions): Promise<Generat
   }
 
   // 5. Validate and build Trajectory
-  const trajectory = validateAndBuild(parsed);
+  let trajectory = validateAndBuild(parsed);
+
+  // 5b. Enforce dependency graph ordering
+  if (codebaseIndex.dependency_edges) {
+    trajectory = enforceGraphOrdering(trajectory, codebaseIndex.dependency_edges);
+  }
 
   // 6. Serialize to YAML
   const yaml = serializeTrajectoryToYaml(trajectory);
@@ -148,6 +154,7 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
   // 1. Build codebase context
   let indexBlock: string;
   let metaBlock: string;
+  let depEdges: Record<string, string[]> = {};
   try {
     const excludeDirs = ['node_modules', 'dist', 'build', '.git', '.promptwheel', 'coverage', '__pycache__'];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -157,6 +164,7 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
       astGrepMod = await import(/* webpackIgnore: true */ moduleName);
     } catch { /* optional */ }
     const codebaseIndex = buildCodebaseIndex(opts.repoRoot, excludeDirs, true, astGrepMod);
+    depEdges = codebaseIndex.dependency_edges;
     const projectMeta = detectProjectMetadata(opts.repoRoot);
     indexBlock = formatIndexForPrompt(codebaseIndex, 0);
     metaBlock = formatMetadataForPrompt(projectMeta);
@@ -216,6 +224,11 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
     trajectory = validateAndBuild(parsed);
   } catch (err) {
     throw new Error(`Trajectory generation failed during validation: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 6b. Enforce dependency graph ordering
+  if (Object.keys(depEdges).length > 0) {
+    trajectory = enforceGraphOrdering(trajectory, depEdges);
   }
 
   // 7. Serialize to YAML

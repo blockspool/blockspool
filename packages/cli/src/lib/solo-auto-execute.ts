@@ -17,10 +17,10 @@ import { classifyFailure } from './failure-classifier.js';
 import { normalizeQaConfig } from './solo-utils.js';
 import { computeTicketTimeout } from './solo-auto-utils.js';
 import { recordPrFiles } from './file-cooldown.js';
-import { recordDedupEntry } from './dedup-memory.js';
+import { recordDedupEntry, resolveBlockingModules } from './dedup-memory.js';
 import { recordOutcome as recordLearningOutcome } from './learnings.js';
 import { recordFormulaTicketOutcome, pushRecentDiff, recordQualitySignal, recordCategoryOutcome, deferProposal } from './run-state.js';
-import { recordTicketOutcome } from './sectors.js';
+import { recordTicketOutcome, propagateStaleness } from './sectors.js';
 import { appendErrorLedger } from './error-ledger.js';
 import { appendPrOutcome } from './pr-outcomes.js';
 import {
@@ -569,7 +569,10 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       if (result.prUrl) state.pendingPrUrls.push(result.prUrl);
       const verifiedFiles = result.actualChangedFiles ?? proposal.files ?? proposal.allowed_paths ?? [];
       recordDedupEntry(state.repoRoot, proposal.title, true, undefined, otherTitles, verifiedFiles);
-      if (state.sectorState && state.currentSectorId) recordTicketOutcome(state.sectorState, state.currentSectorId, true, proposal.category);
+      if (state.sectorState && state.currentSectorId) {
+        recordTicketOutcome(state.sectorState, state.currentSectorId, true, proposal.category);
+        propagateStaleness(state.sectorState, state.currentSectorId, state.codebaseIndex?.reverse_edges);
+      }
       recordFormulaTicketOutcome(state.repoRoot, state.currentFormulaName, true);
       recordCategoryOutcome(state.repoRoot, proposal.category, true);
       pushRecentDiff(state.repoRoot, { title: proposal.title, summary: `${verifiedFiles.length} files`, files: verifiedFiles, cycle: state.cycleCount });
@@ -622,7 +625,11 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       state.cycleOutcomes.push(outcome);
     } else {
       state.totalFailed++;
-      recordDedupEntry(state.repoRoot, proposal.title, false, (result.failureReason as any) ?? 'agent_error', undefined, proposal.files ?? proposal.allowed_paths);
+      const failFiles = proposal.files ?? proposal.allowed_paths ?? [];
+      const blockedBy = state.codebaseIndex?.dependency_edges
+        ? resolveBlockingModules(failFiles, state.codebaseIndex.dependency_edges)
+        : undefined;
+      recordDedupEntry(state.repoRoot, proposal.title, false, (result.failureReason as any) ?? 'agent_error', undefined, failFiles, blockedBy);
       if (state.sectorState && state.currentSectorId) recordTicketOutcome(state.sectorState, state.currentSectorId, false, proposal.category);
       recordFormulaTicketOutcome(state.repoRoot, state.currentFormulaName, false);
       recordCategoryOutcome(state.repoRoot, proposal.category, false);
@@ -683,7 +690,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       // Non-fatal — fall back to path-based conflict detection
     }
 
-    const waves: Array<typeof toProcess> = partitionIntoWaves(toProcess, { sensitivity });
+    const waves: Array<typeof toProcess> = partitionIntoWaves(toProcess, { sensitivity, edges: state.codebaseIndex?.dependency_edges });
     if (state.options.verbose && waves.length > 1) {
       state.displayAdapter.log(chalk.gray(`  Conflict-aware scheduling: ${waves.length} waves (sensitivity: ${sensitivity})`));
     }

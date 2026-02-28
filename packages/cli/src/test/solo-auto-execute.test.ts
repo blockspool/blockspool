@@ -490,6 +490,7 @@ describe('executeProposals', () => {
         'agent_error',
         undefined,
         ['src/utils.ts'],
+        undefined,
       );
     });
 

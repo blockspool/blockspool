@@ -5,8 +5,10 @@ import {
   OUTCOME_DECAY_FACTOR,
   OUTCOME_DECAY_INTERVAL,
   POLISHED_YIELD_THRESHOLD,
+  formatSectorDependencyContext,
   getSectorCategoryAffinity,
   pickNextSector,
+  propagateStaleness,
   recordScanResult,
   recordTicketOutcome,
   suggestScopeAdjustment,
@@ -291,5 +293,139 @@ describe('sanity check', () => {
 
   it('uses OUTCOME_DECAY_INTERVAL constant in tests', () => {
     expect(OUTCOME_DECAY_INTERVAL).toBe(20);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// propagateStaleness
+// ---------------------------------------------------------------------------
+
+describe('propagateStaleness', () => {
+  it('resets lastScannedAt on dependent sectors', () => {
+    const state = makeState([
+      makeSector({ path: 'src/core', lastScannedAt: FIXED_NOW }),
+      makeSector({ path: 'src/handlers', lastScannedAt: FIXED_NOW }),
+      makeSector({ path: 'src/utils', lastScannedAt: FIXED_NOW }),
+    ]);
+    const reverseEdges = {
+      'src/utils': ['src/core', 'src/handlers'],
+    };
+    const invalidated = propagateStaleness(state, 'src/utils', reverseEdges);
+    expect(invalidated).toEqual(['src/core', 'src/handlers']);
+    expect(state.sectors.find(s => s.path === 'src/core')!.lastScannedAt).toBe(0);
+    expect(state.sectors.find(s => s.path === 'src/handlers')!.lastScannedAt).toBe(0);
+    // Modified sector itself is not reset
+    expect(state.sectors.find(s => s.path === 'src/utils')!.lastScannedAt).toBe(FIXED_NOW);
+  });
+
+  it('returns empty array when reverseEdges is undefined', () => {
+    const state = makeState([
+      makeSector({ path: 'src/core', lastScannedAt: FIXED_NOW }),
+    ]);
+    const invalidated = propagateStaleness(state, 'src/core', undefined);
+    expect(invalidated).toEqual([]);
+    expect(state.sectors.find(s => s.path === 'src/core')!.lastScannedAt).toBe(FIXED_NOW);
+  });
+
+  it('returns empty array when no dependents exist', () => {
+    const state = makeState([
+      makeSector({ path: 'src/leaf', lastScannedAt: FIXED_NOW }),
+    ]);
+    const reverseEdges = {
+      'src/core': ['src/handlers'],
+    };
+    const invalidated = propagateStaleness(state, 'src/leaf', reverseEdges);
+    expect(invalidated).toEqual([]);
+  });
+
+  it('skips sectors that were never scanned', () => {
+    const state = makeState([
+      makeSector({ path: 'src/core', lastScannedAt: FIXED_NOW }),
+      makeSector({ path: 'src/new', lastScannedAt: 0 }),
+    ]);
+    const reverseEdges = {
+      'src/utils': ['src/core', 'src/new'],
+    };
+    const invalidated = propagateStaleness(state, 'src/utils', reverseEdges);
+    // Only src/core is invalidated; src/new was already at 0
+    expect(invalidated).toEqual(['src/core']);
+  });
+
+  it('causes pickNextSector to prioritize invalidated sectors', () => {
+    const state = makeState([
+      makeSector({ path: 'src/core', lastScannedAt: FIXED_NOW, lastScannedCycle: FIXED_CYCLE }),
+      makeSector({ path: 'src/api', lastScannedAt: FIXED_NOW, lastScannedCycle: FIXED_CYCLE }),
+      makeSector({ path: 'src/utils', lastScannedAt: FIXED_NOW, lastScannedCycle: FIXED_CYCLE }),
+    ]);
+    const reverseEdges = { 'src/utils': ['src/core'] };
+    propagateStaleness(state, 'src/utils', reverseEdges);
+    // src/core now has lastScannedAt=0, should be picked first (never-scanned priority)
+    const next = pickNextSector(state, FIXED_CYCLE + 1, FIXED_NOW);
+    expect(next?.sector.path).toBe('src/core');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatSectorDependencyContext
+// ---------------------------------------------------------------------------
+
+describe('formatSectorDependencyContext', () => {
+  it('returns null when no graph data', () => {
+    expect(formatSectorDependencyContext('src/core')).toBeNull();
+    expect(formatSectorDependencyContext('src/core', undefined, undefined)).toBeNull();
+  });
+
+  it('returns null when no dependents or dependencies', () => {
+    expect(formatSectorDependencyContext('src/leaf', {}, {})).toBeNull();
+  });
+
+  it('includes dependents list', () => {
+    const result = formatSectorDependencyContext(
+      'src/utils',
+      { 'src/utils': ['src/core', 'src/handlers'] },
+    );
+    expect(result).toContain('Depended on by (2)');
+    expect(result).toContain('src/core');
+    expect(result).toContain('src/handlers');
+    expect(result).toContain('cascading impact');
+  });
+
+  it('includes dependencies list', () => {
+    const result = formatSectorDependencyContext(
+      'src/handlers',
+      {},
+      { 'src/handlers': ['src/core', 'src/utils'] },
+    );
+    expect(result).toContain('Depends on (2)');
+    expect(result).toContain('src/core');
+  });
+
+  it('includes sector metrics when provided', () => {
+    const sector = makeSector({
+      path: 'src/core',
+      fanIn: 5,
+      fanOut: 2,
+      instability: 0.29,
+      isHub: true,
+    });
+    const result = formatSectorDependencyContext(
+      'src/core',
+      { 'src/core': ['src/a'] },
+      {},
+      sector,
+    );
+    expect(result).toContain('fan-in: 5');
+    expect(result).toContain('fan-out: 2');
+    expect(result).toContain('instability: 0.29');
+    expect(result).toContain('hub module');
+  });
+
+  it('truncates long dependents lists', () => {
+    const deps = Array.from({ length: 15 }, (_, i) => `mod${i}`);
+    const result = formatSectorDependencyContext(
+      'src/shared',
+      { 'src/shared': deps },
+    );
+    expect(result).toContain('(+5 more)');
   });
 });

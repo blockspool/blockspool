@@ -28,6 +28,7 @@ export {
   hasSharedParentConflict,
   touchesSamePackage,
   proposalsConflict,
+  hasImportChainConflict,
   buildScoutEscalation,
   enrichWithSymbols,
   predictMergeConflict,

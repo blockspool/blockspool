@@ -136,7 +136,7 @@ export async function handleQaPassed(ctx: EventContext, payload: Record<string, 
   // Skip PR phase when not creating PRs
   if (!s.create_prs) {
     await recordTicketDedup(ctx.db, ctx.run.rootPath, s.current_ticket_id, true);
-    recordSectorOutcome(ctx.run.rootPath, s.current_sector_path, 'success');
+    recordSectorOutcome(ctx.run.rootPath, s.current_sector_path, 'success', s.codebase_index?.reverse_edges);
     ctx.run.completeTicket();
     ctx.run.appendEvent('TICKET_COMPLETED_NO_PR', payload);
     ctx.run.setPhase('NEXT_TICKET');

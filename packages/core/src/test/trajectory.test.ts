@@ -24,6 +24,7 @@ import {
   serializeTrajectoryToYaml,
   createInitialStepStates,
   detectCycle,
+  enforceGraphOrdering,
   type Trajectory,
   type TrajectoryStep,
   type StepState,
@@ -1171,6 +1172,93 @@ describe('serializeTrajectoryToYaml special character round-trip', () => {
     const parsed = parseTrajectoryYaml(yaml);
     expect(parsed.name).toBe('simple-name');
     expect(parsed.steps[0].title).toBe('Simple step');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enforceGraphOrdering
+// ---------------------------------------------------------------------------
+
+describe('enforceGraphOrdering', () => {
+  it('adds depends_on when step B imports a module touched by step A', () => {
+    const trajectory = makeTrajectory([
+      makeStep({ id: 'a', scope: 'packages/core/' }),
+      makeStep({ id: 'b', scope: 'packages/cli/' }),
+    ]);
+    const edges: Record<string, string[]> = {
+      'packages/cli/src/lib': ['packages/core/src'],
+    };
+    const result = enforceGraphOrdering(trajectory, edges);
+    // B (cli) imports A (core), so B should depend on A
+    expect(result.steps[1].depends_on).toContain('a');
+  });
+
+  it('does not add duplicate depends_on if already present', () => {
+    const trajectory = makeTrajectory([
+      makeStep({ id: 'a', scope: 'packages/core/' }),
+      makeStep({ id: 'b', scope: 'packages/cli/', depends_on: ['a'] }),
+    ]);
+    const edges: Record<string, string[]> = {
+      'packages/cli/src': ['packages/core/src'],
+    };
+    const result = enforceGraphOrdering(trajectory, edges);
+    const deps = result.steps[1].depends_on.filter(d => d === 'a');
+    expect(deps).toHaveLength(1);
+  });
+
+  it('skips edge that would create a cycle', () => {
+    // A depends on B already. If B's module imports A's module, adding B→A would cycle.
+    const trajectory = makeTrajectory([
+      makeStep({ id: 'a', scope: 'packages/core/', depends_on: ['b'] }),
+      makeStep({ id: 'b', scope: 'packages/cli/' }),
+    ]);
+    const edges: Record<string, string[]> = {
+      // cli imports core → would want b→a, but a already depends on b
+      'packages/cli/src': ['packages/core/src'],
+    };
+    const result = enforceGraphOrdering(trajectory, edges);
+    // Should NOT have added a→b (already exists) or b→a (would cycle)
+    expect(result.steps[0].depends_on).toEqual(['b']);
+    expect(result.steps[1].depends_on).toEqual([]);
+  });
+
+  it('returns trajectory unchanged when edges are empty', () => {
+    const trajectory = makeTrajectory([
+      makeStep({ id: 'a', scope: 'packages/core/' }),
+      makeStep({ id: 'b', scope: 'packages/cli/' }),
+    ]);
+    const result = enforceGraphOrdering(trajectory, {});
+    expect(result.steps[0].depends_on).toEqual([]);
+    expect(result.steps[1].depends_on).toEqual([]);
+  });
+
+  it('handles steps with no scope gracefully', () => {
+    const trajectory = makeTrajectory([
+      makeStep({ id: 'a' }),
+      makeStep({ id: 'b', scope: 'packages/cli/' }),
+    ]);
+    const edges: Record<string, string[]> = {
+      'packages/cli/src': ['packages/core/src'],
+    };
+    const result = enforceGraphOrdering(trajectory, edges);
+    // Step A has no scope → no modules → no edges added
+    expect(result.steps[0].depends_on).toEqual([]);
+    expect(result.steps[1].depends_on).toEqual([]);
+  });
+
+  it('does not mutate the original trajectory', () => {
+    const original = makeTrajectory([
+      makeStep({ id: 'a', scope: 'packages/core/' }),
+      makeStep({ id: 'b', scope: 'packages/cli/' }),
+    ]);
+    const edges: Record<string, string[]> = {
+      'packages/cli/src': ['packages/core/src'],
+    };
+    const result = enforceGraphOrdering(original, edges);
+    // Original should be unmodified
+    expect(original.steps[1].depends_on).toEqual([]);
+    // Result should have the new edge
+    expect(result.steps[1].depends_on).toContain('a');
   });
 });
 

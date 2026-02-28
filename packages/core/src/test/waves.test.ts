@@ -11,6 +11,7 @@ import {
   hasSharedParentConflict,
   touchesSamePackage,
   proposalsConflict,
+  hasImportChainConflict,
   partitionIntoWaves,
   buildScoutEscalation,
   predictMergeConflict,
@@ -813,5 +814,132 @@ describe('tryStructuralMerge', () => {
     expect(result).not.toBeNull();
     expect(result).toContain('return 99');
     expect(result).toContain('return 1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasImportChainConflict
+// ---------------------------------------------------------------------------
+
+describe('hasImportChainConflict', () => {
+  const edges: Record<string, string[]> = {
+    'src/core': ['src/utils'],
+    'src/handlers': ['src/core', 'src/utils'],
+    'src/utils': [],
+    'src/api': ['src/handlers'],
+  };
+
+  it('detects direct import relationship', () => {
+    expect(hasImportChainConflict(
+      ['src/core/index.ts'],
+      ['src/utils/helpers.ts'],
+      edges,
+    )).toBe(true); // src/core imports src/utils
+  });
+
+  it('detects reverse import relationship', () => {
+    expect(hasImportChainConflict(
+      ['src/utils/helpers.ts'],
+      ['src/core/index.ts'],
+      edges,
+    )).toBe(true); // src/core imports src/utils (reverse check)
+  });
+
+  it('returns false for unrelated modules', () => {
+    expect(hasImportChainConflict(
+      ['src/utils/helpers.ts'],
+      ['src/api/routes.ts'],
+      edges,
+    )).toBe(false); // no direct edge between src/utils and src/api
+  });
+
+  it('returns false when files do not match any module', () => {
+    expect(hasImportChainConflict(
+      ['unrelated/file.ts'],
+      ['src/core/index.ts'],
+      edges,
+    )).toBe(false);
+  });
+
+  it('returns false for empty file lists', () => {
+    expect(hasImportChainConflict([], ['src/core/index.ts'], edges)).toBe(false);
+    expect(hasImportChainConflict(['src/core/index.ts'], [], edges)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// proposalsConflict with import graph edges
+// ---------------------------------------------------------------------------
+
+describe('proposalsConflict with edges', () => {
+  const edges: Record<string, string[]> = {
+    'src/core': ['src/utils'],
+    'src/handlers': ['src/core'],
+    'src/utils': [],
+  };
+
+  it('detects import-chain conflict at normal sensitivity', () => {
+    expect(proposalsConflict(
+      { files: ['src/core/types.ts'] },
+      { files: ['src/utils/helpers.ts'] },
+      { sensitivity: 'normal', edges },
+    )).toBe(true);
+  });
+
+  it('ignores import-chain at relaxed sensitivity', () => {
+    expect(proposalsConflict(
+      { files: ['src/core/types.ts'] },
+      { files: ['src/utils/helpers.ts'] },
+      { sensitivity: 'relaxed', edges },
+    )).toBe(false);
+  });
+
+  it('no conflict when edges is undefined', () => {
+    // Without edges, different directories with no overlap are fine
+    expect(proposalsConflict(
+      { files: ['src/core/types.ts'] },
+      { files: ['src/utils/helpers.ts'] },
+      { sensitivity: 'normal' },
+    )).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// partitionIntoWaves with edges
+// ---------------------------------------------------------------------------
+
+describe('partitionIntoWaves with edges', () => {
+  const edges: Record<string, string[]> = {
+    'src/core': ['src/utils'],
+    'src/handlers': ['src/core'],
+    'src/utils': [],
+    'src/api': [],
+  };
+
+  it('separates import-chain connected proposals into different waves', () => {
+    const proposals = [
+      { files: ['src/core/index.ts'] },
+      { files: ['src/utils/helpers.ts'] },
+      { files: ['src/api/routes.ts'] },
+    ];
+    const waves = partitionIntoWaves(proposals, { edges });
+    // src/core imports src/utils → must be in different waves
+    // src/api is independent → can join either
+    expect(waves.length).toBeGreaterThanOrEqual(2);
+    // Verify core and utils are NOT in the same wave
+    for (const wave of waves) {
+      const hasCore = wave.some(p => p.files[0].includes('src/core'));
+      const hasUtils = wave.some(p => p.files[0].includes('src/utils'));
+      expect(hasCore && hasUtils).toBe(false);
+    }
+  });
+
+  it('without edges, unrelated modules go in same wave', () => {
+    const proposals = [
+      { files: ['src/core/index.ts'] },
+      { files: ['src/utils/helpers.ts'] },
+    ];
+    const waves = partitionIntoWaves(proposals);
+    expect(waves.length).toBe(1); // no edges → no conflict
   });
 });

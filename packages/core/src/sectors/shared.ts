@@ -485,6 +485,33 @@ export function recordTicketOutcome(state: SectorState, sectorPath: string, succ
   }
 }
 
+/**
+ * Mark sectors that depend on a modified sector as stale by resetting
+ * their lastScannedAt. This causes them to float up in pickNextSector's
+ * staleness sort, ensuring consumers of changed code get re-scanned.
+ *
+ * No-op when reverseEdges is absent (backward compatible).
+ */
+export function propagateStaleness(
+  state: SectorState,
+  modifiedSectorPath: string,
+  reverseEdges?: Record<string, string[]>,
+): string[] {
+  if (!reverseEdges) return [];
+  const dependents = reverseEdges[modifiedSectorPath];
+  if (!dependents || dependents.length === 0) return [];
+
+  const invalidated: string[] = [];
+  for (const depPath of dependents) {
+    const sector = state.sectors.find(s => s.path === depPath);
+    if (sector && sector.lastScannedAt > 0) {
+      sector.lastScannedAt = 0;
+      invalidated.push(depPath);
+    }
+  }
+  return invalidated;
+}
+
 export function updateProposalYield(state: SectorState, sectorPath: string, acceptedCount: number): void {
   const s = state.sectors.find(x => x.path === sectorPath);
   if (!s) return;
@@ -499,6 +526,55 @@ export function recordMergeOutcome(state: SectorState, sectorPath: string, merge
   } else {
     s.closedCount = (s.closedCount ?? 0) + 1;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Per-sector dependency context for scout prompts
+// ---------------------------------------------------------------------------
+
+/**
+ * Format per-sector structural context for the scout prompt.
+ * Shows which modules depend on this sector, fan-in/fan-out,
+ * and instability metric — helping the scout prioritize changes
+ * to highly-depended-upon code.
+ *
+ * Returns null when no graph context is available.
+ */
+export function formatSectorDependencyContext(
+  sectorPath: string,
+  reverseEdges?: Record<string, string[]>,
+  edges?: Record<string, string[]>,
+  sector?: Sector,
+): string | null {
+  if (!reverseEdges && !edges) return null;
+
+  const dependents = reverseEdges?.[sectorPath] ?? [];
+  const dependencies = edges?.[sectorPath] ?? [];
+
+  // Nothing useful to show
+  if (dependents.length === 0 && dependencies.length === 0 && !sector?.instability) return null;
+
+  const lines: string[] = ['## Sector Structural Context'];
+
+  if (dependents.length > 0) {
+    lines.push(`**Depended on by (${dependents.length}):** ${dependents.slice(0, 10).join(', ')}${dependents.length > 10 ? ` (+${dependents.length - 10} more)` : ''}`);
+    lines.push('Changes here have cascading impact — be thorough with verification.');
+  }
+
+  if (dependencies.length > 0) {
+    lines.push(`**Depends on (${dependencies.length}):** ${dependencies.slice(0, 10).join(', ')}${dependencies.length > 10 ? ` (+${dependencies.length - 10} more)` : ''}`);
+  }
+
+  if (sector) {
+    const parts: string[] = [];
+    if (sector.fanIn !== undefined) parts.push(`fan-in: ${sector.fanIn}`);
+    if (sector.fanOut !== undefined) parts.push(`fan-out: ${sector.fanOut}`);
+    if (sector.instability !== undefined) parts.push(`instability: ${sector.instability.toFixed(2)}`);
+    if (sector.isHub) parts.push('**hub module**');
+    if (parts.length > 0) lines.push(`**Metrics:** ${parts.join(' | ')}`);
+  }
+
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------

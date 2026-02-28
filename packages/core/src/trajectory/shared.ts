@@ -494,6 +494,119 @@ export function detectCycle(steps: TrajectoryStep[]): string[] | null {
 }
 
 // ---------------------------------------------------------------------------
+// Graph-based ordering
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect all unique module paths from the dependency graph (keys + values).
+ */
+function allModules(edges: Record<string, string[]>): string[] {
+  const set = new Set<string>();
+  for (const [source, targets] of Object.entries(edges)) {
+    set.add(source);
+    for (const t of targets) set.add(t);
+  }
+  return [...set];
+}
+
+/**
+ * Resolve a scope glob or file path to the set of modules it matches
+ * in the dependency graph. Matches on prefix (directory scope) or exact key.
+ */
+function resolveToModules(scope: string | undefined, edges: Record<string, string[]>): string[] {
+  if (!scope) return [];
+  const modules = allModules(edges);
+  // Trim trailing glob stars: "packages/cli/**" → "packages/cli/"
+  const prefix = scope.replace(/\*+$/, '');
+  return modules.filter(m => m === scope || m.startsWith(prefix));
+}
+
+/**
+ * Post-process a trajectory to enforce dependency graph ordering.
+ *
+ * For each pair of steps (A, B), if A's scope touches a module that is imported
+ * by a module in B's scope, and B doesn't already depend on A, add A as a
+ * dependency of B. Skips the edge if it would introduce a cycle.
+ *
+ * This is a pure function — returns a new Trajectory with updated depends_on.
+ */
+export function enforceGraphOrdering(
+  trajectory: Trajectory,
+  edges: Record<string, string[]>,
+): Trajectory {
+  if (!edges || Object.keys(edges).length === 0) return trajectory;
+
+  // Pre-compute modules for each step
+  const stepModules = new Map<string, Set<string>>();
+  for (const step of trajectory.steps) {
+    stepModules.set(step.id, new Set(resolveToModules(step.scope, edges)));
+  }
+
+  // Build reverse edge map: module → set of modules that import it
+  const importedBy = new Map<string, Set<string>>();
+  for (const [source, targets] of Object.entries(edges)) {
+    for (const target of targets) {
+      let set = importedBy.get(target);
+      if (!set) {
+        set = new Set();
+        importedBy.set(target, set);
+      }
+      set.add(source);
+    }
+  }
+
+  // Clone steps with mutable depends_on
+  const newSteps = trajectory.steps.map(s => ({
+    ...s,
+    depends_on: [...s.depends_on],
+  }));
+
+  const stepById = new Map(newSteps.map(s => [s.id, s]));
+
+  // For each pair (A, B), check if A's modules are imported by B's modules
+  for (const stepA of newSteps) {
+    const modsA = stepModules.get(stepA.id)!;
+    if (modsA.size === 0) continue;
+
+    for (const stepB of newSteps) {
+      if (stepA.id === stepB.id) continue;
+      if (stepB.depends_on.includes(stepA.id)) continue; // already depends
+
+      const modsB = stepModules.get(stepB.id)!;
+      if (modsB.size === 0) continue;
+
+      // Check: does any module in B import any module in A?
+      let bImportsA = false;
+      for (const modA of modsA) {
+        const importers = importedBy.get(modA);
+        if (!importers) continue;
+        for (const modB of modsB) {
+          if (importers.has(modB)) {
+            bImportsA = true;
+            break;
+          }
+        }
+        if (bImportsA) break;
+      }
+
+      if (!bImportsA) continue;
+
+      // Tentatively add the edge and check for cycles
+      stepB.depends_on.push(stepA.id);
+      if (detectCycle(newSteps)) {
+        // Would create a cycle — revert
+        stepB.depends_on.pop();
+      }
+    }
+  }
+
+  return {
+    ...trajectory,
+    steps: newSteps,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // State initialization
 // ---------------------------------------------------------------------------
 

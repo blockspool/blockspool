@@ -8,6 +8,7 @@ import type { EventType } from './types.js';
 import { recordDedupEntry } from './dedup-memory.js';
 import {
   recordTicketOutcome as recordTicketOutcomeCore,
+  propagateStaleness,
 } from '@promptwheel/core/sectors/shared';
 import type { SectorState } from '@promptwheel/core/sectors/shared';
 
@@ -918,12 +919,17 @@ export function recordSectorOutcome(
   rootPath: string,
   sectorPath: string | undefined,
   outcome: 'success' | 'failure',
+  reverseEdges?: Record<string, string[]>,
 ): void {
   if (!sectorPath) return;
   try {
     const loaded = loadSectorsState(rootPath);
     if (!loaded) return;
     recordTicketOutcomeCore(loaded.state, sectorPath, outcome === 'success');
+    // Propagate staleness to dependent sectors on success
+    if (outcome === 'success') {
+      propagateStaleness(loaded.state, sectorPath, reverseEdges);
+    }
     atomicWriteJsonSync(loaded.filePath, loaded.state);
   } catch (err) {
     console.warn(`[promptwheel] recordSectorOutcome: ${err instanceof Error ? err.message : String(err)}`);

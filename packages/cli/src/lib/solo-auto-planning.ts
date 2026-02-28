@@ -6,6 +6,7 @@
 
 import chalk from 'chalk';
 import type { TicketProposal } from '@promptwheel/core/scout';
+import { scoreAndRank, type GraphContext } from '@promptwheel/core/proposals/shared';
 import type { AutoSessionState } from './solo-auto-state.js';
 import { getNextScope } from './solo-auto-state.js';
 import { runScoutPhase } from './solo-auto-scout.js';
@@ -43,7 +44,7 @@ export async function scoutAllSectors(state: AutoSessionState): Promise<ScoutAll
       }
     }
     sectorsScanned = 1;
-    return { proposals: rankProposals(allProposals), sectorsScanned };
+    return { proposals: rankWithGraph(state, allProposals), sectorsScanned };
   }
 
   // Scout all sectors
@@ -90,17 +91,23 @@ export async function scoutAllSectors(state: AutoSessionState): Promise<ScoutAll
     state.scoutedDirs = [];
   }
 
-  return { proposals: rankProposals(allProposals), sectorsScanned };
+  return { proposals: rankWithGraph(state, allProposals), sectorsScanned };
 }
 
 // ── Rank proposals ───────────────────────────────────────────────────────────
 
-function rankProposals(proposals: TicketProposal[]): TicketProposal[] {
-  return [...proposals].sort((a, b) => {
-    const scoreA = (a.impact_score ?? 5) * (a.confidence / 100);
-    const scoreB = (b.impact_score ?? 5) * (b.confidence / 100);
-    return scoreB - scoreA; // highest first
-  });
+/**
+ * Build graph context from state's codebase index and rank proposals using
+ * the shared scoreAndRank algorithm (with structural graph boost).
+ */
+function rankWithGraph(state: AutoSessionState, proposals: TicketProposal[]): TicketProposal[] {
+  const idx = state.codebaseIndex;
+  const graphContext: GraphContext | undefined = idx ? {
+    edges: idx.dependency_edges,
+    reverseEdges: idx.reverse_edges ?? {},
+    hubModules: idx.graph_metrics?.hub_modules ?? [],
+  } : undefined;
+  return scoreAndRank(proposals, undefined, graphContext);
 }
 
 // ── Present roadmap ──────────────────────────────────────────────────────────

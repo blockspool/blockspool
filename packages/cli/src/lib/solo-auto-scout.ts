@@ -22,7 +22,7 @@ import { buildScoutEscalation } from './wave-scheduling.js';
 import { ScoutPromptBuilder } from './scout-prompt-builder.js';
 import {
   recordScanResult, saveSectors, computeCoverage, buildSectorSummary,
-  getSectorDifficulty, getSectorCategoryAffinity,
+  getSectorDifficulty, getSectorCategoryAffinity, formatSectorDependencyContext,
 } from './sectors.js';
 import { getDeduplicationContext } from './dedup.js';
 import { buildCycleContextBlock } from './cycle-context.js';
@@ -177,6 +177,17 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   if (state.codebaseIndex) {
     const analysisBlock = formatAnalysisForPrompt(state.codebaseIndex, state.cycleCount, state.currentSectorId ?? undefined);
     if (analysisBlock) promptBuilder.addAnalysis(analysisBlock);
+  }
+  // Per-sector structural context (dependents, fan-in, instability)
+  if (state.currentSectorId && state.codebaseIndex) {
+    const sector = state.sectorState?.sectors.find(s => s.path === state.currentSectorId);
+    const sectorCtx = formatSectorDependencyContext(
+      state.currentSectorId,
+      state.codebaseIndex.reverse_edges,
+      state.codebaseIndex.dependency_edges,
+      sector,
+    );
+    if (sectorCtx) promptBuilder.addSectorGraph(sectorCtx);
   }
   const dedupPrefix = formatDedupForPrompt(state.dedupMemory);
   if (dedupPrefix) promptBuilder.addDedupMemory(dedupPrefix);

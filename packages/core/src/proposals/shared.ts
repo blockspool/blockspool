@@ -284,22 +284,92 @@ export function applyReviewToProposals<T extends { title: string; confidence: nu
 }
 
 // ---------------------------------------------------------------------------
+// Graph-boosted scoring
+// ---------------------------------------------------------------------------
+
+/**
+ * Optional dependency graph context for structural impact scoring.
+ * When provided, proposals touching hub modules (high fan-in) get a score
+ * boost, making structurally impactful changes float to the top.
+ */
+export interface GraphContext {
+  /** Forward edges: module → modules it imports. */
+  edges: Record<string, string[]>;
+  /** Reverse edges: module → modules that import it. */
+  reverseEdges: Record<string, string[]>;
+  /** Modules with fan_in >= 3 (high dependents). */
+  hubModules: string[];
+}
+
+/** Hub boost: 20% increase for proposals touching hub modules. */
+const HUB_BOOST = 0.2;
+/** Fan-in scaling: each additional dependent adds 2% up to 20% max. */
+const FAN_IN_SCALE = 0.02;
+const FAN_IN_CAP = 0.2;
+
+/**
+ * Compute a structural boost multiplier for a proposal based on its
+ * position in the dependency graph.
+ *
+ * Returns a multiplier >= 1.0. Hub modules (high fan-in) get boosted
+ * because changes to them have cascading impact. Returns 1.0 when
+ * no graph context or no matching modules.
+ */
+export function computeGraphBoost(
+  files: string[],
+  graph: GraphContext | undefined,
+): number {
+  if (!graph || files.length === 0) return 1.0;
+
+  // Map files to their containing modules (parent directory paths)
+  const modules = new Set<string>();
+  for (const f of files) {
+    const parts = f.split('/');
+    // Try increasingly specific paths: a/b/c → a/b, a/b/c
+    for (let i = 1; i <= parts.length - 1; i++) {
+      const candidate = parts.slice(0, i).join('/');
+      if (candidate in graph.reverseEdges || candidate in graph.edges) {
+        modules.add(candidate);
+      }
+    }
+  }
+
+  if (modules.size === 0) return 1.0;
+
+  let maxBoost = 0;
+  for (const mod of modules) {
+    const fanIn = (graph.reverseEdges[mod] ?? []).length;
+    const isHub = graph.hubModules.includes(mod);
+
+    let boost = 0;
+    if (isHub) boost += HUB_BOOST;
+    boost += Math.min(fanIn * FAN_IN_SCALE, FAN_IN_CAP);
+    if (boost > maxBoost) maxBoost = boost;
+  }
+
+  return 1.0 + maxBoost;
+}
+
+// ---------------------------------------------------------------------------
 // Scoring and ranking
 // ---------------------------------------------------------------------------
 
 /**
  * Score proposals by impact × confidence and return the top N.
- * Does not mutate the input array.
+ * When graphContext is provided, proposals touching hub modules get
+ * a structural boost. Does not mutate the input array.
  */
-export function scoreAndRank<T extends { confidence: number; impact_score?: number }>(
+export function scoreAndRank<T extends { confidence: number; impact_score?: number; files?: string[] }>(
   proposals: T[],
   maxCount?: number,
+  graphContext?: GraphContext,
 ): T[] {
   const scored = [...proposals]
-    .map(p => ({
-      proposal: p,
-      score: (p.impact_score ?? PROPOSALS_DEFAULTS.DEFAULT_IMPACT) * p.confidence,
-    }))
+    .map(p => {
+      const base = (p.impact_score ?? PROPOSALS_DEFAULTS.DEFAULT_IMPACT) * p.confidence;
+      const boost = computeGraphBoost(p.files ?? [], graphContext);
+      return { proposal: p, score: base * boost };
+    })
     .sort((a, b) => b.score - a.score);
 
   const capped = maxCount !== undefined ? scored.slice(0, maxCount) : scored;

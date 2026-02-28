@@ -11,6 +11,7 @@ const BLOCK_ORDER = [
   'trajectory',
   'index',
   'analysis',
+  'sectorGraph',
   'dedup',
   'cycle',
   'session',
@@ -59,6 +60,11 @@ export class ScoutPromptBuilder {
 
   addAnalysis(content: string): this {
     if (content) this.blocks.set('analysis', content);
+    return this;
+  }
+
+  addSectorGraph(content: string): this {
+    if (content) this.blocks.set('sectorGraph', content);
     return this;
   }
 

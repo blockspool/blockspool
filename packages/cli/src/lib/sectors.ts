@@ -27,11 +27,13 @@ export {
   buildSectorSummary,
   recordScanResult,
   recordTicketOutcome,
+  propagateStaleness,
   updateProposalYield,
   recordMergeOutcome,
   getSectorCategoryAffinity,
   suggestScopeAdjustment,
   enrichSectorsWithAnalysis,
+  formatSectorDependencyContext,
 } from '@promptwheel/core/sectors/shared';
 
 // Import for local use

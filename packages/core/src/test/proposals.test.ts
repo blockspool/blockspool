@@ -19,12 +19,14 @@ import {
   type RawProposal,
   type ValidatedProposal,
   type ReviewedProposal,
+  type GraphContext,
   validateProposalSchema,
   normalizeProposal,
   buildProposalReviewPrompt,
   parseReviewedProposals,
   applyReviewToProposals,
   scoreAndRank,
+  computeGraphBoost,
   balanceProposals,
   formatProposalDescription,
   computePriority,
@@ -471,6 +473,120 @@ describe('scoreAndRank', () => {
     const originalFirst = proposals[0].title;
     scoreAndRank(proposals);
     expect(proposals[0].title).toBe(originalFirst);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeGraphBoost
+// ---------------------------------------------------------------------------
+
+describe('computeGraphBoost', () => {
+  const graph: GraphContext = {
+    edges: {
+      'src/core': ['src/utils'],
+      'src/handlers': ['src/core', 'src/utils'],
+      'src/utils': [],
+    },
+    reverseEdges: {
+      'src/core': ['src/handlers'],
+      'src/utils': ['src/core', 'src/handlers', 'src/api', 'src/cli'],
+    },
+    hubModules: ['src/utils'],
+  };
+
+  it('returns 1.0 when no graph context', () => {
+    expect(computeGraphBoost(['src/core/index.ts'], undefined)).toBe(1.0);
+  });
+
+  it('returns 1.0 when files is empty', () => {
+    expect(computeGraphBoost([], graph)).toBe(1.0);
+  });
+
+  it('returns 1.0 when files do not match any graph module', () => {
+    expect(computeGraphBoost(['unrelated/file.ts'], graph)).toBe(1.0);
+  });
+
+  it('boosts hub modules', () => {
+    const boost = computeGraphBoost(['src/utils/helpers.ts'], graph);
+    // src/utils is a hub (0.2 hub boost) + 4 dependents × 0.02 = 0.08 fan-in
+    // Total: 1.0 + 0.2 + 0.08 = 1.28
+    expect(boost).toBeGreaterThan(1.2);
+    expect(boost).toBeLessThanOrEqual(1.4);
+  });
+
+  it('applies fan-in boost for non-hub modules', () => {
+    const boost = computeGraphBoost(['src/core/types.ts'], graph);
+    // src/core has 1 dependent (src/handlers) → 0.02 fan-in, not a hub
+    // Total: 1.0 + 0.02 = 1.02
+    expect(boost).toBeCloseTo(1.02, 2);
+  });
+
+  it('caps fan-in boost at 0.2', () => {
+    const bigGraph: GraphContext = {
+      edges: { 'src/shared': [] },
+      reverseEdges: {
+        'src/shared': Array.from({ length: 20 }, (_, i) => `mod${i}`),
+      },
+      hubModules: [],
+    };
+    const boost = computeGraphBoost(['src/shared/index.ts'], bigGraph);
+    // 20 dependents × 0.02 = 0.40, capped at 0.2 → 1.0 + 0.2 = 1.2
+    expect(boost).toBe(1.2);
+  });
+
+  it('uses the max boost across multiple matched modules', () => {
+    // File touches both src/core (low boost) and src/utils (high boost)
+    const boost = computeGraphBoost(
+      ['src/core/index.ts', 'src/utils/helpers.ts'],
+      graph,
+    );
+    // Should use the higher boost from src/utils
+    expect(boost).toBeGreaterThan(1.2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scoreAndRank with graph context
+// ---------------------------------------------------------------------------
+
+describe('scoreAndRank with graph context', () => {
+  const graph: GraphContext = {
+    edges: { 'src/core': ['src/utils'], 'src/leaf': [] },
+    reverseEdges: {
+      'src/core': ['src/a', 'src/b', 'src/c', 'src/d'],
+    },
+    hubModules: ['src/core'],
+  };
+
+  it('boosts hub-touching proposals above leaf proposals', () => {
+    const proposals = [
+      makeValidated({ title: 'Leaf', confidence: 80, impact_score: 5, files: ['src/leaf/a.ts'] }),
+      makeValidated({ title: 'Hub', confidence: 80, impact_score: 5, files: ['src/core/b.ts'] }),
+    ];
+    const result = scoreAndRank(proposals, undefined, graph);
+    expect(result[0].title).toBe('Hub');
+    expect(result[1].title).toBe('Leaf');
+  });
+
+  it('without graph context, identical scores produce stable order', () => {
+    const proposals = [
+      makeValidated({ title: 'A', confidence: 80, impact_score: 5, files: ['src/leaf/a.ts'] }),
+      makeValidated({ title: 'B', confidence: 80, impact_score: 5, files: ['src/core/b.ts'] }),
+    ];
+    const result = scoreAndRank(proposals);
+    // Without graph, both have same score — order is stable from input
+    expect(result).toHaveLength(2);
+  });
+
+  it('graph boost does not override much higher base score', () => {
+    const proposals = [
+      makeValidated({ title: 'HighBase', confidence: 95, impact_score: 10, files: ['src/leaf/a.ts'] }),
+      makeValidated({ title: 'HubLow', confidence: 30, impact_score: 3, files: ['src/core/b.ts'] }),
+    ];
+    const result = scoreAndRank(proposals, undefined, graph);
+    // HighBase: 10 * 95 = 950 (no boost)
+    // HubLow: 3 * 30 * ~1.28 = ~115
+    expect(result[0].title).toBe('HighBase');
   });
 });
 

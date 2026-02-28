@@ -14,6 +14,7 @@ import { pathsOverlap } from '@promptwheel/core/waves/shared';  // used for file
 import {
   type RawProposal,
   type ValidatedProposal,
+  type GraphContext,
   validateProposalSchema,
   normalizeProposal,
   scoreAndRank,
@@ -27,7 +28,7 @@ import { RunManager } from './run-manager.js';
 import { recordDedupEntries } from './dedup-memory.js';
 
 // Re-export core types and functions
-export type { RawProposal, ValidatedProposal, ReviewedProposal } from '@promptwheel/core/proposals/shared';
+export type { RawProposal, ValidatedProposal, ReviewedProposal, GraphContext } from '@promptwheel/core/proposals/shared';
 export {
   validateProposalSchema,
   normalizeProposal,
@@ -35,6 +36,7 @@ export {
   parseReviewedProposals,
   applyReviewToProposals,
   scoreAndRank,
+  computeGraphBoost,
   balanceProposals,
   formatProposalDescription,
   computePriority,
@@ -226,8 +228,13 @@ export async function filterAndCreateTickets(
     uniqueByTitle.push(p);
   }
 
-  // Step 5: Score, rank, and cap
-  const ranked = scoreAndRank(uniqueByTitle, s.max_proposals_per_scout);
+  // Step 5: Score, rank, and cap (with structural graph boost when available)
+  const graphContext: GraphContext | undefined = s.codebase_index ? {
+    edges: s.codebase_index.dependency_edges,
+    reverseEdges: s.codebase_index.reverse_edges ?? {},
+    hubModules: s.codebase_index.graph_metrics?.hub_modules ?? [],
+  } : undefined;
+  const ranked = scoreAndRank(uniqueByTitle, s.max_proposals_per_scout, graphContext);
 
   // Step 5b: Balance test vs non-test proposals
   const accepted = balanceProposals(ranked, PROPOSALS_DEFAULTS.MAX_TEST_RATIO);

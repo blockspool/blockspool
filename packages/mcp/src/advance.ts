@@ -45,6 +45,7 @@ import {
   pickNextSector as pickNextSectorCore,
   computeCoverage as computeCoverageCore,
   buildSectorSummary as buildSectorSummaryCore,
+  formatSectorDependencyContext as formatSectorDependencyContextCore,
 } from '@promptwheel/core/sectors/shared';
 import { proposalsConflict, enrichWithSymbols, type SymbolMap } from '@promptwheel/core/waves/shared';
 import { loadAstCache } from '@promptwheel/core/codebase-index';
@@ -352,7 +353,21 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     console.warn(`[promptwheel] Trajectory load failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const prompt = guidelinesBlock + metadataBlock + indexBlock + dedupBlock + trajectoryBlock + learningsBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
+  // Per-sector structural context (dependents, fan-in, instability)
+  let sectorGraphBlock = '';
+  if (s.selected_sector_path && s.codebase_index) {
+    const sectorsState = loadSectorsState(ctx.project.rootPath);
+    const sector = sectorsState?.sectors.find((sec: { path: string }) => sec.path === s.selected_sector_path);
+    const ctx2 = formatSectorDependencyContextCore(
+      s.selected_sector_path,
+      s.codebase_index.reverse_edges,
+      s.codebase_index.dependency_edges,
+      sector,
+    );
+    if (ctx2) sectorGraphBlock = ctx2 + '\n\n';
+  }
+
+  const prompt = guidelinesBlock + metadataBlock + indexBlock + dedupBlock + trajectoryBlock + sectorGraphBlock + learningsBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
     s.max_proposals_per_scout, dedupContext, formula, hints, s.eco, s.min_impact_score, s.scouted_dirs, s.scout_exclude_dirs, coverageCtx);
 
   // Reset scout_retries at the start of a fresh cycle (non-retry entry)
@@ -449,7 +464,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
       return proposalsConflict(
         { files: candidateFiles, category: candidate.category ?? undefined, target_symbols: candidateSymbols },
         { files: selectedFiles, category: selected.category ?? undefined, target_symbols: selectedSymbols },
-        { sensitivity: s.conflict_sensitivity ?? 'normal' },
+        { sensitivity: s.conflict_sensitivity ?? 'normal', edges: s.codebase_index?.dependency_edges },
       );
     });
     if (!hasConflict) readyTickets.push(candidate);

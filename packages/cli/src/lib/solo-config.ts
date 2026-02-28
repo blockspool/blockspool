@@ -559,7 +559,13 @@ export function loadConfig(repoRoot: string): SoloConfig | null {
   if (!fs.existsSync(configPath)) {
     return null;
   }
-  const config: SoloConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  let config: SoloConfig;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  } catch {
+    // Malformed config.json — treat as missing
+    return null;
+  }
 
   // Backfill setup command for existing configs that predate the feature
   if (!config.setup) {

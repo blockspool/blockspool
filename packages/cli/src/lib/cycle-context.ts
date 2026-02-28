@@ -160,8 +160,8 @@ export function computeConvergenceMetrics(
   let totalMerged = 0;
   let totalClosed = 0;
   for (const s of prodSectors) {
-    totalMerged += (s as any).mergeCount ?? 0;
-    totalClosed += (s as any).closedCount ?? 0;
+    totalMerged += s.mergeCount ?? 0;
+    totalClosed += s.closedCount ?? 0;
   }
   const mergeRate = (totalMerged + totalClosed) > 0
     ? totalMerged / (totalMerged + totalClosed)

@@ -706,9 +706,11 @@ function pruneWorktrees(repoRoot: string): number {
       cwd: repoRoot, encoding: 'utf-8',
     });
     const gitWorktrees = new Set(
-      (listResult.stdout ?? '').split('\n')
-        .filter(l => l.startsWith('worktree '))
-        .map(l => l.replace('worktree ', '').trim()),
+      listResult.status === 0
+        ? (listResult.stdout ?? '').split('\n')
+            .filter(l => l.startsWith('worktree '))
+            .map(l => l.replace('worktree ', '').trim())
+        : [],
     );
 
     let removed = 0;

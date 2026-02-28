@@ -6,7 +6,7 @@
  * stop the daemon loop.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import type { NotificationTarget } from './daemon.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -138,9 +138,9 @@ class DesktopNotifier implements Notifier {
     const platform = process.platform;
     try {
       if (platform === 'darwin') {
-        execSync(`osascript -e 'display notification "${msg}" with title "${title}"'`, { timeout: 5000 });
+        execFileSync('osascript', ['-e', `display notification "${msg}" with title "${title}"`], { timeout: 5000, stdio: 'pipe' });
       } else if (platform === 'linux') {
-        execSync(`notify-send "${title}" "${msg}"`, { timeout: 5000 });
+        execFileSync('notify-send', [title, msg], { timeout: 5000, stdio: 'pipe' });
       }
       // Windows: no-op for now
     } catch {

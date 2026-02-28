@@ -722,6 +722,8 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
         if (r.status === 'fulfilled') {
           recordOutcome(proposal, r.value, otherTitles);
         } else {
+          const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+          console.error(chalk.red(`  Ticket "${proposal.title}" rejected: ${reason}`));
           recordOutcome(proposal, { success: false }, otherTitles);
         }
       }

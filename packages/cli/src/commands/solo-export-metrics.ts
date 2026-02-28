@@ -94,12 +94,12 @@ export function registerExportMetricsCommand(solo: Command): void {
           const { readMetrics } = await import('../lib/metrics.js');
           const events = readMetrics(repoRoot);
           for (const event of events) {
-            if (cutoff && event.timestamp < cutoff) continue;
+            if (cutoff && event.ts < cutoff) continue;
             process.stdout.write(JSON.stringify({
               type: 'event',
               system: event.system,
               event: event.event,
-              timestamp: new Date(event.timestamp).toISOString(),
+              timestamp: new Date(event.ts).toISOString(),
               data: event.data,
             }) + '\n');
             exported++;

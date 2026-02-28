@@ -166,7 +166,7 @@ interface EnvironmentResult {
   repoRoot: string;
   config: ReturnType<typeof loadConfig>;
   autoConf: Record<string, any>;
-  cachedQaBaseline: Map<string, boolean> | null;
+  cachedQaBaseline: ReadonlyMap<string, boolean> | null;
   adapter: DatabaseAdapter;
 }
 
@@ -234,7 +234,7 @@ async function initEnvironment(
   }
 
   // QA baseline
-  let cachedQaBaseline: Map<string, boolean> | null = null;
+  let cachedQaBaseline: ReadonlyMap<string, boolean> | null = null;
   if (config?.qa?.commands?.length && !options.dryRun) {
     const { initQaBaseline } = await import('./solo-auto-init-qa.js');
     const qaResult = await initQaBaseline(repoRoot, config, {
@@ -356,7 +356,7 @@ async function loadSessionData(
   repoRoot: string,
   config: ReturnType<typeof loadConfig>,
   autoConf: Record<string, any>,
-  cachedQaBaseline: Map<string, boolean> | null,
+  cachedQaBaseline: ReadonlyMap<string, boolean> | null,
   adapter: DatabaseAdapter,
 ): Promise<SessionData> {
   // Formulas for deep scan and docs audit
@@ -739,7 +739,7 @@ function printSessionHeader(
   directBranch: string,
   directFinalize: string,
   autoConf: Record<string, any>,
-  cachedQaBaseline: Map<string, boolean> | null,
+  cachedQaBaseline: ReadonlyMap<string, boolean> | null,
   getCycleFormula: (cycle: number) => import('./formulas.js').Formula | null,
   getCycleCategories: (formula: import('./formulas.js').Formula | null) => { allow: string[]; block: string[] },
   drillMode: boolean,

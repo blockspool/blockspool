@@ -185,6 +185,7 @@ Examples:
           executeBackend: executeBackendName,
           deliveryMode: options.autoMerge ? 'auto-merge' : options.pr ? 'pr' : undefined,
           directFinalize: options.directFinalize as 'pr' | 'merge' | 'none' | undefined,
+          output: options.output as 'json' | undefined,
         });
         return;
       }

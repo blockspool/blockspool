@@ -43,10 +43,16 @@ export interface AutoModeOptions {
   dryRun?: boolean;
   verbose?: boolean;
   plan?: boolean;
+  /** Output format: 'json' writes structured JSON alongside the Markdown report */
+  output?: 'json';
 
   // Secondary options (hidden but functional)
   codex?: boolean;
   safe?: boolean;
+  /** Only allow these categories (comma-separated CLI string) */
+  allow?: string;
+  /** Block these categories (comma-separated CLI string) */
+  block?: string;
   tests?: boolean;
   yes?: boolean;
   parallel?: string;
@@ -91,6 +97,10 @@ export interface AutoModeOptions {
   drill?: boolean;
   /** Explicit spin mode flag (used by daemon to force spin without CLI parsing) */
   spin?: boolean;
+  /** Poll GitHub issues with this label and convert to proposals (default label: "promptwheel") */
+  issues?: boolean | string;
+  /** Comma-separated list of repository directories for multi-repo sessions */
+  repos?: string;
 }
 
 // ── SessionOptions ──────────────────────────────────────────────────────────
@@ -175,7 +185,7 @@ export interface SessionRuntime {
   allTicketOutcomes: TicketOutcome[];
   cycleOutcomes: TicketOutcome[];
   prMetaMap: Map<string, { sectorId: string; formula: string }>;
-  qaBaseline: Map<string, boolean> | null;
+  qaBaseline: ReadonlyMap<string, boolean> | null;
   shutdownRequested: boolean;
   shutdownReason: 'user_signal' | 'user_quit' | 'convergence' | 'low_yield' | 'idle' | 'branch_diverged' | 'time_limit' | 'pr_limit' | 'rate_limited' | 'completed' | null;
   currentlyProcessing: boolean;
@@ -265,6 +275,12 @@ export interface SessionRuntime {
   scoutTimeoutMs: number;
   maxScoutFiles: number;
   activeBackendName: string;
+  /** Last commit SHA when a scout scan was performed — used for incremental scanning. */
+  lastScanCommit: string | null;
+  /** All repo roots for multi-repo sessions. Empty when single-repo. */
+  repos: string[];
+  /** Current index into repos[] for round-robin cycling */
+  repoIndex: number;
 }
 
 // ── SessionDeps ─────────────────────────────────────────────────────────────

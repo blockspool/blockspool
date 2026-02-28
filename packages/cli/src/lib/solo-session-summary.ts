@@ -39,6 +39,13 @@ export interface SessionSummaryContext {
   originalMinConfidence?: number;
   completedDirectTicketCount?: number;
   reportPath?: string;
+  /** Learning effectiveness stats */
+  learningStats?: {
+    total: number;
+    applied: number;
+    successRate: number;
+    topPerformers: Array<{ text: string; effectiveness: number }>;
+  };
   /** Drill mode stats */
   drillStats?: {
     trajectoriesGenerated: number;
@@ -246,6 +253,16 @@ export function displayFinalSummary(ctx: SessionSummaryContext): void {
   if (ctx.drillStats && ctx.drillStats.trajectoriesGenerated > 0) {
     const ds = ctx.drillStats;
     console.log(chalk.gray(`  Drill: ${ds.trajectoriesGenerated} trajectory(s), ${ds.stepsCompleted}/${ds.stepsTotal} steps completed (${ds.completionRate}%), ${ds.stepsFailed} failed`));
+  }
+  if (ctx.learningStats && ctx.learningStats.applied > 0) {
+    const ls = ctx.learningStats;
+    const successPct = Math.round(ls.successRate * 100);
+    console.log(chalk.gray(`  Learnings: ${ls.total} total, ${ls.applied} applied, ${successPct}% led to success`));
+    if (ls.topPerformers.length > 0) {
+      const top = ls.topPerformers[0];
+      const topPct = Math.round(top.effectiveness * 100);
+      console.log(chalk.gray(`  Top learning (${topPct}%): ${top.text.slice(0, 80)}${top.text.length > 80 ? '...' : ''}`));
+    }
   }
 
   // Ticket outcomes

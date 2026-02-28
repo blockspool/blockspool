@@ -42,7 +42,7 @@ export interface TicketContext {
 
   // Accumulated state (mutated by steps)
   baselineFiles: Set<string>;
-  qaBaseline: Map<string, boolean> | null;
+  qaBaseline: ReadonlyMap<string, boolean> | null;
   artifactPaths: {
     execution?: string;
     diff?: string;

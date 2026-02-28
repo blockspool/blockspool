@@ -15,6 +15,7 @@ import { registerNudgeCommands } from './solo-nudge.js';
 import { registerAnalyticsCommands } from './solo-analytics.js';
 import { registerDaemonCommands } from './solo-daemon.js';
 import { registerTrajectoryCommands } from './solo-trajectory.js';
+import { registerExportMetricsCommand } from './solo-export-metrics.js';
 
 // Re-export types from extracted modules
 export type { FailureReason, CompletionOutcome, RunTicketResult } from '../lib/solo-ticket-types.js';
@@ -61,3 +62,4 @@ registerNudgeCommands(soloCommand);
 registerAnalyticsCommands(soloCommand);
 registerDaemonCommands(soloCommand);
 registerTrajectoryCommands(soloCommand);
+registerExportMetricsCommand(soloCommand);

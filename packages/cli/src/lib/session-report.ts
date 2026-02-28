@@ -204,6 +204,82 @@ export function generateSessionReport(ctx: SessionReportContext): string {
 }
 
 /**
+ * Generate a structured JSON session report.
+ * Contains the same data as the Markdown report but machine-readable.
+ */
+export function generateSessionJson(ctx: SessionReportContext): Record<string, unknown> {
+  const elapsed = Date.now() - ctx.startTime;
+  const qualityRate = getQualityRate(ctx.repoRoot);
+  const tickets = ctx.completedDirectTickets;
+  const totalFiles = new Set(tickets.flatMap(t => t.files)).size;
+
+  const result: Record<string, unknown> = {
+    version: CLI_VERSION,
+    startedAt: new Date(ctx.startTime).toISOString(),
+    endedAt: new Date().toISOString(),
+    durationMs: elapsed,
+    mode: ctx.isContinuous ? 'spin' : 'planning',
+    formula: ctx.activeFormula?.name ?? 'default',
+    scope: ctx.userScope ?? (ctx.isContinuous ? 'rotating' : 'all'),
+    results: {
+      cycles: ctx.cycleCount,
+      ticketsCompleted: tickets.length,
+      ticketsFailed: ctx.totalFailed,
+      filesModified: totalFiles,
+      prsCreated: ctx.allPrUrls.length,
+      prsMerged: ctx.totalMergedPrs,
+      prsClosed: ctx.totalClosedPrs,
+      qualityRate: Math.round(qualityRate * 100),
+    },
+    tickets: ctx.allTicketOutcomes.map(t => ({
+      id: t.id,
+      title: t.title,
+      category: t.category,
+      status: t.status,
+      failureReason: t.failureReason,
+      prUrl: t.prUrl,
+      durationMs: t.durationMs,
+      phaseTiming: t.phaseTiming,
+      costUsd: t.costUsd,
+      inputTokens: t.inputTokens,
+      outputTokens: t.outputTokens,
+    })),
+    prUrls: ctx.allPrUrls,
+  };
+
+  if (ctx.sectorState) {
+    const cov = computeCoverage(ctx.sectorState);
+    result.coverage = {
+      scannedSectors: cov.scannedSectors,
+      totalSectors: cov.totalSectors,
+      scannedFiles: cov.scannedFiles,
+      totalFiles: cov.totalFiles,
+      percent: cov.percent,
+    };
+  }
+
+  if (ctx.drillStats && ctx.drillStats.trajectoriesGenerated > 0) {
+    result.drill = {
+      trajectoriesGenerated: ctx.drillStats.trajectoriesGenerated,
+      stepsCompleted: ctx.drillStats.stepsCompleted,
+      stepsFailed: ctx.drillStats.stepsFailed,
+      stepsTotal: ctx.drillStats.stepsTotal,
+      completionRate: ctx.drillStats.completionRate,
+    };
+  }
+
+  if (ctx.learningStats && ctx.learningStats.applied > 0) {
+    result.learnings = {
+      total: ctx.learningStats.total,
+      applied: ctx.learningStats.applied,
+      successRate: ctx.learningStats.successRate,
+    };
+  }
+
+  return result;
+}
+
+/**
  * Write a session report to `.promptwheel/reports/session-<ISO-date>.md`.
  * Returns the relative path to the report file.
  */
@@ -217,6 +293,24 @@ export function writeSessionReport(repoRoot: string, report: string): string {
   const filename = `session-${timestamp}.md`;
   const filePath = path.join(reportsDir, filename);
   fs.writeFileSync(filePath, report, 'utf-8');
+
+  return path.relative(repoRoot, filePath);
+}
+
+/**
+ * Write a JSON session report alongside the Markdown one.
+ * Returns the relative path to the JSON file.
+ */
+export function writeSessionJsonReport(repoRoot: string, data: Record<string, unknown>): string {
+  const reportsDir = path.join(getPromptwheelDir(repoRoot), 'reports');
+  if (!fs.existsSync(reportsDir)) {
+    fs.mkdirSync(reportsDir, { recursive: true });
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const filename = `session-${timestamp}.json`;
+  const filePath = path.join(reportsDir, filename);
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 
   return path.relative(repoRoot, filePath);
 }

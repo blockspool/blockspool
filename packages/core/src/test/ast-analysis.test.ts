@@ -15,6 +15,7 @@ import {
   extractImportsAst,
   extractExportsAst,
   estimateCyclomaticComplexity,
+  extractTopLevelSymbols,
   type AstGrepModule,
 } from '../codebase-index/ast-analysis.js';
 
@@ -336,5 +337,195 @@ describe('analyzeFileAst', () => {
     };
     const result = analyzeFileAst('bad code', 'test.ts', 'TypeScript', astGrep);
     expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractTopLevelSymbols
+// ---------------------------------------------------------------------------
+
+describe('extractTopLevelSymbols JS/TS', () => {
+  it('extracts function declarations', () => {
+    const content = 'function handleLogin() {}\nfunction handleSignup() {}';
+    const root = mockNode('program', content, [
+      mockNode('function_declaration', 'function handleLogin() {}'),
+      mockNode('function_declaration', 'function handleSignup() {}'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'TypeScript', astGrep);
+    expect(symbols).not.toBeNull();
+    expect(symbols).toHaveLength(2);
+    expect(symbols!.map(s => s.name)).toEqual(['handleLogin', 'handleSignup']);
+    expect(symbols!.every(s => s.kind === 'function')).toBe(true);
+  });
+
+  it('extracts class declarations', () => {
+    const content = 'class AuthService {}';
+    const root = mockNode('program', content, [
+      mockNode('class_declaration', 'class AuthService {}'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'TypeScript', astGrep);
+    expect(symbols).toHaveLength(1);
+    expect(symbols![0]).toMatchObject({ name: 'AuthService', kind: 'class' });
+  });
+
+  it('extracts variable declarations', () => {
+    const content = 'const MAX_RETRIES = 3;\nlet counter = 0;';
+    const root = mockNode('program', content, [
+      mockNode('lexical_declaration', 'const MAX_RETRIES = 3'),
+      mockNode('lexical_declaration', 'let counter = 0'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'TypeScript', astGrep);
+    expect(symbols).toHaveLength(2);
+    expect(symbols![0]).toMatchObject({ name: 'MAX_RETRIES', kind: 'variable' });
+    expect(symbols![1]).toMatchObject({ name: 'counter', kind: 'variable' });
+  });
+
+  it('unwraps export statements', () => {
+    const content = 'export function doThing() {}\nexport class Widget {}';
+    const root = mockNode('program', content, [
+      mockNode('export_statement', 'export function doThing() {}'),
+      mockNode('export_statement', 'export class Widget {}'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'TypeScript', astGrep);
+    expect(symbols).toHaveLength(2);
+    expect(symbols![0]).toMatchObject({ name: 'doThing', kind: 'function' });
+    expect(symbols![1]).toMatchObject({ name: 'Widget', kind: 'class' });
+  });
+
+  it('extracts interface and type declarations', () => {
+    const content = 'interface Config {}\ntype Result = string';
+    const root = mockNode('program', content, [
+      mockNode('interface_declaration', 'interface Config {}'),
+      mockNode('type_alias_declaration', 'type Result = string'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'TypeScript', astGrep);
+    expect(symbols).toHaveLength(2);
+    expect(symbols![0]).toMatchObject({ name: 'Config', kind: 'interface' });
+    expect(symbols![1]).toMatchObject({ name: 'Result', kind: 'type' });
+  });
+
+  it('extracts enum declarations', () => {
+    const content = 'enum Status { Active, Inactive }';
+    const root = mockNode('program', content, [
+      mockNode('enum_declaration', 'enum Status { Active, Inactive }'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'TypeScript', astGrep);
+    expect(symbols).toHaveLength(1);
+    expect(symbols![0]).toMatchObject({ name: 'Status', kind: 'enum' });
+  });
+
+  it('deduplicates symbols by name', () => {
+    const content = 'export function foo() {}';
+    const root = mockNode('program', content, [
+      mockNode('export_statement', 'export function foo() {}'),
+      mockNode('function_declaration', 'function foo() {}'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'TypeScript', astGrep);
+    expect(symbols).toHaveLength(1);
+  });
+
+  it('includes line range information', () => {
+    const content = 'function first() {\n  return 1;\n}\nfunction second() {\n  return 2;\n}';
+    const root = mockNode('program', content, [
+      mockNode('function_declaration', 'function first() {\n  return 1;\n}'),
+      mockNode('function_declaration', 'function second() {\n  return 2;\n}'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'TypeScript', astGrep);
+    expect(symbols).toHaveLength(2);
+    expect(symbols![0].startLine).toBe(1);
+    expect(symbols![0].endLine).toBe(3);
+    expect(symbols![1].startLine).toBe(4);
+    expect(symbols![1].endLine).toBe(6);
+  });
+});
+
+describe('extractTopLevelSymbols Python', () => {
+  it('extracts function and class definitions', () => {
+    const content = 'def handle_login():\n    pass\nclass AuthService:\n    pass';
+    const root = mockNode('module', content, [
+      mockNode('function_definition', 'def handle_login():\n    pass'),
+      mockNode('class_definition', 'class AuthService:\n    pass'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'Python', astGrep);
+    expect(symbols).toHaveLength(2);
+    expect(symbols![0]).toMatchObject({ name: 'handle_login', kind: 'function' });
+    expect(symbols![1]).toMatchObject({ name: 'AuthService', kind: 'class' });
+  });
+
+  it('extracts assignments', () => {
+    const content = 'MAX_RETRIES = 3';
+    const root = mockNode('module', content, [
+      mockNode('assignment', 'MAX_RETRIES = 3'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'Python', astGrep);
+    expect(symbols).toHaveLength(1);
+    expect(symbols![0]).toMatchObject({ name: 'MAX_RETRIES', kind: 'variable' });
+  });
+});
+
+describe('extractTopLevelSymbols Go', () => {
+  it('extracts functions and types', () => {
+    const content = 'func HandleLogin() {}\ntype Config struct {}';
+    const root = mockNode('source_file', content, [
+      mockNode('function_declaration', 'func HandleLogin() {}'),
+      mockNode('type_declaration', 'type Config struct {}'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'Go', astGrep);
+    expect(symbols).toHaveLength(2);
+    expect(symbols![0]).toMatchObject({ name: 'HandleLogin', kind: 'function' });
+    expect(symbols![1]).toMatchObject({ name: 'Config', kind: 'type' });
+  });
+});
+
+describe('extractTopLevelSymbols Rust', () => {
+  it('extracts functions and structs', () => {
+    const content = 'fn handle_login() {}\nstruct Config {}';
+    const root = mockNode('source_file', content, [
+      mockNode('function_item', 'fn handle_login() {}'),
+      mockNode('struct_item', 'struct Config {}'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'Rust', astGrep);
+    expect(symbols).toHaveLength(2);
+    expect(symbols![0]).toMatchObject({ name: 'handle_login', kind: 'function' });
+    expect(symbols![1]).toMatchObject({ name: 'Config', kind: 'class' });
+  });
+});
+
+describe('extractTopLevelSymbols edge cases', () => {
+  it('returns null for unknown language', () => {
+    const root = mockNode('program', '', []);
+    const astGrep = createMockAstGrep(root);
+    const limitedAstGrep = { ...astGrep, Lang: {} };
+    expect(extractTopLevelSymbols('', 'Unknown', limitedAstGrep)).toBeNull();
+  });
+
+  it('returns null on parse error', () => {
+    const astGrep: AstGrepModule = {
+      parse: () => { throw new Error('parse failed'); },
+      Lang: { TypeScript: 'TypeScript' },
+    };
+    expect(extractTopLevelSymbols('bad code', 'TypeScript', astGrep)).toBeNull();
+  });
+
+  it('returns empty array for file with no declarations', () => {
+    const content = '// just a comment';
+    const root = mockNode('program', content, [
+      mockNode('comment', '// just a comment'),
+    ]);
+    const astGrep = createMockAstGrep(root);
+    const symbols = extractTopLevelSymbols(content, 'TypeScript', astGrep);
+    expect(symbols).toEqual([]);
   });
 });

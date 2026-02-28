@@ -224,7 +224,7 @@ describe('ToolRegistry with custom tools', () => {
       JSON.stringify(customTool),
     );
 
-    const registry = new ToolRegistry(tmpDir);
+    const registry = new ToolRegistry(tmpDir, { enableCustomTools: true });
     const all = registry.getAllSpecs();
     expect(all.length).toBe(BUILTIN_TOOL_SPECS.length + 1);
     const lint = all.find(s => s.name === 'Bash:lint');
@@ -243,7 +243,7 @@ describe('ToolRegistry with custom tools', () => {
       JSON.stringify({}),
     );
 
-    const registry = new ToolRegistry(tmpDir);
+    const registry = new ToolRegistry(tmpDir, { enableCustomTools: true });
     const all = registry.getAllSpecs();
     // Should still have all built-ins, no extra
     expect(all.length).toBe(BUILTIN_TOOL_SPECS.length);
@@ -255,7 +255,7 @@ describe('ToolRegistry with custom tools', () => {
       'not a tool',
     );
 
-    const registry = new ToolRegistry(tmpDir);
+    const registry = new ToolRegistry(tmpDir, { enableCustomTools: true });
     expect(registry.getAllSpecs().length).toBe(BUILTIN_TOOL_SPECS.length);
   });
 
@@ -271,7 +271,7 @@ describe('ToolRegistry with custom tools', () => {
       JSON.stringify(customTool),
     );
 
-    const registry = new ToolRegistry(tmpDir);
+    const registry = new ToolRegistry(tmpDir, { enableCustomTools: true });
     const patterns = registry.getAutoApprovePatterns({ phase: 'EXECUTE', category: null });
     expect(patterns).toContain('Bash(npm run lint*)');
   });

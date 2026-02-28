@@ -15,8 +15,8 @@ import { captureQaBaseline, baselineToPassFail } from './solo-ticket-qa.js';
 export interface InitQaResult {
   /** Updated config with tuned QA commands */
   config: SoloConfig;
-  /** Cached baseline pass/fail map for reuse in first execute cycle */
-  qaBaseline: Map<string, boolean> | null;
+  /** Cached baseline pass/fail map for reuse in first execute cycle. Treated as immutable once shared. */
+  qaBaseline: ReadonlyMap<string, boolean> | null;
 }
 
 export interface InitQaOptions {

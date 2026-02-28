@@ -46,6 +46,8 @@ import {
   computeCoverage as computeCoverageCore,
   buildSectorSummary as buildSectorSummaryCore,
 } from '@promptwheel/core/sectors/shared';
+import { proposalsConflict, enrichWithSymbols, type SymbolMap } from '@promptwheel/core/waves/shared';
+import { loadAstCache } from '@promptwheel/core/codebase-index';
 import {
   getNextStep as getTrajectoryNextStep,
   formatTrajectoryForPrompt,
@@ -394,10 +396,77 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
     ? Math.min(s.parallel, s.max_prs - s.prs_created)
     : s.parallel;
 
-  // Find ready tickets
-  const readyTickets = await repos.tickets.listByProject(
-    db, s.project_id, { status: 'ready', limit: parallelCount }
+  // Find ready tickets — overfetch then greedily select non-overlapping ones
+  const candidateLimit = parallelCount > 1 ? parallelCount * 3 : parallelCount;
+  const candidateTickets = await repos.tickets.listByProject(
+    db, s.project_id, { status: 'ready', limit: candidateLimit }
   );
+
+  // Auto-enrich tickets with target_symbols from AST cache (non-fatal)
+  try {
+    const astCache = loadAstCache(ctx.project.rootPath);
+    const symbolMap: SymbolMap = {};
+    for (const [filePath, entry] of Object.entries(astCache)) {
+      if (entry.symbols?.length) {
+        symbolMap[filePath] = entry.symbols;
+      }
+    }
+    if (Object.keys(symbolMap).length > 0) {
+      // Build enrichable proxies from candidate tickets
+      const enrichable = candidateTickets.map(t => ({
+        files: t.allowedPaths ?? [],
+        target_symbols: Array.isArray((t.metadata as Record<string, unknown> | null)?.targetSymbols)
+          ? (t.metadata as Record<string, unknown>).targetSymbols as string[]
+          : undefined,
+      }));
+      enrichWithSymbols(enrichable, symbolMap);
+      // Write enriched symbols back to ticket metadata for the greedy loop
+      for (let i = 0; i < candidateTickets.length; i++) {
+        if (enrichable[i].target_symbols?.length) {
+          const meta = (candidateTickets[i].metadata ?? {}) as Record<string, unknown>;
+          meta.targetSymbols = enrichable[i].target_symbols;
+          (candidateTickets[i] as { metadata: unknown }).metadata = meta;
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — fall back to path-based conflict detection
+  }
+
+  // Greedy deconfliction: select tickets whose allowed_paths don't overlap
+  const readyTickets: typeof candidateTickets = [];
+  for (const candidate of candidateTickets) {
+    if (readyTickets.length >= parallelCount) break;
+    const candidateFiles = candidate.allowedPaths ?? [];
+    const candidateMeta = candidate.metadata as Record<string, unknown> | null | undefined;
+    const candidateSymbols = Array.isArray(candidateMeta?.targetSymbols) ? candidateMeta.targetSymbols as string[] : undefined;
+    const hasConflict = readyTickets.some(selected => {
+      const selectedFiles = selected.allowedPaths ?? [];
+      // Empty allowedPaths = wildcard → conflicts with everything
+      if (candidateFiles.length === 0 || selectedFiles.length === 0) return true;
+      const selectedMeta = selected.metadata as Record<string, unknown> | null | undefined;
+      const selectedSymbols = Array.isArray(selectedMeta?.targetSymbols) ? selectedMeta.targetSymbols as string[] : undefined;
+      return proposalsConflict(
+        { files: candidateFiles, category: candidate.category ?? undefined, target_symbols: candidateSymbols },
+        { files: selectedFiles, category: selected.category ?? undefined, target_symbols: selectedSymbols },
+        { sensitivity: s.conflict_sensitivity ?? 'normal' },
+      );
+    });
+    if (!hasConflict) readyTickets.push(candidate);
+  }
+
+  if (readyTickets.length === 0 && candidateTickets.length > 0) {
+    // All candidates overlap — fall back to first one (sequential)
+    readyTickets.push(candidateTickets[0]);
+  }
+
+  if (candidateTickets.length > readyTickets.length) {
+    run.appendEvent('PARALLEL_DECONFLICTED', {
+      candidates: candidateTickets.length,
+      selected: readyTickets.length,
+      skipped: candidateTickets.length - readyTickets.length,
+    });
+  }
 
   if (readyTickets.length === 0) {
     // No more tickets — scout again if cycles remain, otherwise finish

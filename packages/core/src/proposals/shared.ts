@@ -26,6 +26,8 @@ export interface RawProposal {
   risk?: string;
   touched_files_estimate?: number;
   rollback_note?: string;
+  /** Function/class names this proposal modifies (for symbol-aware conflict detection). */
+  target_symbols?: string[];
 }
 
 /** Proposal with all required fields validated and defaults applied. */
@@ -44,6 +46,8 @@ export interface ValidatedProposal {
   risk: string;
   touched_files_estimate: number;
   rollback_note: string;
+  /** Function/class names this proposal modifies (for symbol-aware conflict detection). */
+  target_symbols?: string[];
 }
 
 /** Result of adversarial review — revised scores for a single proposal. */
@@ -77,7 +81,6 @@ export const PROPOSALS_DEFAULTS = {
 export const REQUIRED_FIELDS: (keyof ValidatedProposal)[] = [
   'category', 'title', 'description', 'allowed_paths',
   'files', 'confidence', 'verification_commands',
-  'risk', 'touched_files_estimate', 'rollback_note',
 ];
 
 // ---------------------------------------------------------------------------
@@ -97,12 +100,12 @@ export function validateProposalSchema(raw: RawProposal): string | null {
   if (!raw.description || typeof raw.description !== 'string') missing.push('description');
   if (!Array.isArray(raw.allowed_paths)) missing.push('allowed_paths');
   if (typeof raw.confidence !== 'number') missing.push('confidence');
-  if (!raw.risk || typeof raw.risk !== 'string') missing.push('risk');
 
   // Soft-required: normalizeProposal provides safe defaults for these.
   // We still validate type when present, but missing is not fatal.
   if (raw.files !== null && raw.files !== undefined && !Array.isArray(raw.files)) missing.push('files');
   if (raw.verification_commands !== null && raw.verification_commands !== undefined && !Array.isArray(raw.verification_commands)) missing.push('verification_commands');
+  if (raw.risk !== null && raw.risk !== undefined && typeof raw.risk !== 'string') missing.push('risk');
   if (raw.touched_files_estimate !== null && raw.touched_files_estimate !== undefined && typeof raw.touched_files_estimate !== 'number') missing.push('touched_files_estimate');
   if (raw.rollback_note !== null && raw.rollback_note !== undefined && typeof raw.rollback_note !== 'string') missing.push('rollback_note');
 
@@ -114,7 +117,7 @@ export function validateProposalSchema(raw: RawProposal): string | null {
  * Caller must ensure schema validation passed first.
  */
 export function normalizeProposal(raw: RawProposal): ValidatedProposal {
-  return {
+  const result: ValidatedProposal = {
     category: raw.category!,
     title: raw.title!,
     description: raw.description!,
@@ -126,10 +129,12 @@ export function normalizeProposal(raw: RawProposal): ValidatedProposal {
     impact_score: raw.impact_score ?? PROPOSALS_DEFAULTS.DEFAULT_IMPACT,
     rationale: raw.rationale ?? '',
     estimated_complexity: raw.estimated_complexity ?? 'moderate',
-    risk: raw.risk!,
+    risk: raw.risk ?? 'medium',
     touched_files_estimate: raw.touched_files_estimate ?? (raw.allowed_paths?.length ?? 1),
     rollback_note: raw.rollback_note ?? 'git revert',
   };
+  if (raw.target_symbols?.length) result.target_symbols = raw.target_symbols;
+  return result;
 }
 
 // ---------------------------------------------------------------------------

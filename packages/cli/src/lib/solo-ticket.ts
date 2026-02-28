@@ -27,6 +27,7 @@ import {
   stepAgent,
   stepSpindle,
   stepScope,
+  stepVerify,
   stepCommit,
   stepPush,
   stepQa,
@@ -205,6 +206,7 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
     stepAgent,
     stepSpindle,
     stepScope,
+    stepVerify,
     stepCommit,
     stepPush,
     stepQa,
@@ -227,6 +229,7 @@ export async function soloRunTicket(opts: RunTicketOptions): Promise<RunTicketRe
       prUrl: ctx.prUrl,
       durationMs: Date.now() - ctx.startTime,
       traceAnalysis: ctx.traceAnalysis,
+      changedFiles: ctx.changedFiles.length > 0 ? ctx.changedFiles : undefined,
     };
     await ctx.saveRunSummary(result);
     return result;

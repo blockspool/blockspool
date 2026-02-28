@@ -99,6 +99,8 @@ export interface ScoutRepoOptions {
   scoutConcurrency?: number;
   /** Module groups for dependency-aware batching */
   moduleGroups?: import('../scout/scanner.js').ModuleGroup[];
+  /** Restrict scanning to these file paths (incremental scanning). */
+  changedFiles?: string[];
   /** Coverage context passed through to the scout prompt */
   coverageContext?: {
     sectorPath: string;
@@ -244,6 +246,7 @@ export async function scoutRepo(
       maxFiles: opts.maxFiles,
       scoutConcurrency: opts.scoutConcurrency,
       moduleGroups: opts.moduleGroups,
+      changedFiles: opts.changedFiles,
       coverageContext: opts.coverageContext,
       onRawOutput: opts.onRawOutput,
       onProgress: (p) => {

@@ -178,13 +178,15 @@ describe('buildCodebaseIndex AST cache regression', () => {
     const first = buildCodebaseIndex(projectRoot, [], false, astGrep);
     const firstModule = findModule(first, 'src/lib');
     expect(first.analysis_backend).toBe('ast-grep');
-    expect(getParseCount()).toBe(2);
+    // 2 files × 3 parses each (analyzeFileAst + extractTopLevelSymbols + extractCallEdges)
+    expect(getParseCount()).toBe(6);
     expect(firstModule?.export_count).toBe(2);
     expect(firstModule?.avg_complexity).toBe(2);
 
     const second = buildCodebaseIndex(projectRoot, [], false, astGrep);
     const secondModule = findModule(second, 'src/lib');
-    expect(getParseCount()).toBe(2);
+    // Full cache hit — no additional parses (symbols + callEdges already cached)
+    expect(getParseCount()).toBe(6);
     expect(secondModule?.export_count).toBe(firstModule?.export_count);
     expect(secondModule?.avg_complexity).toBe(firstModule?.avg_complexity);
 
@@ -196,7 +198,8 @@ describe('buildCodebaseIndex AST cache regression', () => {
 
     const third = buildCodebaseIndex(projectRoot, [], false, astGrep);
     const thirdModule = findModule(third, 'src/lib');
-    expect(getParseCount()).toBe(3);
+    // Only fileB re-parsed (3 parses: analyzeFileAst + extractTopLevelSymbols + extractCallEdges)
+    expect(getParseCount()).toBe(9);
     expect(thirdModule?.export_count).toBe(3);
     expect((thirdModule?.avg_complexity ?? 0) > (secondModule?.avg_complexity ?? 0)).toBe(true);
   });

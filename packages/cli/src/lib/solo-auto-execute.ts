@@ -29,7 +29,9 @@ import {
   autoMergePr,
 } from './solo-git.js';
 import { getAdaptiveParallelCount, sleep } from './dedup.js';
-import { partitionIntoWaves, type ConflictSensitivity } from './wave-scheduling.js';
+import { partitionIntoWaves, enrichWithSymbols, type ConflictSensitivity, type SymbolMap } from './wave-scheduling.js';
+import { orderMergeSequence } from '@promptwheel/core/waves/shared';
+import { loadAstCache } from '@promptwheel/core/codebase-index';
 import type { TicketOutcome } from './run-history.js';
 import { computeCoverage } from './sectors.js';
 import type { ProgressSnapshot } from './display-adapter.js';
@@ -57,6 +59,8 @@ export interface ProposalResult {
   injectedLearningIds?: string[];
   /** Actual failure reason from the ticket result */
   failureReason?: string;
+  /** Actual files changed (from git status, scope-verified). More accurate than proposal.files. */
+  actualChangedFiles?: string[];
 }
 
 /**
@@ -67,7 +71,7 @@ export async function processOneProposal(
   state: AutoSessionState,
   proposal: TicketProposal,
   slotLabel: string,
-  cycleQaBaseline: Map<string, boolean> | null,
+  cycleQaBaseline: ReadonlyMap<string, boolean> | null,
 ): Promise<ProposalResult> {
   state.displayAdapter.log(chalk.cyan(`[${slotLabel}] ${proposal.title}`));
 
@@ -233,7 +237,7 @@ export async function processOneProposal(
             }
           }
           if (result.traceAnalysis) state.allTraceAnalyses.push(result.traceAnalysis);
-          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds };
+          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds, actualChangedFiles: result.changedFiles };
         }
 
         await runs.markSuccess(state.adapter, currentRun.id, { prUrl: result.prUrl });
@@ -294,7 +298,7 @@ export async function processOneProposal(
           });
           if (result.traceAnalysis) state.allTraceAnalyses.push(result.traceAnalysis);
           state.displayAdapter.ticketDone(currentTicket.id, true, 'Committed to direct branch');
-          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds };
+          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds, actualChangedFiles: result.changedFiles };
         }
 
         // Auto-merge
@@ -309,7 +313,7 @@ export async function processOneProposal(
           recordPrFiles(state.repoRoot, result.prUrl, proposal.files ?? proposal.allowed_paths ?? []);
         }
         if (result.traceAnalysis) state.allTraceAnalyses.push(result.traceAnalysis);
-        return { success: true, prUrl: result.prUrl, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds };
+        return { success: true, prUrl: result.prUrl, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds, actualChangedFiles: result.changedFiles };
       } else if (result.scopeExpanded && retryCount < maxScopeRetries) {
         lastError = result.error;
         lastFailureReason = result.failureReason ?? 'scope_violation';
@@ -451,9 +455,11 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
 
   state.currentlyProcessing = true;
 
-  // Capture QA baseline once for this cycle — reused across all tickets.
+  // Capture QA baseline once for this cycle — shared immutably across all
+  // parallel tickets within all waves. Captured before wave processing starts
+  // so parallel tickets never race on baseline state.
   // Reuse cached baseline from initSession on first cycle to avoid redundant runs.
-  let cycleQaBaseline: Map<string, boolean> | null = state.qaBaseline;
+  let cycleQaBaseline: ReadonlyMap<string, boolean> | null = state.qaBaseline;
   if (!cycleQaBaseline && state.config?.qa?.commands?.length && !state.config.qa.disableBaseline) {
     if (state.options.verbose) state.displayAdapter.log(chalk.gray('  Capturing QA baseline for this cycle...'));
     const fullBaseline = await captureQaBaseline(state.repoRoot, state.config, (msg) => state.displayAdapter.log(chalk.gray(msg)), state.repoRoot);
@@ -561,11 +567,12 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       state.totalPrsCreated++;
       if (result.prUrl) state.allPrUrls.push(result.prUrl);
       if (result.prUrl) state.pendingPrUrls.push(result.prUrl);
-      recordDedupEntry(state.repoRoot, proposal.title, true, undefined, otherTitles, proposal.files ?? proposal.allowed_paths);
+      const verifiedFiles = result.actualChangedFiles ?? proposal.files ?? proposal.allowed_paths ?? [];
+      recordDedupEntry(state.repoRoot, proposal.title, true, undefined, otherTitles, verifiedFiles);
       if (state.sectorState && state.currentSectorId) recordTicketOutcome(state.sectorState, state.currentSectorId, true, proposal.category);
       recordFormulaTicketOutcome(state.repoRoot, state.currentFormulaName, true);
       recordCategoryOutcome(state.repoRoot, proposal.category, true);
-      pushRecentDiff(state.repoRoot, { title: proposal.title, summary: `${(proposal.files ?? []).length} files`, files: proposal.files ?? proposal.allowed_paths ?? [], cycle: state.cycleCount });
+      pushRecentDiff(state.repoRoot, { title: proposal.title, summary: `${verifiedFiles.length} files`, files: verifiedFiles, cycle: state.cycleCount });
       if (result.prUrl && state.currentSectorId) {
         state.prMetaMap.set(result.prUrl, { sectorId: state.currentSectorId, formula: state.currentFormulaName });
       }
@@ -585,8 +592,8 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       }
       recordQualitySignal(state.repoRoot, result.wasRetried ? 'retried' : 'first_pass');
       if (state.autoConf.learningsEnabled) {
-        // Extract cochange files — files that were modified together in this ticket
-        const changedFiles = proposal.files ?? proposal.allowed_paths ?? [];
+        // Prefer actual git-verified changed files over proposal's planned files
+        const changedFiles = result.actualChangedFiles ?? proposal.files ?? proposal.allowed_paths ?? [];
         const structured: StructuredKnowledge | undefined = changedFiles.length > 1
           ? { cochange_files: changedFiles.filter(f => !f.includes('*')), pattern_type: 'dependency' }
           : undefined;
@@ -615,12 +622,6 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       state.cycleOutcomes.push(outcome);
     } else {
       state.totalFailed++;
-      // Rate limit → graceful shutdown
-      if (result.failureReason === 'rate_limited') {
-        state.shutdownRequested = true;
-        state.shutdownReason = 'rate_limited';
-        state.displayAdapter.log(chalk.red('  API rate/usage limit reached — shutting down gracefully'));
-      }
       recordDedupEntry(state.repoRoot, proposal.title, false, (result.failureReason as any) ?? 'agent_error', undefined, proposal.files ?? proposal.allowed_paths);
       if (state.sectorState && state.currentSectorId) recordTicketOutcome(state.sectorState, state.currentSectorId, false, proposal.category);
       recordFormulaTicketOutcome(state.repoRoot, state.currentFormulaName, false);
@@ -659,20 +660,32 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       }
     }
   } else {
-    // Parallel/wave execution
-    let waves: Array<typeof toProcess>;
-    if (state.milestoneMode) {
-      // Use conflict sensitivity from config (default: 'normal')
-      // - 'strict': Any shared directory = conflict (safest, more sequential)
-      // - 'normal': Sibling files + conflict-prone patterns (balanced)
-      // - 'relaxed': Only direct file overlap (most parallel, riskier)
-      const sensitivity: ConflictSensitivity = state.autoConf.conflictSensitivity ?? 'normal';
-      waves = partitionIntoWaves(toProcess, { sensitivity });
-      if (state.options.verbose && waves.length > 1) {
-        state.displayAdapter.log(chalk.gray(`  Conflict-aware scheduling: ${waves.length} waves (sensitivity: ${sensitivity})`));
+    // Parallel/wave execution — conflict-aware scheduling for all delivery modes
+    // Use conflict sensitivity from config (default: 'normal')
+    // - 'strict': Any shared directory = conflict (safest, more sequential)
+    // - 'normal': Sibling files + conflict-prone patterns (balanced)
+    // - 'relaxed': Only direct file overlap (most parallel, riskier)
+    const sensitivity: ConflictSensitivity = state.autoConf.conflictSensitivity ?? 'normal';
+
+    // Auto-enrich proposals with target_symbols from AST cache (non-fatal)
+    try {
+      const astCache = loadAstCache(state.repoRoot);
+      const symbolMap: SymbolMap = {};
+      for (const [filePath, entry] of Object.entries(astCache)) {
+        if (entry.symbols?.length) {
+          symbolMap[filePath] = entry.symbols;
+        }
       }
-    } else {
-      waves = [toProcess];
+      if (Object.keys(symbolMap).length > 0) {
+        enrichWithSymbols(toProcess, symbolMap);
+      }
+    } catch {
+      // Non-fatal — fall back to path-based conflict detection
+    }
+
+    const waves: Array<typeof toProcess> = partitionIntoWaves(toProcess, { sensitivity });
+    if (state.options.verbose && waves.length > 1) {
+      state.displayAdapter.log(chalk.gray(`  Conflict-aware scheduling: ${waves.length} waves (sensitivity: ${sensitivity})`));
     }
 
     let ticketCounter = state.totalPrsCreated;
@@ -722,6 +735,33 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
             conflicted.push({ proposal: wave[ri], branch: r.value.conflictBranch, index: ri });
           }
         }
+        // Build symbol map once — used for merge ordering and structural resolution
+        let mergeSymbolMap: Record<string, import('@promptwheel/core/codebase-index/shared').SymbolRange[]> | undefined;
+        try {
+          const astCache = loadAstCache(state.repoRoot);
+          const sMap: SymbolMap = {};
+          const sMapForMerge: Record<string, import('@promptwheel/core/codebase-index/shared').SymbolRange[]> = {};
+          for (const [fp, entry] of Object.entries(astCache)) {
+            if (entry.symbols?.length) {
+              sMap[fp] = entry.symbols;
+              sMapForMerge[fp] = entry.symbols;
+            }
+          }
+          if (Object.keys(sMapForMerge).length > 0) mergeSymbolMap = sMapForMerge;
+
+          // Reorder conflicted tickets: merge "safe" ones first (disjoint symbols)
+          if (conflicted.length > 1 && Object.keys(sMap).length > 0) {
+            const candidates = conflicted.map(c => ({
+              files: c.proposal.files,
+              targetSymbols: Object.fromEntries(c.proposal.files.map(f => [f, c.proposal.target_symbols ?? []])),
+            }));
+            const order = orderMergeSequence(candidates, sMap);
+            const reordered = order.map(i => conflicted[i]);
+            conflicted.length = 0;
+            conflicted.push(...reordered);
+          }
+        } catch { /* non-fatal — keep original order */ }
+
         if (conflicted.length > 0) {
           if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Retrying ${conflicted.length} merge-conflicted ticket(s)...`));
           for (const { proposal, branch } of conflicted) {
@@ -729,7 +769,8 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
             const retryResult = await mergeTicketToMilestone(
               state.repoRoot,
               branch,
-              state.milestoneWorktreePath
+              state.milestoneWorktreePath,
+              mergeSymbolMap,
             );
             if (retryResult.success) {
               state.milestoneTicketCount++;

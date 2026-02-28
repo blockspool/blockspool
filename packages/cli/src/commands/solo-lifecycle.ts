@@ -34,7 +34,8 @@ export function registerLifecycleCommands(solo: Command): void {
     .command('init')
     .description('Initialize PromptWheel local state for this repository')
     .option('-f, --force', 'Reinitialize even if already initialized')
-    .action(async (options: { force?: boolean }) => {
+    .option('-y, --yes', 'Skip confirmation (CI mode)')
+    .action(async (options: { force?: boolean; yes?: boolean }) => {
       const repoRoot = await resolveRepoRootOrExit({
         notRepoHumanDetails: ['  Run this command from within a git repository'],
       });
@@ -48,41 +49,59 @@ export function registerLifecycleCommands(solo: Command): void {
         return;
       }
 
+      // Detect project metadata before init for a rich summary
+      const { detectProjectMetadata } = await import('../lib/project-metadata/index.js');
+      const metadata = detectProjectMetadata(repoRoot);
+
+      // Show project detection summary
+      const projectParts: string[] = [];
+      if (metadata.languages.length > 0) projectParts.push(metadata.languages.join(', '));
+      if (metadata.framework) projectParts.push(metadata.framework);
+      if (metadata.monorepo_tool) projectParts.push(`monorepo (${metadata.monorepo_tool})`);
+
+      console.log();
+      console.log(chalk.bold('Detected:'), projectParts.length > 0 ? projectParts.join(' + ') : chalk.gray('unknown project type'));
+
       const { config, detectedQa } = await initSolo(repoRoot);
 
       // Initialize database
       await withCommandAdapter(repoRoot, async () => undefined);
 
-      console.log(chalk.green('✓ Initialized PromptWheel solo mode'));
-      console.log(chalk.gray(`  Config: ${getPromptwheelDir(repoRoot)}/config.json`));
-      console.log(chalk.gray(`  Database: ${config.dbPath}`));
+      console.log(chalk.green('✓ Initialized PromptWheel'));
+      console.log();
 
-      // Show detected QA commands
+      // Show QA commands in a compact format
       if (detectedQa.length > 0) {
-        console.log();
-        console.log(chalk.green('✓ Detected QA commands from package.json:'));
+        console.log(chalk.bold('QA commands:'));
         for (const cmd of detectedQa) {
-          console.log(chalk.gray(`  • ${cmd.name}: ${cmd.cmd}`));
+          console.log(chalk.green(`  ✓ ${cmd.name}:`), chalk.gray(cmd.cmd));
         }
-        console.log(chalk.gray('  (Edit .promptwheel/config.json to customize)'));
       } else {
-        console.log();
         console.log(chalk.yellow('⚠ No QA commands detected'));
-        console.log(chalk.gray('  Add qa.commands to .promptwheel/config.json to enable QA:'));
-        console.log(chalk.gray('  {'));
-        console.log(chalk.gray('    "qa": {'));
-        console.log(chalk.gray('      "commands": ['));
-        console.log(chalk.gray('        { "name": "lint", "cmd": "npm run lint" },'));
-        console.log(chalk.gray('        { "name": "test", "cmd": "npm test" }'));
-        console.log(chalk.gray('      ]'));
-        console.log(chalk.gray('    }'));
-        console.log(chalk.gray('  }'));
+        console.log(chalk.gray('  Add qa.commands in .promptwheel/config.json'));
       }
 
+      // Show setup command if detected
+      if (config.setup) {
+        console.log(chalk.bold('Setup:'), chalk.gray(config.setup));
+      }
+
+      // Suggest a starting formula based on project type
+      const formulaSuggestions: string[] = ['default'];
+      if (metadata.type_checker) formulaSuggestions.push('type-safety');
+      if (metadata.test_runner) formulaSuggestions.push('test-coverage');
+      if (metadata.linter) formulaSuggestions.push('cleanup');
+      console.log(chalk.bold('Formulas:'), chalk.gray(formulaSuggestions.join(', ')));
+
       console.log();
-      console.log('Next steps:');
-      console.log('  promptwheel solo scout .    Scan for improvement opportunities');
-      console.log('  promptwheel solo status     View local state');
+      console.log(chalk.gray(`Config: .promptwheel/config.json`));
+
+      console.log();
+      console.log(chalk.bold('Next steps:'));
+      console.log('  promptwheel                        Run in spin mode (default)');
+      console.log('  promptwheel --plan                 Scout, review roadmap, execute');
+      console.log('  promptwheel --formula deep         Architectural review');
+      console.log('  promptwheel --formula security-audit  Security scan');
     });
 
   /**

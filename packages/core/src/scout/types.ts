@@ -40,6 +40,8 @@ export interface TicketProposal {
   rationale: string;
   /** Estimated complexity */
   estimated_complexity: ComplexityLevel;
+  /** Function/class names this proposal modifies (for symbol-aware conflict detection). */
+  target_symbols?: string[];
 }
 
 /**
@@ -86,6 +88,8 @@ export interface ScoutOptions {
   scoutConcurrency?: number;
   /** Module groups for dependency-aware batching. When provided, files are grouped by module instead of arbitrary token packing. */
   moduleGroups?: import('./scanner.js').ModuleGroup[];
+  /** Restrict scanning to these file paths (relative to projectPath). When set, only files in this list are included — used for incremental scanning. */
+  changedFiles?: string[];
   /** Coverage context passed through to the scout prompt */
   coverageContext?: {
     sectorPath: string;
@@ -170,8 +174,6 @@ export const PROPOSAL_SCHEMA = {
           'allowed_paths',
           'files',
           'confidence',
-          'rationale',
-          'estimated_complexity',
         ],
         properties: {
           category: { type: 'string', enum: ['refactor', 'docs', 'test', 'perf', 'security', 'fix', 'cleanup', 'types'] },
@@ -185,6 +187,10 @@ export const PROPOSAL_SCHEMA = {
           impact_score: { type: 'number', minimum: 1, maximum: 10 },
           rationale: { type: 'string' },
           estimated_complexity: { type: 'string', enum: ['trivial', 'simple', 'moderate', 'complex'] },
+          risk: { type: 'string' },
+          touched_files_estimate: { type: 'number' },
+          rollback_note: { type: 'string' },
+          target_symbols: { type: 'array', items: { type: 'string' } },
         },
       },
     },

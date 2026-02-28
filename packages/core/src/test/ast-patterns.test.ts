@@ -265,3 +265,74 @@ describe('bare-except pattern', () => {
     expect(match).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Symbol-scoped patterns (2.2)
+// ---------------------------------------------------------------------------
+
+describe('symbol-scoped pattern attribution', () => {
+  const patterns = getPatterns();
+
+  it('empty-catch attributes finding to enclosing function', () => {
+    const content = 'function handleLogin() {\n  try {\n    // something\n  } catch (e) {}\n}';
+    const catchNode = mockNode('catch_clause', 'catch (e) {}', []);
+    const root = mockNode('program', content, [catchNode]);
+    const symbols = [
+      { name: 'handleLogin', kind: 'function' as const, startLine: 1, endLine: 5 },
+    ];
+    const findings = scanPatterns(root, 'TypeScript', content, patterns, symbols);
+    const match = findings.find(f => f.patternId === 'empty-catch');
+    expect(match).toBeDefined();
+    expect(match!.symbolName).toBe('handleLogin');
+    expect(match!.symbolKind).toBe('function');
+    expect(match!.message).toContain('handleLogin');
+  });
+
+  it('empty-catch without symbols has no symbolName', () => {
+    const content = 'function handleLogin() {\n  try {\n    // something\n  } catch (e) {}\n}';
+    const catchNode = mockNode('catch_clause', 'catch (e) {}', []);
+    const root = mockNode('program', content, [catchNode]);
+    const findings = scanPatterns(root, 'TypeScript', content, patterns);
+    const match = findings.find(f => f.patternId === 'empty-catch');
+    expect(match).toBeDefined();
+    expect(match!.symbolName).toBeUndefined();
+  });
+
+  it('large-function uses SymbolRange when available', () => {
+    // A 60-line function symbol
+    const symbols = [
+      { name: 'bigFunction', kind: 'function' as const, startLine: 1, endLine: 60 },
+      { name: 'smallFunction', kind: 'function' as const, startLine: 65, endLine: 75 },
+    ];
+    const root = mockNode('program', '', []);
+    const findings = scanPatterns(root, 'TypeScript', '', patterns, symbols);
+    const match = findings.find(f => f.patternId === 'large-function');
+    expect(match).toBeDefined();
+    expect(match!.symbolName).toBe('bigFunction');
+    expect(match!.message).toContain('bigFunction');
+    expect(match!.message).toContain('60 lines');
+    // Small function should NOT be flagged
+    expect(findings.filter(f => f.patternId === 'large-function').length).toBe(1);
+  });
+
+  it('bare-except attributes to enclosing function', () => {
+    const content = 'def process():\n    try:\n        pass\n    except:\n        pass';
+    const exceptNode = mockNode('except_clause', 'except:\n        pass', []);
+    const root = mockNode('program', content, [exceptNode]);
+    const symbols = [
+      { name: 'process', kind: 'function' as const, startLine: 1, endLine: 5 },
+    ];
+    const findings = scanPatterns(root, 'Python', content, patterns, symbols);
+    const match = findings.find(f => f.patternId === 'bare-except');
+    expect(match).toBeDefined();
+    expect(match!.symbolName).toBe('process');
+    expect(match!.message).toContain('process');
+  });
+
+  it('scanPatterns passes symbols through to patterns', () => {
+    // Verify the optional symbols parameter works without breaking existing behavior
+    const root = mockNode('program', 'const x = 1;', []);
+    const findings = scanPatterns(root, 'TypeScript', 'const x = 1;', patterns, []);
+    expect(findings).toEqual([]);
+  });
+});

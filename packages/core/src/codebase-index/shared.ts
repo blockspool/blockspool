@@ -38,6 +38,10 @@ export interface CodebaseIndex {
   typescript_analysis?: TypeScriptAnalysis;
   /** AST pattern scan findings — mechanically detected code issues. */
   ast_findings?: AstFindingEntry[];
+  /** True when module discovery hit the cap (MAX_MODULES). Scouts see an incomplete view. */
+  module_cap_hit?: boolean;
+  /** Per-module cross-file call summaries: "funcA calls importedB, importedC". */
+  call_edge_summaries?: Record<string, string[]>;
 }
 
 export interface GraphMetrics {
@@ -85,6 +89,31 @@ export interface AstAnalysisResult {
   exports: ExportEntry[];
   complexity: number;
   findings?: AstFinding[];
+  /** Actual imported binding names (for dead export detection). */
+  importedNames?: string[];
+}
+
+/** A top-level symbol (function, class, variable, etc.) with its line range. */
+export interface SymbolRange {
+  name: string;
+  kind: 'function' | 'class' | 'variable' | 'type' | 'interface' | 'enum' | 'other';
+  startLine: number;
+  endLine: number;
+}
+
+/**
+ * A call edge from one symbol to another, possibly cross-file via imports.
+ * `callerFile` and `calleeModule` enable cross-file call graph construction.
+ */
+export interface CallEdge {
+  /** Name of the calling function/method. */
+  caller: string;
+  /** Name of the function/symbol being called. */
+  callee: string;
+  /** 1-based line number of the call site. */
+  line: number;
+  /** Import specifier the callee was imported from (e.g. './utils'), if cross-file. */
+  importSource?: string;
 }
 
 export interface AstFinding {
@@ -93,6 +122,10 @@ export interface AstFinding {
   line: number | null;
   severity: 'high' | 'medium' | 'low';
   category: 'fix' | 'refactor' | 'types' | 'security' | 'perf' | 'cleanup';
+  /** Name of the enclosing function/class/symbol, if attributable. */
+  symbolName?: string;
+  /** Kind of the enclosing symbol. */
+  symbolKind?: SymbolRange['kind'];
 }
 
 export interface AstFindingEntry {
@@ -566,6 +599,9 @@ export function formatIndexForPrompt(index: CodebaseIndex, scoutCycle: number): 
   const parts: string[] = [];
 
   parts.push(`## Codebase Structure (chunk ${chunkIndex + 1}/${totalChunks})`);
+  if (index.module_cap_hit) {
+    parts.push(`**Note:** Module discovery hit the cap (${modules.length} modules). This is a partial view — use \`scope\` to narrow the scan for complete coverage.`);
+  }
   parts.push('');
   parts.push('### Modules in Focus This Cycle');
 
@@ -577,6 +613,17 @@ export function formatIndexForPrompt(index: CodebaseIndex, scoutCycle: number): 
       ? ` | ${mod.export_count} exports${mod.avg_complexity !== null && mod.avg_complexity !== undefined ? ` (complexity: ${mod.avg_complexity.toFixed(1)})` : ''}`
       : '';
     parts.push(`${mod.path}/ — ${mod.file_count} files (${mod.purpose})${depStr}${astSuffix}`);
+    // Show key symbols so scouts know what functions/classes exist in this module
+    if (mod.exported_names?.length) {
+      const names = mod.exported_names.slice(0, 15);
+      const suffix = mod.exported_names.length > 15 ? ` (+${mod.exported_names.length - 15} more)` : '';
+      parts.push(`  symbols: ${names.join(', ')}${suffix}`);
+    }
+    // Show cross-file call dependencies so scouts understand symbol relationships
+    const callSummary = index.call_edge_summaries?.[mod.path];
+    if (callSummary?.length) {
+      parts.push(`  calls: ${callSummary.slice(0, 5).join('; ')}`);
+    }
   }
 
   if (otherModules.length > 0) {

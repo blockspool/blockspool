@@ -8,6 +8,7 @@ import { exitCommandError } from '../lib/command-runtime.js';
 import { loadConfig, saveConfig } from '../lib/solo-config.js';
 
 export interface AuthOptions {
+  provider?: string;
   codex?: boolean;
   claude?: boolean;
   kimi?: boolean;
@@ -31,6 +32,25 @@ export async function resolveBackends(options: AuthOptions): Promise<{
   executeBackendName: string;
 }> {
   const { isValidProvider, getProviderNames, getProvider } = await import('../lib/providers/index.js');
+
+  // Expand --provider into shorthand flags
+  if (options.provider) {
+    const p = options.provider.toLowerCase();
+    if (p === 'codex') options.codex = true;
+    else if (p === 'claude') options.claude = true;
+    else if (p === 'kimi') options.kimi = true;
+    else if (p === 'local' || p === 'openai-local') options.local = true;
+    else if (isValidProvider(p)) {
+      // Known provider but no shorthand — set backend directly
+      options.scoutBackend = options.scoutBackend ?? p;
+      options.executeBackend = options.executeBackend ?? p;
+    } else {
+      exitCommandError({
+        message: `Unknown provider: ${p}`,
+        humanDetails: [chalk.gray(`  Valid providers: ${getProviderNames().join(', ')}`)],
+      });
+    }
+  }
 
   // Expand shorthands
   const shorthands = [options.codex && 'codex', options.claude && 'claude', options.kimi && 'kimi', options.local && 'local'].filter(Boolean);

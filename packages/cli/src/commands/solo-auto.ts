@@ -8,6 +8,7 @@ import { createGitService } from '../lib/git.js';
 import { runAutoMode, runAutoWorkMode } from '../lib/solo-auto.js';
 import { handleCiMode } from './auto-ci-mode.js';
 import { resolveBackends } from './auto-auth.js';
+import { warnDeprecatedFlags } from '../lib/deprecation.js';
 
 export function registerAutoCommands(solo: Command): void {
   /**
@@ -17,11 +18,11 @@ export function registerAutoCommands(solo: Command): void {
     .command('auto [mode]')
     .description('Scout, fix, and commit improvements automatically')
     .addHelpText('after', `
-Default backend: Codex (OpenAI). Use --claude for Claude (Anthropic).
+Default backend: Codex (OpenAI). Use --provider to select a different backend.
 
 Examples:
   promptwheel                    # Spin mode with drill (Codex default)
-  promptwheel --claude           # Use Claude backend (needs ANTHROPIC_API_KEY)
+  promptwheel --provider claude  # Use Claude backend (needs ANTHROPIC_API_KEY)
   promptwheel --hours 4          # Timed spin
   promptwheel --no-drill         # Spin without auto-trajectory generation
   promptwheel --plan             # Scout all, approve roadmap, execute
@@ -37,9 +38,13 @@ Examples:
     .option('--scope <path>', 'Directory to focus on')
     .option('--formula <name>', 'Formula: deep, security-audit, test-coverage')
     .option('--dry-run', 'Preview without making changes')
+    .option('--output <format>', 'Output format: json (writes structured JSON report)')
     .option('-v, --verbose', 'Detailed output')
+    .option('--issues [label]', 'Poll GitHub issues with label (default: "promptwheel") and convert to proposals')
+    .option('--repos <dirs>', 'Comma-separated repo directories for multi-repo sessions')
     .option('--no-tui', 'Disable live terminal UI (use spinner output instead)')
     // Backend and execution options
+    .option('--provider <name>', 'Backend provider: codex, claude, kimi, local')
     .addOption(new Option('--codex', 'Use Codex (OpenAI) backend').hideHelp())
     .option('--kimi', 'Use Kimi backend')
     .option('--local', 'Use local LLM server (Ollama, vLLM, etc.)')
@@ -47,6 +52,8 @@ Examples:
     .addOption(new Option('--local-url <url>', 'Local server URL (default: http://localhost:11434)').implies({ local: true }))
     .option('--batch-size <n>', 'Merge N tickets into one milestone PR')
     .option('--safe', 'Safe categories only (no tests, no risky changes)')
+    .option('--allow <categories>', 'Only allow these categories (comma-separated)')
+    .option('--block <categories>', 'Block these categories (comma-separated)')
     .option('--tests', 'Include test-writing proposals')
     .option('--deep', 'Architectural review mode')
     .option('--claude', 'Use Claude (Anthropic) backend — requires ANTHROPIC_API_KEY')
@@ -83,10 +90,13 @@ Examples:
     .action(async (mode: string | undefined, options: {
       plan?: boolean;
       dryRun?: boolean;
+      output?: string;
       scope?: string;
       maxPrs?: string;
       minConfidence?: string;
       safe?: boolean;
+      allow?: string;
+      block?: string;
       tests?: boolean;
       draft?: boolean;
       yes?: boolean;
@@ -100,6 +110,7 @@ Examples:
       deep?: boolean;
       eco?: boolean;
       batchSize?: string;
+      provider?: string;
       codex?: boolean;
       claude?: boolean;
       kimi?: boolean;
@@ -128,10 +139,15 @@ Examples:
       qaFix?: boolean;
       tui?: boolean;
       drill?: boolean;
+      issues?: boolean | string;
+      repos?: string;
     }) => {
       if (options.deep && !options.formula) {
         options.formula = 'deep';
       }
+
+      // Warn about deprecated flags before any work begins
+      warnDeprecatedFlags(options as Record<string, unknown>);
 
       const { scoutBackendName, executeBackendName } = await resolveBackends(options);
 

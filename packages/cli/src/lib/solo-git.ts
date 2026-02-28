@@ -4,6 +4,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { SymbolRange } from '@promptwheel/core/codebase-index/shared';
 
 /**
  * Mutex for serializing git operations on the main repo.
@@ -172,13 +173,76 @@ export async function createMilestoneBranch(
 }
 
 /**
+ * Attempt to resolve rebase conflicts using AST symbol ranges.
+ *
+ * For each conflicting file, reads base/ours/theirs from git's index stages,
+ * loads symbol data from the AST cache, and tries structural resolution
+ * (disjoint symbol blocks → safe to combine both changes).
+ *
+ * Returns true if ALL conflicts were resolved and rebase can continue.
+ * Returns false if any conflict couldn't be structurally resolved.
+ */
+async function tryResolveRebaseConflicts(
+  cwd: string,
+  symbolsByFile: Record<string, SymbolRange[]>,
+): Promise<boolean> {
+  // Lazy import to avoid circular dependency
+  const { tryStructuralMerge } = await import('@promptwheel/core/waves/shared');
+
+  // Get list of conflicting files (unmerged entries)
+  let conflictOutput: string;
+  try {
+    conflictOutput = await gitExec('git diff --name-only --diff-filter=U', { cwd });
+  } catch {
+    return false;
+  }
+
+  const conflictingFiles = conflictOutput.trim().split('\n').filter(Boolean);
+  if (conflictingFiles.length === 0) return false;
+
+  for (const file of conflictingFiles) {
+    // Get base/ours/theirs from git index stages
+    let base: string, ours: string, theirs: string;
+    try {
+      base = await gitExec(`git show :1:${file}`, { cwd });
+      ours = await gitExec(`git show :2:${file}`, { cwd });
+      theirs = await gitExec(`git show :3:${file}`, { cwd });
+    } catch {
+      return false; // Can't read versions — bail
+    }
+
+    // Get symbol data for this file from AST cache
+    const symbols = symbolsByFile[file];
+    if (!symbols || symbols.length === 0) return false;
+
+    // Use the same symbols for all three versions — conservative assumption.
+    // If symbol structure changed, tryStructuralMerge detects the mismatch
+    // (different block count/names) and returns null.
+    const resolved = tryStructuralMerge(base, ours, theirs, symbols, symbols, symbols);
+    if (resolved === null) return false;
+
+    // Write resolved content and stage it
+    const absPath = path.join(cwd, file);
+    fs.writeFileSync(absPath, resolved, 'utf-8');
+    await gitExecFile('git', ['add', file], { cwd });
+  }
+
+  return true;
+}
+
+/**
  * Merge a ticket branch into the milestone branch under git mutex.
  * Returns success/conflict status.
+ *
+ * When symbolsByFile is provided (from AST cache), attempts structural
+ * merge resolution for rebase conflicts where both sides modified
+ * different functions in the same file.
  */
 export async function mergeTicketToMilestone(
   repoRoot: string,
   ticketBranch: string,
-  milestoneWorktreePath: string
+  milestoneWorktreePath: string,
+  symbolsByFile?: Record<string, SymbolRange[]>,
 ): Promise<{ success: boolean; conflicted: boolean }> {
   return withGitMutex(async () => {
     try {
@@ -215,6 +279,26 @@ export async function mergeTicketToMilestone(
         });
         return { success: true, conflicted: false };
       } catch {
+        // Rebase or merge-after-rebase failed — try structural resolution
+        if (symbolsByFile && Object.keys(symbolsByFile).length > 0) {
+          try {
+            const resolved = await tryResolveRebaseConflicts(repoRoot, symbolsByFile);
+            if (resolved) {
+              // All conflicts structurally resolved — continue the rebase
+              await gitExec('git rebase --continue', { cwd: repoRoot });
+              // Switch back to milestone branch
+              await gitExecFile('git', ['checkout', milestoneBranchName], { cwd: milestoneWorktreePath });
+              // Try merge again
+              await gitExecFile('git', ['merge', '--no-ff', ticketBranch, '-m', `Merge ${ticketBranch}`], {
+                cwd: milestoneWorktreePath,
+              });
+              return { success: true, conflicted: false };
+            }
+          } catch {
+            // Structural resolution failed — fall through to abort
+          }
+        }
+
         // Abort any in-progress rebase or merge
         try { await gitExec('git rebase --abort', { cwd: repoRoot }); } catch { /* ignore */ }
         try { await gitExec('git merge --abort', { cwd: milestoneWorktreePath }); } catch { /* ignore */ }

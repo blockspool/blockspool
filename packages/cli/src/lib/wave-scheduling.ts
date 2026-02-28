@@ -29,6 +29,10 @@ export {
   touchesSamePackage,
   proposalsConflict,
   buildScoutEscalation,
+  enrichWithSymbols,
+  predictMergeConflict,
+  orderMergeSequence,
+  type SymbolMap,
 } from '@promptwheel/core/waves/shared';
 
 // Import for local use
@@ -41,7 +45,7 @@ import {
  * Partition proposals into conflict-free waves, with CLI metric instrumentation.
  * Wraps the core pure algorithm and adds metric() call.
  */
-export function partitionIntoWaves<T extends { files: string[]; category?: string }>(
+export function partitionIntoWaves<T extends { files: string[]; category?: string; target_symbols?: string[] }>(
   proposals: T[],
   options: ConflictDetectionOptions = {}
 ): T[][] {

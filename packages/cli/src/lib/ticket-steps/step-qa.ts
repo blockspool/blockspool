@@ -88,7 +88,7 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
       metadata: { qaRunId: qaResult.runId },
     });
     recordQualitySignal(repoRoot, 'qa_fail');
-    await ctx.skipRemaining(6, 'QA failed');
+    await ctx.skipRemaining(7, 'QA failed');
 
     recordCommandFailure(spindleState, failedStep, `QA failed at ${failedStep}`);
 

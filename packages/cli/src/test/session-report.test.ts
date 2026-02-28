@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { generateSessionReport, writeSessionReport, type SessionReportContext } from '../lib/session-report.js';
+import { generateSessionReport, generateSessionJson, writeSessionReport, writeSessionJsonReport, type SessionReportContext } from '../lib/session-report.js';
 
 function makeCtx(overrides: Partial<SessionReportContext> = {}): SessionReportContext {
   return {
@@ -124,5 +124,101 @@ describe('writeSessionReport', () => {
     writeSessionReport(tmpDir, '# Test');
 
     expect(fs.existsSync(reportsDir)).toBe(true);
+  });
+});
+
+describe('generateSessionJson', () => {
+  it('produces structured JSON with all key fields', () => {
+    const json = generateSessionJson(makeCtx({
+      allTicketOutcomes: [
+        { id: 't1', title: 'Fix auth', category: 'fix', status: 'completed', durationMs: 5000 },
+        { id: 't2', title: 'Add test', category: 'test', status: 'failed', failureReason: 'qa_failed', durationMs: 3000 },
+      ],
+      allPrUrls: ['https://github.com/org/repo/pull/1'],
+    }));
+
+    expect(json.version).toBeDefined();
+    expect(json.startedAt).toBeDefined();
+    expect(json.endedAt).toBeDefined();
+    expect(json.durationMs).toBeGreaterThan(0);
+    expect(json.mode).toBe('spin');
+    expect(json.formula).toBe('default');
+
+    const results = json.results as Record<string, unknown>;
+    expect(results.cycles).toBe(5);
+    expect(results.ticketsCompleted).toBe(3);
+    expect(results.ticketsFailed).toBe(1);
+    expect(results.filesModified).toBe(4);
+    expect(results.prsCreated).toBe(1);
+
+    const tickets = json.tickets as Array<Record<string, unknown>>;
+    expect(tickets).toHaveLength(2);
+    expect(tickets[0].title).toBe('Fix auth');
+    expect(tickets[0].status).toBe('completed');
+    expect(tickets[1].failureReason).toBe('qa_failed');
+
+    expect(json.prUrls).toEqual(['https://github.com/org/repo/pull/1']);
+  });
+
+  it('includes drill stats when present', () => {
+    const json = generateSessionJson(makeCtx({
+      drillStats: {
+        trajectoriesGenerated: 2,
+        stepsCompleted: 5,
+        stepsFailed: 1,
+        stepsTotal: 8,
+        completionRate: 63,
+      },
+    }));
+
+    const drill = json.drill as Record<string, unknown>;
+    expect(drill.trajectoriesGenerated).toBe(2);
+    expect(drill.stepsCompleted).toBe(5);
+    expect(drill.completionRate).toBe(63);
+  });
+
+  it('includes learning stats when present', () => {
+    const json = generateSessionJson(makeCtx({
+      learningStats: { total: 10, applied: 5, successRate: 0.8, topPerformers: [] },
+    }));
+
+    const learnings = json.learnings as Record<string, unknown>;
+    expect(learnings.total).toBe(10);
+    expect(learnings.applied).toBe(5);
+    expect(learnings.successRate).toBe(0.8);
+  });
+
+  it('omits optional sections when not present', () => {
+    const json = generateSessionJson(makeCtx());
+    expect(json.drill).toBeUndefined();
+    expect(json.learnings).toBeUndefined();
+    expect(json.coverage).toBeUndefined();
+  });
+});
+
+describe('writeSessionJsonReport', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'promptwheel-json-report-test-'));
+    const bsDir = path.join(tmpDir, '.promptwheel');
+    fs.mkdirSync(bsDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('creates .json file in .promptwheel/reports/', () => {
+    const data = { version: '1.0', results: { cycles: 3 } };
+    const relPath = writeSessionJsonReport(tmpDir, data);
+
+    expect(relPath).toMatch(/^\.promptwheel\/reports\/session-.*\.json$/);
+
+    const absPath = path.join(tmpDir, relPath);
+    expect(fs.existsSync(absPath)).toBe(true);
+    const parsed = JSON.parse(fs.readFileSync(absPath, 'utf-8'));
+    expect(parsed.version).toBe('1.0');
+    expect(parsed.results.cycles).toBe(3);
   });
 });

@@ -4,7 +4,7 @@
 
 import chalk from 'chalk';
 import type { AutoSessionState } from './solo-auto-state.js';
-import { addLearning } from './learnings.js';
+import { addLearning, getLearningEffectiveness } from './learnings.js';
 import { recordFormulaMergeOutcome } from './run-state.js';
 import {
   checkPrStatuses,
@@ -20,7 +20,7 @@ import {
 import { recordMergeOutcome, saveSectors } from './sectors.js';
 import { updatePrOutcome } from './pr-outcomes.js';
 import { displayConvergenceSummary, displayWheelHealth, recordSessionHistory, displayFinalSummary, type SessionSummaryContext } from './solo-session-summary.js';
-import { generateSessionReport, writeSessionReport } from './session-report.js';
+import { generateSessionReport, generateSessionJson, writeSessionReport, writeSessionJsonReport } from './session-report.js';
 import { writeDaemonWakeMetrics, type DaemonWakeMetrics } from './daemon.js';
 import { computeDrillMetrics } from './solo-auto-drill.js';
 
@@ -152,8 +152,8 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
           }
         }
       }
-    } catch {
-      // Non-fatal
+    } catch (err) {
+      console.error(chalk.gray(`  PR status poll failed: ${err instanceof Error ? err.message : String(err)}`));
     }
   }
 
@@ -176,6 +176,24 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
       topCategories: metrics.topCategories.join(', ') || undefined,
       stalledCategories: metrics.stalledCategories.join(', ') || undefined,
     };
+  }
+
+  // Learning effectiveness stats
+  let learningStats: SessionSummaryContext['learningStats'];
+  if (state.autoConf.learningsEnabled) {
+    try {
+      const eff = getLearningEffectiveness(state.repoRoot);
+      if (eff.applied > 0) {
+        learningStats = {
+          total: eff.total,
+          applied: eff.applied,
+          successRate: eff.successRate,
+          topPerformers: eff.topPerformers.map(p => ({ text: p.text, effectiveness: p.effectiveness })),
+        };
+      }
+    } catch (err) {
+      console.debug(`Learning effectiveness stats failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // Generate session report (before summary so we can show path in overnight output)
@@ -210,8 +228,15 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
     };
     const report = generateSessionReport(reportCtx);
     reportPath = writeSessionReport(state.repoRoot, report);
-  } catch {
-    // Non-fatal
+
+    // Write JSON report when --output json is requested
+    if (state.options.output === 'json') {
+      const jsonData = generateSessionJson(reportCtx);
+      const jsonPath = writeSessionJsonReport(state.repoRoot, jsonData);
+      console.log(chalk.gray(`  JSON report: ${jsonPath}`));
+    }
+  } catch (err) {
+    console.debug(`Session report generation failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // Destroy TUI before printing summary so output goes to the normal terminal
@@ -247,6 +272,7 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
     originalMinConfidence: state.autoConf.minConfidence ?? 20,
     completedDirectTicketCount: state.completedDirectTickets.length,
     reportPath,
+    learningStats,
     drillStats,
   };
   displayConvergenceSummary(summaryCtx);
@@ -269,7 +295,9 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
         reportPath,
       };
       writeDaemonWakeMetrics(state.repoRoot, metrics);
-    } catch { /* non-fatal */ }
+    } catch (err) {
+      console.debug(`Daemon wake metrics write failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   return state.totalFailed > 0 && state.allPrUrls.length === 0 ? 1 : 0;

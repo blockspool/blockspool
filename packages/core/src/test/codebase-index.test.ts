@@ -495,6 +495,58 @@ describe('formatIndexForPrompt', () => {
     expect(result).not.toContain('Entrypoints');
     expect(result).not.toContain('Other Modules');
   });
+
+  it('shows exported_names for focus modules when available', () => {
+    const idx = makeIndex({
+      modules: [{
+        path: 'src/auth',
+        file_count: 3,
+        production_file_count: 3,
+        purpose: 'services',
+        production: true,
+        classification_confidence: 'high',
+        exported_names: ['handleLogin', 'handleSignup', 'validateToken'],
+      }],
+    });
+    const result = formatIndexForPrompt(idx, 0);
+    expect(result).toContain('symbols: handleLogin, handleSignup, validateToken');
+  });
+
+  it('truncates exported_names at 15 with "+N more" suffix', () => {
+    const names = Array.from({ length: 20 }, (_, i) => `fn${i}`);
+    const idx = makeIndex({
+      modules: [{
+        path: 'src/lib',
+        file_count: 10,
+        production_file_count: 10,
+        purpose: 'utils',
+        production: true,
+        classification_confidence: 'high',
+        exported_names: names,
+      }],
+    });
+    const result = formatIndexForPrompt(idx, 0);
+    expect(result).toContain('symbols: fn0');
+    expect(result).toContain('fn14');
+    expect(result).not.toContain('fn15');
+    expect(result).toContain('(+5 more)');
+  });
+
+  it('omits symbols line when exported_names is empty', () => {
+    const idx = makeIndex({
+      modules: [{
+        path: 'src/lib',
+        file_count: 1,
+        production_file_count: 1,
+        purpose: 'services',
+        production: true,
+        classification_confidence: 'high',
+        exported_names: [],
+      }],
+    });
+    const result = formatIndexForPrompt(idx, 0);
+    expect(result).not.toContain('symbols:');
+  });
 });
 
 // ---------------------------------------------------------------------------

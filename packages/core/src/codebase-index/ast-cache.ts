@@ -11,7 +11,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { ExportEntry, AstFinding } from './shared.js';
+import type { ExportEntry, AstFinding, SymbolRange, CallEdge } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,6 +25,14 @@ export interface AstCacheEntry {
   complexity: number;
   findings?: AstFinding[];
   findingsVersion?: number;
+  /** Top-level symbol names + line ranges (for conflict detection). */
+  symbols?: SymbolRange[];
+  /** Cross-file call edges (caller → callee via imports). */
+  callEdges?: CallEdge[];
+  /** Actual imported binding names (for dead export detection accuracy). */
+  importedNames?: string[];
+  /** Per-pattern versions at time of scan. Used for granular invalidation. */
+  patternVersions?: Record<string, number>;
 }
 
 export type AstCache = Record<string, AstCacheEntry>;

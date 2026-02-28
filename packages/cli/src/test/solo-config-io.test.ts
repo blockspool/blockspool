@@ -158,6 +158,60 @@ describe('loadConfig', () => {
   });
 });
 
+describe('loadConfig auto.json migration', () => {
+  it('migrates auto.json into config.auto on load', async () => {
+    const { loadConfig } = await import('../lib/solo-config.js');
+    const config = { version: 1, repoRoot: '/repo', createdAt: '2025-01-01', dbPath: '/repo/.promptwheel/state.sqlite' };
+    const autoJson = { minConfidence: 40, learningsEnabled: true };
+
+    mockedFs.existsSync.mockImplementation((p: fs.PathLike) => {
+      const s = String(p);
+      if (s.includes('config.json')) return true;
+      if (s.includes('auto.json')) return true;
+      return false;
+    });
+    mockedFs.readFileSync.mockImplementation((p: fs.PathOrFileDescriptor) => {
+      const s = String(p);
+      if (s.includes('auto.json')) return JSON.stringify(autoJson);
+      return JSON.stringify(config);
+    });
+    mockedFs.writeFileSync.mockReturnValue(undefined);
+    mockedFs.unlinkSync.mockReturnValue(undefined);
+
+    const result = loadConfig('/repo');
+    expect(result!.auto).toEqual({ minConfidence: 40, learningsEnabled: true });
+    // Should have written merged config and deleted auto.json
+    expect(mockedFs.writeFileSync).toHaveBeenCalled();
+    expect(mockedFs.unlinkSync).toHaveBeenCalled();
+  });
+
+  it('config.auto takes precedence over auto.json during migration', async () => {
+    const { loadConfig } = await import('../lib/solo-config.js');
+    const config = { version: 1, repoRoot: '/repo', createdAt: '2025-01-01', dbPath: '/repo/.promptwheel/state.sqlite', auto: { minConfidence: 60 } };
+    const autoJson = { minConfidence: 40, learningsEnabled: true };
+
+    mockedFs.existsSync.mockImplementation((p: fs.PathLike) => {
+      const s = String(p);
+      if (s.includes('config.json')) return true;
+      if (s.includes('auto.json')) return true;
+      return false;
+    });
+    mockedFs.readFileSync.mockImplementation((p: fs.PathOrFileDescriptor) => {
+      const s = String(p);
+      if (s.includes('auto.json')) return JSON.stringify(autoJson);
+      return JSON.stringify(config);
+    });
+    mockedFs.writeFileSync.mockReturnValue(undefined);
+    mockedFs.unlinkSync.mockReturnValue(undefined);
+
+    const result = loadConfig('/repo');
+    // config.auto.minConfidence (60) should win over auto.json.minConfidence (40)
+    expect(result!.auto!.minConfidence).toBe(60);
+    // But learningsEnabled from auto.json should be merged in
+    expect((result!.auto as any).learningsEnabled).toBe(true);
+  });
+});
+
 describe('initSolo', () => {
   it('creates .promptwheel directory', async () => {
     const { initSolo } = await import('../lib/solo-config.js');

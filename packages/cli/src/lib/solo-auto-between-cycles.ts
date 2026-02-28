@@ -52,6 +52,7 @@ import {
 } from '@promptwheel/core/trajectory/shared';
 import { recordDrillTrajectoryOutcome, computeAmbitionLevel } from './solo-auto-drill.js';
 import { runIntegrations, toProposals } from './integrations.js';
+import { pollGitHubIssues, isGhAvailable } from './issue-polling.js';
 
 // ── Pre-cycle maintenance ───────────────────────────────────────────────────
 
@@ -82,6 +83,14 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
 
   state.cycleCount++;
   state.cycleOutcomes = [];
+
+  // Multi-repo rotation: cycle to next repo
+  if (state.repos.length > 1) {
+    state.repoIndex = (state.repoIndex + 1) % state.repos.length;
+    state.repoRoot = state.repos[state.repoIndex];
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Multi-repo: switched to ${path.basename(state.repoRoot)}`));
+  }
+
   // scope is computed in scout phase; pre-cycle doesn't need it
 
   // Session phase computation
@@ -127,8 +136,8 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
         state.effectiveMinConfidence += confDelta;
         if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Confidence calibration: ${confDelta > 0 ? '+' : ''}${confDelta} → ${state.effectiveMinConfidence}`));
       }
-    } catch {
-      // Non-fatal
+    } catch (err) {
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Confidence calibration failed: ${err instanceof Error ? err.message : String(err)}`));
     }
   }
 
@@ -219,8 +228,8 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
         } else if (state.options.verbose) {  // already verbose-gated
           state.displayAdapter.log(chalk.yellow(`  ⚠ Fetch failed (network?): ${fetchResult.stderr?.trim()}`));
         }
-      } catch {
-        // Network unavailable — non-fatal
+      } catch (err) {
+        if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Fetch failed: ${err instanceof Error ? err.message : String(err)}`));
       }
     }
   }
@@ -287,8 +296,8 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
       }
       const closedOrMergedSet = new Set(closedOrMergedUrls);
       state.pendingPrUrls = state.pendingPrUrls.filter(u => !closedOrMergedSet.has(u));
-    } catch {
-      // Non-fatal
+    } catch (err) {
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  PR status poll failed: ${err instanceof Error ? err.message : String(err)}`));
     }
   }
 
@@ -300,8 +309,28 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
       if (proposalResults.length > 0) {
         state._pendingIntegrationProposals = proposalResults.flatMap(r => toProposals(r));
       }
-    } catch {
-      // Non-fatal — integrations should never crash the spin loop
+    } catch (err) {
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Pre-scout integration failed: ${err instanceof Error ? err.message : String(err)}`));
+    }
+  }
+
+  // Poll GitHub issues for proposals
+  if (state.options.issues) {
+    try {
+      if (isGhAvailable()) {
+        const label = typeof state.options.issues === 'string' ? state.options.issues : 'promptwheel';
+        const issueProposals = pollGitHubIssues({
+          label,
+          limit: 10,
+          repoRoot: state.repoRoot,
+        });
+        if (issueProposals.length > 0) {
+          state._pendingIntegrationProposals.push(...issueProposals);
+          if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Polled ${issueProposals.length} GitHub issue(s) with label "${label}"`));
+        }
+      }
+    } catch (err) {
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Issue polling failed: ${err instanceof Error ? err.message : String(err)}`));
     }
   }
 
@@ -444,8 +473,8 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       if (metaInsightsAdded > 0 && state.options.verbose) {
         state.displayAdapter.log(chalk.gray(`  Meta-learnings: ${metaInsightsAdded} process insight(s) extracted`));
       }
-    } catch {
-      // Non-fatal
+    } catch (err) {
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Meta-learnings extraction failed: ${err instanceof Error ? err.message : String(err)}`));
     }
   }
 
@@ -603,7 +632,9 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     try {
       const { getLearningEffectiveness } = await import('./learnings.js');
       snapshotLearningROI(state.repoRoot, getLearningEffectiveness);
-    } catch { /* non-fatal */ }
+    } catch (err) {
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Learning ROI snapshot failed: ${err instanceof Error ? err.message : String(err)}`));
+    }
   }
 
   // Periodic learnings consolidation
@@ -650,8 +681,8 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
           state.displayAdapter.log(chalk.gray(`  Sectors refreshed: ${state.sectorState.sectors.length} sector(s)`));
         }
       }
-    } catch {
-      // Non-fatal
+    } catch (err) {
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Sectors refresh failed: ${err instanceof Error ? err.message : String(err)}`));
     }
   }
 
@@ -948,8 +979,8 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
   if (state.integrations.providers.length > 0) {
     try {
       await runIntegrations(state, state.integrations, 'post-cycle');
-    } catch {
-      // Non-fatal
+    } catch (err) {
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Post-cycle integration failed: ${err instanceof Error ? err.message : String(err)}`));
     }
   }
 
@@ -1009,7 +1040,9 @@ function finishDrillTrajectory(state: AutoSessionState, outcome: 'completed' | '
         modifiedFiles = [...new Set(gitResult.stdout.trim().split('\n').filter(Boolean))].slice(0, 20);
       }
     }
-  } catch { /* non-fatal */ }
+  } catch (err) {
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Drill: git log for modified files failed: ${err instanceof Error ? err.message : String(err)}`));
+  }
 
   // Collect per-step outcomes for telemetry (enables step-level learning)
   const stepOutcomes = traj.steps.map(s => ({
@@ -1102,6 +1135,8 @@ function finishDrillTrajectory(state: AutoSessionState, outcome: 'completed' | '
   if (state.autoConf.learningsEnabled) {
     try {
       state.allLearnings = loadLearnings(state.repoRoot, 0);
-    } catch { /* non-fatal */ }
+    } catch (err) {
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Learnings reload failed: ${err instanceof Error ? err.message : String(err)}`));
+    }
   }
 }

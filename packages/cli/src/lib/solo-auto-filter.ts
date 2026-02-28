@@ -9,7 +9,7 @@ import { minimatch } from 'minimatch';
 import type { TicketProposal } from '@promptwheel/core/scout';
 import { SCOUT_DEFAULTS } from '@promptwheel/core';
 import type { AutoSessionState } from './solo-auto-state.js';
-import { runClaudeCli, type ExecutionBackend } from './execution-backends/index.js';
+import { runClaude, type ExecutionBackend } from './execution-backends/index.js';
 import {
   buildProposalReviewPrompt, parseReviewedProposals, applyReviewToProposals,
 } from './proposal-review.js';
@@ -54,7 +54,7 @@ export async function filterProposals(
       const reviewPrompt = buildProposalReviewPrompt(proposals);
       const reviewBackend = state.executionBackend ?? {
         name: 'claude-review',
-        run: (opts: Parameters<ExecutionBackend['run']>[0]) => runClaudeCli(opts),
+        run: (opts: Parameters<ExecutionBackend['run']>[0]) => runClaude(opts),
       };
       const reviewResult = await reviewBackend.run({
         worktreePath: (state.milestoneMode && state.milestoneWorktreePath) ? state.milestoneWorktreePath : state.repoRoot,

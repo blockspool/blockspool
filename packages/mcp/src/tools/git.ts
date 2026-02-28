@@ -33,8 +33,15 @@ export function registerGitTools(server: McpServer, getState: () => SessionManag
       base_branch: z.string().optional().describe('Alias for baseBranch.'),
     },
     async (raw) => {
+      const ticketId = raw.ticketId ?? raw.ticket_id;
+      if (!ticketId) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Missing required parameter: ticketId (or ticket_id).' }) }],
+          isError: true,
+        };
+      }
       const params = {
-        ticketId: (raw.ticketId ?? raw.ticket_id)!,
+        ticketId,
         baseBranch: raw.baseBranch ?? raw.base_branch,
       };
       const state = getState();

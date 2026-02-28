@@ -1108,6 +1108,9 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     scoutTimeoutMs: sessionData.scoutTimeoutMs,
     maxScoutFiles: sessionData.maxScoutFiles,
     activeBackendName: sessionData.activeBackendName,
+    lastScanCommit: null,
+    repos: [],
+    repoIndex: 0,
 
     scoutBackend: depsResult.scoutBackend,
     executionBackend: depsResult.executionBackend,
@@ -1185,6 +1188,28 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
       state.pendingPrUrls = [...cp.pendingPrUrls];
       state.allPrUrls = [...cp.allPrUrls];
       console.log(chalk.yellow(`Resuming from checkpoint: cycle ${cp.cycleCount}, ${cp.totalPrsCreated} PRs`));
+    }
+  }
+
+  // Multi-repo: resolve --repos directories to absolute repo roots
+  if (options.repos) {
+    const repoDirs = options.repos.split(',').map(d => d.trim()).filter(Boolean);
+    const resolvedRepos: string[] = [];
+    for (const dir of repoDirs) {
+      const absDir = path.isAbsolute(dir) ? dir : path.resolve(dir);
+      const git = createGitService();
+      const root = await git.findRepoRoot(absDir);
+      if (root) {
+        resolvedRepos.push(root);
+      } else {
+        console.log(chalk.yellow(`  ⚠ Skipping ${dir}: not a git repository`));
+      }
+    }
+    if (resolvedRepos.length > 0) {
+      // Deduplicate
+      state.repos = [...new Set(resolvedRepos)];
+      state.repoIndex = 0;
+      console.log(chalk.gray(`  Multi-repo: ${state.repos.length} repo(s) — ${state.repos.map(r => path.basename(r)).join(', ')}`));
     }
   }
 

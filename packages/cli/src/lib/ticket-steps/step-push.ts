@@ -24,7 +24,7 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
     await ctx.markStep('push', 'failed', {
       errorMessage: pushError instanceof Error ? pushError.message : String(pushError),
     });
-    await ctx.skipRemaining(5, 'Push failed');
+    await ctx.skipRemaining(6, 'Push failed');
     await cleanupWorktree(repoRoot, worktreePath);
     const result = {
       success: false,

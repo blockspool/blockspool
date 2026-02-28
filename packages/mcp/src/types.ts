@@ -195,6 +195,9 @@ export interface RunState {
 
   // User-specified QA commands (always run in addition to ticket verification commands)
   qa_commands: string[];
+
+  // Conflict detection sensitivity for parallel deconfliction
+  conflict_sensitivity: 'strict' | 'normal' | 'relaxed';
 }
 
 export interface ProjectMetadataSnapshot {
@@ -285,6 +288,7 @@ export type EventType =
   | 'SECTOR_ROTATION_FAILED'
   | 'WORKER_TIMEOUT'
   | 'LEARNINGS_LOAD_FAILED'
+  | 'PARALLEL_DECONFLICTED'
   | 'SESSION_END';
 
 export interface RunEvent {
@@ -377,6 +381,8 @@ export interface SessionConfig {
   dry_run?: boolean;
   /** User-specified QA commands to run after every ticket (in addition to scout-proposed verification commands). */
   qa_commands?: string[];
+  /** Conflict detection sensitivity for parallel deconfliction. Default: 'normal'. */
+  conflict_sensitivity?: 'strict' | 'normal' | 'relaxed';
   /**
    * Explicitly enable loading repository custom tools from `.promptwheel/tools/*.json`.
    * Defaults to false unless enabled by env flag.

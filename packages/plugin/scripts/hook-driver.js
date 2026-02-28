@@ -19,13 +19,19 @@
  */
 
 import { readFileSync, existsSync, unlinkSync } from 'node:fs';
-import { join, resolve as resolvePath } from 'node:path';
+import { join } from 'node:path';
 
 /**
- * Simple glob matching (no external dependencies).
- * Supports: *, **, ?, {a,b}, [abc]
+ * Glob matching compatible with minimatch({ dot: true }) behavior.
+ * No external dependencies — the plugin runs standalone.
+ *
+ * Supports: *, **, ?, {a,b}, [abc], dotfiles
+ * Mirrors the patterns used by scope-policy.ts (ALWAYS_DENIED, allowed_paths).
  */
-function simpleMatch(pattern, str) {
+function globMatch(pattern, str) {
+  // Normalize: directory-style paths get /** appended (matches normalizeAllowedGlob in scope-policy.ts)
+  if (pattern.endsWith('/')) pattern += '**';
+
   // Convert glob pattern to regex
   let i = 0;
   let regex = '^';
@@ -35,12 +41,17 @@ function simpleMatch(pattern, str) {
     const c = pattern[i];
     if (c === '*') {
       if (pattern[i + 1] === '*') {
-        // ** matches any number of path segments
         if (pattern[i + 2] === '/') {
-          regex += '(?:.*/)?';
+          // **/ matches zero or more path segments
+          regex += '(?:.+/)?';
           i += 3;
-        } else {
+        } else if (i === 0 || pattern[i - 1] === '/') {
+          // ** at start or after / matches everything (including nested paths)
           regex += '.*';
+          i += 2;
+        } else {
+          // Bare ** not at segment boundary — treat as two single *
+          regex += '[^/]*[^/]*';
           i += 2;
         }
       } else {
@@ -55,7 +66,7 @@ function simpleMatch(pattern, str) {
       const close = pattern.indexOf('}', i);
       if (close !== -1) {
         const alternatives = pattern.slice(i + 1, close).split(',');
-        regex += '(?:' + alternatives.map(a => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
+        regex += '(?:' + alternatives.map(escapeRegex).join('|') + ')';
         i = close + 1;
       } else {
         regex += '\\{';
@@ -71,7 +82,7 @@ function simpleMatch(pattern, str) {
         i++;
       }
     } else {
-      regex += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      regex += escapeRegex(c);
       i++;
     }
   }
@@ -79,10 +90,14 @@ function simpleMatch(pattern, str) {
 
   try {
     return new RegExp(regex).test(str);
-  } catch (err) {
-    process.stderr.write(`[promptwheel] simpleMatch: bad regex for pattern "${pattern}": ${err}\n`);
+  } catch {
+    // Bad pattern — fail closed (deny the match)
     return false;
   }
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 const hookType = process.argv[2]; // "stop" or "PreToolUse"
@@ -191,7 +206,7 @@ if (hookType === 'PreToolUse') {
 
     // Check denied paths
     for (const deniedGlob of (policy.denied_paths ?? [])) {
-      if (simpleMatch(deniedGlob, filePath)) {
+      if (globMatch(deniedGlob, filePath)) {
         deny(`File ${filePath} matches denied path: ${deniedGlob}`);
       }
     }
@@ -213,7 +228,7 @@ if (hookType === 'PreToolUse') {
     // Check allowed paths (empty = everything allowed)
     const allowedPaths = policy.allowed_paths ?? [];
     if (allowedPaths.length > 0) {
-      const isAllowed = allowedPaths.some(glob => simpleMatch(glob, filePath));
+      const isAllowed = allowedPaths.some(glob => globMatch(glob, filePath));
       if (!isAllowed) {
         deny(`File ${filePath} is outside allowed paths: ${allowedPaths.join(', ')}`);
       }

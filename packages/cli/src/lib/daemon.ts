@@ -85,7 +85,8 @@ export function readDaemonWakeMetrics(repoRoot: string): DaemonWakeMetrics | nul
     // Clean up after reading
     fs.unlinkSync(filePath);
     return data;
-  } catch {
+  } catch (err) {
+    console.debug(`Daemon: failed to read wake metrics: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -159,7 +160,8 @@ export function readDaemonState(repoRoot: string): DaemonState | null {
   try {
     if (!fs.existsSync(filePath)) return null;
     return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-  } catch {
+  } catch (err) {
+    console.debug(`Daemon: failed to read state: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -210,8 +212,8 @@ function checkTrigger(repoRoot: string, state: DaemonState): TriggerResult {
         timeout: 10_000,
       }).trim();
       hadNewCommits = output.length > 0;
-    } catch {
-      // git log failed — proceed with timer only
+    } catch (err) {
+      console.debug(`Daemon: git log check failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

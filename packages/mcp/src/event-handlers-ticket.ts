@@ -35,6 +35,12 @@ export interface TicketResultValidationResult {
   plannedFiles: string[];
 }
 
+/**
+ * Note: changed_files comes from agent self-report. The MCP server doesn't have
+ * direct worktree access to run `git diff --name-only` for verification. The CLI
+ * path (solo-auto-execute) does have verified changed files from step-scope.ts.
+ * The plan cross-check below is the MCP path's best verification layer.
+ */
 export function validateTicketResultPayload(input: TicketResultValidationInput): TicketResultValidationResult {
   const status = toStringOrUndefined(input.payload['status']) ?? '';
   const changedFiles = toStringArrayOrUndefined(input.payload['changed_files']) ?? [];

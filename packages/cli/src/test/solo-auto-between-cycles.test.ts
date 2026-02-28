@@ -190,6 +190,8 @@ function makeState(overrides: Partial<any> = {}): any {
     drillConsecutiveInsufficient: 0,
     lastConvergenceAction: undefined,
     currentTrajectoryStep: null,
+    repos: [],
+    repoIndex: 0,
     ...overrides,
   };
 }

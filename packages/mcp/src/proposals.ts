@@ -10,6 +10,7 @@
 import type { DatabaseAdapter, TicketCategory } from '@promptwheel/core';
 import { repos } from '@promptwheel/core';
 import { bigramSimilarity } from '@promptwheel/core/dedup/shared';
+import { pathsOverlap } from '@promptwheel/core/waves/shared';  // used for file-set overlap dedup
 import {
   type RawProposal,
   type ValidatedProposal,
@@ -176,10 +177,17 @@ export async function filterAndCreateTickets(
   }
 
   // Step 4: Dedup against existing tickets (title similarity via bigrams)
+  // Include 'done' tickets to prevent re-proposing recently-completed work
   const existingTickets = await repos.tickets.listByProject(db, s.project_id, {
-    status: ['ready', 'in_progress'],
+    status: ['ready', 'in_progress', 'done'],
   });
-  const existingTitles = existingTickets.map(t => t.title);
+  const DEDUP_DONE_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const relevantTickets = existingTickets.filter(t => {
+    if (t.status !== 'done') return true;
+    return (now - new Date(t.updatedAt).getTime()) < DEDUP_DONE_WINDOW_MS;
+  });
+  const existingTitles = relevantTickets.map(t => t.title);
   const afterDedup = afterScope.filter(p => {
     const isDupe = existingTitles.some(t => bigramSimilarity(t, p.title) >= PROPOSALS_DEFAULTS.DEDUP_THRESHOLD);
     if (isDupe) {
@@ -189,13 +197,31 @@ export async function filterAndCreateTickets(
     return true;
   });
 
-  // Also dedup within the batch
+  // Also dedup within the batch (title similarity + file-set overlap)
   const uniqueByTitle: ValidatedProposal[] = [];
   for (const p of afterDedup) {
     const isDupeInBatch = uniqueByTitle.some(q => bigramSimilarity(q.title, p.title) >= PROPOSALS_DEFAULTS.DEDUP_THRESHOLD);
     if (isDupeInBatch) {
       rejected.push({ proposal: p, reason: `Duplicate within batch (title similarity >= ${PROPOSALS_DEFAULTS.DEDUP_THRESHOLD})` });
       continue;
+    }
+    // File-set overlap: reject if exact same set of files targets the same work.
+    // Uses pathsOverlap for glob-aware matching. Only triggers when every file in both
+    // proposals overlaps bidirectionally. Requires >= 3 files to avoid false positives
+    // on proposals that share a small number of common files for different reasons.
+    const pFiles = (p.files?.length ? p.files : p.allowed_paths) ?? [];
+    if (pFiles.length >= 3) {
+      const hasFileOverlap = uniqueByTitle.some(q => {
+        const qFiles = (q.files?.length ? q.files : q.allowed_paths) ?? [];
+        if (qFiles.length < 3) return false;
+        const pAllOverlap = pFiles.every(pf => qFiles.some(qf => pathsOverlap(pf, qf)));
+        const qAllOverlap = qFiles.every(qf => pFiles.some(pf => pathsOverlap(pf, qf)));
+        return pAllOverlap && qAllOverlap;
+      });
+      if (hasFileOverlap) {
+        rejected.push({ proposal: p, reason: 'Duplicate within batch (identical file set)' });
+        continue;
+      }
     }
     uniqueByTitle.push(p);
   }
@@ -219,6 +245,7 @@ export async function filterAndCreateTickets(
     metadata: {
       scoutConfidence: p.confidence,
       estimatedComplexity: p.estimated_complexity,
+      ...(p.target_symbols?.length ? { targetSymbols: p.target_symbols } : {}),
     },
   }));
 

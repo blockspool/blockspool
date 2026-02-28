@@ -130,8 +130,13 @@ describe('validateProposalSchema', () => {
     expect(result).toContain('files');
   });
 
-  it('requires risk as string', () => {
+  it('accepts missing risk (soft-required, defaults in normalize)', () => {
     const result = validateProposalSchema(makeRaw({ risk: undefined }));
+    expect(result).toBeNull();
+  });
+
+  it('rejects wrong-type risk', () => {
+    const result = validateProposalSchema(makeRaw({ risk: 123 as any }));
     expect(result).toContain('risk');
   });
 

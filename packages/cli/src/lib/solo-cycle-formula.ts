@@ -15,6 +15,8 @@ export interface CycleFormulaContext {
   options: {
     docsAuditInterval?: string;
     safe?: boolean;
+    allow?: string;
+    block?: string;
     tests?: boolean;
   };
   config: { auto?: { docsAuditInterval?: number; docsAudit?: boolean } } | null;
@@ -101,6 +103,13 @@ export function getCycleCategories(ctx: CycleFormulaContext, formula: Formula | 
   if (sessionPhase === 'cooldown') {
     return { allow: ['docs', 'cleanup', 'types'], block: ['deps', 'auth', 'config', 'migration'] };
   }
+  // --allow overrides everything: use exactly these categories
+  if (options.allow) {
+    const userAllow = options.allow.split(',').map(s => s.trim()).filter(Boolean);
+    // Block everything not in the allow list (no implicit blocks)
+    return { allow: userAllow, block: [] };
+  }
+
   let allow = formula?.categories
     ? formula.categories as string[]
     : options.safe
@@ -110,10 +119,18 @@ export function getCycleCategories(ctx: CycleFormulaContext, formula: Formula | 
   if (options.tests && !allow.includes('test')) {
     allow = [...allow, 'test'];
   }
-  const block = formula?.categories
+  let block = formula?.categories
     ? []
     : options.safe
       ? ['deps', 'auth', 'config', 'migration', 'security', 'fix', 'cleanup']
       : ['deps', 'auth', 'config', 'migration'];
+
+  // --block adds categories to the block list and removes them from allow
+  if (options.block) {
+    const userBlock = options.block.split(',').map(s => s.trim()).filter(Boolean);
+    block = [...new Set([...block, ...userBlock])];
+    allow = allow.filter(c => !userBlock.includes(c));
+  }
+
   return { allow, block };
 }

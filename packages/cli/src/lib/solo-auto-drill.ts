@@ -91,7 +91,7 @@ export function getDrillCooldown(state: AutoSessionState): number {
   // Smooth sigmoid adaptation based on recency-weighted success rate
   if (state.drillHistory.length >= COOLDOWN_MIN_HISTORY) {
     const rate = computeDrillMetrics(state.drillHistory).weightedCompletionRate;
-    // Configurable sigmoid parameters (via auto.json drill config)
+    // Configurable sigmoid parameters (via config.json auto.drill)
     const k = drillConf?.sigmoidK ?? 6;
     const center = drillConf?.sigmoidCenter ?? 0.5;
     // Sigmoid: smooth mapping from rate to adjustment
@@ -521,7 +521,7 @@ export function computeAmbitionLevel(state: AutoSessionState): AmbitionLevel {
   const drillConf = state.autoConf.drill;
   const metrics = computeDrillMetrics(state.drillHistory);
 
-  // Configurable thresholds (via auto.json drill.ambitionThresholds)
+  // Configurable thresholds (via config.json auto.drill.ambitionThresholds)
   const step1Critical = drillConf?.ambitionThresholds?.step1Critical ?? 0.4;
   const step1Threshold = drillConf?.ambitionThresholds?.step1Fail ?? 0.25;
   const lowCompletion = drillConf?.ambitionThresholds?.conservative ?? 0.3;

@@ -78,6 +78,8 @@ export interface RunTicketResult {
   };
   /** Trace analysis from stream-json output (when available) */
   traceAnalysis?: TraceAnalysis;
+  /** Actual files changed (from git status, scope-verified). More accurate than proposal.files for learnings. */
+  changedFiles?: string[];
 }
 
 /**
@@ -125,8 +127,8 @@ export interface RunTicketOptions {
   confidence?: number;
   /** Estimated complexity from scout — used to add planning preamble */
   complexity?: string;
-  /** Pre-captured QA baseline from cycle-level cache. If provided, skips per-ticket capture. */
-  qaBaseline?: Map<string, boolean>;
+  /** Pre-captured QA baseline from cycle-level cache. If provided, skips per-ticket capture. Immutable — shared across parallel tickets. */
+  qaBaseline?: ReadonlyMap<string, boolean>;
   /** Stream raw agent output chunks for live TUI display */
   onRawOutput?: (chunk: string) => void;
   /** Formula that generated this ticket — provides execution context */
@@ -146,6 +148,7 @@ export const EXECUTE_STEPS = [
   { name: 'worktree', kind: 'git' as StepKind },
   { name: 'agent', kind: 'internal' as StepKind },
   { name: 'scope', kind: 'internal' as StepKind },
+  { name: 'verify', kind: 'command' as StepKind },
   { name: 'commit', kind: 'git' as StepKind },
   { name: 'push', kind: 'git' as StepKind },
   { name: 'qa', kind: 'command' as StepKind },

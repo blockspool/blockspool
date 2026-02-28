@@ -536,16 +536,22 @@ describe('advance — parallel execution event forwarding', () => {
     // Initialize ticket worker (simulating what advanceNextTicket does)
     run.initTicketWorker(ticket.id, { title: ticket.title });
 
-    // Call processEvent with PR_CREATED (simulating user calling promptwheel_ingest_event)
+    // Call processEvent with PR_CREATED (simulating subagent completing all work inline)
     const result = await processEvent(run, db, 'PR_CREATED', {
       ticket_id: ticket.id,
       url: 'https://github.com/test/pr/1',
       branch: 'promptwheel/test',
+      inline_completion: {
+        contract_version: 1,
+        mode: 'full',
+        ticket_id: ticket.id,
+        event_type: 'PR_CREATED',
+      },
     }, project);
 
-    // Should be forwarded to ticket worker and complete the ticket
+    // Should be forwarded to ticket worker and complete the ticket (via inline contract)
     expect(result.processed).toBe(true);
-    expect(result.message).toBe('PR created, ticket complete');
+    expect(result.message).toContain('PR created');
     expect(s.tickets_completed).toBe(1);
     expect(s.prs_created).toBe(1);
 
@@ -573,16 +579,22 @@ describe('advance — parallel execution event forwarding', () => {
     // Initialize ticket worker
     run.initTicketWorker(ticket.id, { title: ticket.title });
 
-    // Call processEvent with TICKET_RESULT (done status with PR URL)
+    // Call processEvent with TICKET_RESULT (subagent completed all work inline)
     const result = await processEvent(run, db, 'TICKET_RESULT', {
       ticket_id: ticket.id,
       status: 'done',
       pr_url: 'https://github.com/test/pr/2',
+      inline_completion: {
+        contract_version: 1,
+        mode: 'full',
+        ticket_id: ticket.id,
+        event_type: 'TICKET_RESULT',
+      },
     }, project);
 
-    // Should be forwarded and complete with PR
+    // Should be forwarded and complete with PR (via inline contract)
     expect(result.processed).toBe(true);
-    expect(result.message).toBe('Ticket complete with PR');
+    expect(result.message).toContain('Ticket complete with PR');
     expect(s.tickets_completed).toBe(1);
     expect(s.prs_created).toBe(1);
   });

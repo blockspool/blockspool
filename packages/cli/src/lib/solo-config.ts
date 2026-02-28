@@ -570,6 +570,21 @@ export function loadConfig(repoRoot: string): SoloConfig | null {
     }
   }
 
+  // Auto-migrate: if a standalone auto.json exists, merge it into config.auto
+  const autoJsonPath = path.join(getPromptwheelDir(repoRoot), 'auto.json');
+  if (fs.existsSync(autoJsonPath)) {
+    try {
+      const autoData = JSON.parse(fs.readFileSync(autoJsonPath, 'utf-8'));
+      if (autoData && typeof autoData === 'object' && !Array.isArray(autoData)) {
+        config.auto = { ...autoData, ...config.auto };
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        fs.unlinkSync(autoJsonPath);
+      }
+    } catch {
+      // Malformed auto.json — ignore, user can fix manually
+    }
+  }
+
   return config;
 }
 

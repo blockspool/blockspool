@@ -5,10 +5,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   detectDeadExports,
+  detectDeadFunctions,
+  detectDeadFunctionsFused,
+  fuseCallGraphs,
   detectStructuralIssues,
   computeCouplingMetrics,
 } from '../codebase-index/dead-code.js';
-import type { ModuleEntry, ExportEntry } from '../codebase-index/shared.js';
+import type { ModuleEntry, ExportEntry, CallEdge, TypeScriptAnalysis } from '../codebase-index/shared.js';
 
 function makeModule(p: string, overrides: Partial<ModuleEntry> = {}): ModuleEntry {
   return {
@@ -191,5 +194,181 @@ describe('computeCouplingMetrics', () => {
     const reverse = { mid: ['c', 'd'] };
     const metrics = computeCouplingMetrics(modules, edges, reverse);
     expect(metrics.instability['mid']).toBe(0.5); // Ce=2, Ca=2 → 2/4=0.5
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectDeadFunctions
+// ---------------------------------------------------------------------------
+
+describe('detectDeadFunctions', () => {
+  it('detects exported functions with no cross-file callers', () => {
+    const exports: Record<string, ExportEntry[]> = {
+      'src/utils.ts': [
+        { name: 'helperA', kind: 'function' },
+        { name: 'helperB', kind: 'function' },
+      ],
+    };
+    const callEdges: Record<string, CallEdge[]> = {
+      'src/main.ts': [
+        { caller: 'main', callee: 'helperA', line: 5, importSource: './utils' },
+      ],
+    };
+
+    const dead = detectDeadFunctions(exports, callEdges);
+    expect(dead).toHaveLength(1);
+    expect(dead[0].name).toBe('helperB');
+  });
+
+  it('skips non-function exports', () => {
+    const exports: Record<string, ExportEntry[]> = {
+      'src/types.ts': [
+        { name: 'Config', kind: 'type' },
+        { name: 'MAX_SIZE', kind: 'variable' },
+      ],
+    };
+    const dead = detectDeadFunctions(exports, {});
+    expect(dead).toHaveLength(0);
+  });
+
+  it('skips default exports', () => {
+    const exports: Record<string, ExportEntry[]> = {
+      'src/utils.ts': [{ name: 'default', kind: 'function' }],
+    };
+    const dead = detectDeadFunctions(exports, {});
+    expect(dead).toHaveLength(0);
+  });
+
+  it('only counts cross-file calls (importSource set)', () => {
+    const exports: Record<string, ExportEntry[]> = {
+      'src/utils.ts': [{ name: 'internalHelper', kind: 'function' }],
+    };
+    // Call exists but without importSource — it's an internal call, not cross-file
+    const callEdges: Record<string, CallEdge[]> = {
+      'src/utils.ts': [
+        { caller: 'main', callee: 'internalHelper', line: 10 },
+      ],
+    };
+
+    const dead = detectDeadFunctions(exports, callEdges);
+    expect(dead).toHaveLength(1);
+    expect(dead[0].name).toBe('internalHelper');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fuseCallGraphs
+// ---------------------------------------------------------------------------
+
+describe('fuseCallGraphs', () => {
+  it('merges ast-grep cross-file calls', () => {
+    const edges: Record<string, CallEdge[]> = {
+      'src/main.ts': [
+        { caller: 'main', callee: 'validateToken', line: 5, importSource: './auth' },
+      ],
+    };
+    const fused = fuseCallGraphs(edges);
+    expect(fused.has('validateToken')).toBe(true);
+  });
+
+  it('merges ts-morph simple callee names', () => {
+    const tsAnalysis: TypeScriptAnalysis = {
+      any_count: 0,
+      any_propagation_paths: [],
+      call_graph_edges: [
+        { caller: 'src/main.ts:init', callee: 'setupRoutes' },
+      ],
+      api_surface: {},
+      unchecked_type_assertions: 0,
+    };
+    const fused = fuseCallGraphs({}, tsAnalysis);
+    expect(fused.has('setupRoutes')).toBe(true);
+  });
+
+  it('extracts method name from dotted callee', () => {
+    const tsAnalysis: TypeScriptAnalysis = {
+      any_count: 0,
+      any_propagation_paths: [],
+      call_graph_edges: [
+        { caller: 'src/main.ts:init', callee: 'this.service.process' },
+      ],
+      api_surface: {},
+      unchecked_type_assertions: 0,
+    };
+    const fused = fuseCallGraphs({}, tsAnalysis);
+    expect(fused.has('process')).toBe(true);
+  });
+
+  it('combines both sources', () => {
+    const edges: Record<string, CallEdge[]> = {
+      'src/a.ts': [
+        { caller: 'a', callee: 'fromAstGrep', line: 1, importSource: './b' },
+      ],
+    };
+    const tsAnalysis: TypeScriptAnalysis = {
+      any_count: 0,
+      any_propagation_paths: [],
+      call_graph_edges: [
+        { caller: 'src/c.ts:c', callee: 'fromTsMorph' },
+      ],
+      api_surface: {},
+      unchecked_type_assertions: 0,
+    };
+    const fused = fuseCallGraphs(edges, tsAnalysis);
+    expect(fused.has('fromAstGrep')).toBe(true);
+    expect(fused.has('fromTsMorph')).toBe(true);
+  });
+
+  it('handles empty inputs', () => {
+    const fused = fuseCallGraphs({});
+    expect(fused.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectDeadFunctionsFused
+// ---------------------------------------------------------------------------
+
+describe('detectDeadFunctionsFused', () => {
+  it('reduces false positives by including ts-morph callees', () => {
+    const exports: Record<string, ExportEntry[]> = {
+      'src/utils.ts': [
+        { name: 'helperA', kind: 'function' },
+        { name: 'helperB', kind: 'function' },
+      ],
+    };
+    // ast-grep sees helperA as called, but not helperB
+    const callEdges: Record<string, CallEdge[]> = {
+      'src/main.ts': [
+        { caller: 'main', callee: 'helperA', line: 5, importSource: './utils' },
+      ],
+    };
+    // ts-morph sees helperB called (ast-grep missed it due to expression complexity)
+    const tsAnalysis: TypeScriptAnalysis = {
+      any_count: 0,
+      any_propagation_paths: [],
+      call_graph_edges: [
+        { caller: 'src/other.ts:init', callee: 'helperB' },
+      ],
+      api_surface: {},
+      unchecked_type_assertions: 0,
+    };
+
+    // Without ts-morph fusion: helperB would be "dead"
+    const deadWithout = detectDeadFunctions(exports, callEdges);
+    expect(deadWithout.some(d => d.name === 'helperB')).toBe(true);
+
+    // With ts-morph fusion: helperB is recognized as called
+    const deadWith = detectDeadFunctionsFused(exports, callEdges, tsAnalysis);
+    expect(deadWith.some(d => d.name === 'helperB')).toBe(false);
+  });
+
+  it('still detects genuinely dead functions', () => {
+    const exports: Record<string, ExportEntry[]> = {
+      'src/utils.ts': [{ name: 'trulyDead', kind: 'function' }],
+    };
+    const dead = detectDeadFunctionsFused(exports, {}, undefined);
+    expect(dead).toHaveLength(1);
+    expect(dead[0].name).toBe('trulyDead');
   });
 });

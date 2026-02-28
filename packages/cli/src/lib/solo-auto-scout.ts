@@ -2,6 +2,7 @@
  * Scout phase for auto mode: build context, execute scout, handle results.
  */
 
+import { execFileSync } from 'node:child_process';
 import chalk from 'chalk';
 import type { ScoutProgress } from '@promptwheel/core/services';
 import { SCOUT_DEFAULTS } from '@promptwheel/core';
@@ -218,8 +219,14 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     }
   } catch { /* non-fatal */ }
   if (state.autoConf.learningsEnabled) {
-    const learningsText = formatLearningsForPrompt(selectRelevant(state.allLearnings, { paths: [scope] }), state.autoConf.learningsBudget);
-    if (learningsText) promptBuilder.addLearnings(learningsText);
+    const relevant = selectRelevant(state.allLearnings, { paths: [scope] });
+    const learningsText = formatLearningsForPrompt(relevant, state.autoConf.learningsBudget);
+    if (learningsText) {
+      promptBuilder.addLearnings(learningsText);
+      if (state.options.verbose && relevant.length > 0) {
+        state.displayAdapter.log(chalk.gray(`  Learnings: ${relevant.length} applied to scout prompt`));
+      }
+    }
   }
   if (cycleFormula?.prompt) promptBuilder.addFormulaPrompt(cycleFormula.prompt);
   if (hintBlock) promptBuilder.addHints(hintBlock);
@@ -247,12 +254,16 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
       })()
     : undefined;
 
+  // Incremental scanning: compute changed files since last scout
+  const changedFiles = await computeIncrementalFiles(state, scoutPath);
+
   let scoutResult;
   const scoutStart = Date.now();
   try {
     scoutResult = await scoutRepo(state.deps, {
       path: scoutPath,
       scope,
+      changedFiles,
       types: allowCategories.length <= 4 ? allowCategories as ProposalCategory[] : undefined,
       excludeTypes: allowCategories.length > 4 ? blockCategories as ProposalCategory[] : undefined,
       maxProposals: 20,
@@ -290,29 +301,10 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
       },
     });
   } catch (scoutErr) {
-    const errMsg = scoutErr instanceof Error ? scoutErr.message : String(scoutErr);
-
-    // Rate limit → graceful shutdown instead of re-throwing
-    const { isRateLimitError } = await import('./execution-backends/process-runner.js');
-    if (isRateLimitError(errMsg)) {
-      state.shutdownRequested = true;
-      state.shutdownReason = 'rate_limited';
-      state.displayAdapter.log(chalk.red('  API rate/usage limit reached — shutting down gracefully'));
-      return {
-        proposals: [],
-        scoutResult: { proposals: [], project: state.project, scannedFiles: 0, errors: [errMsg], durationMs: 0, success: false, run: {} as never, tickets: [] },
-        scope,
-        cycleFormula,
-        isDeepCycle,
-        isDocsAuditCycle,
-        shouldRetry: false,
-        shouldBreak: true,
-      };
-    }
-
     state.displayAdapter.scoutFailed('Scout failed');
     // Error ledger for scout failures
     try {
+      const errMsg = scoutErr instanceof Error ? scoutErr.message : String(scoutErr);
       appendErrorLedger(state.repoRoot, {
         ts: Date.now(),
         ticketId: '',
@@ -328,6 +320,9 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     } catch { /* non-fatal */ }
     throw scoutErr;
   }
+
+  // Always update last scan commit after a successful scan (even if zero proposals)
+  updateLastScanCommit(state, scoutPath);
 
   // Record scan
   if (state.sectorState && state.currentSectorId) {
@@ -444,4 +439,125 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   state.displayAdapter.scoutCompleted(proposals.length);
   const scoutDurationMs = Date.now() - scoutStart;
   return { proposals, scoutResult, scope, cycleFormula, isDeepCycle, isDocsAuditCycle, shouldRetry: false, shouldBreak: false, scoutDurationMs };
+}
+
+// ── Incremental scanning helpers ──────────────────────────────────────────
+
+/**
+ * Get the current HEAD commit SHA.
+ */
+function getHeadCommit(repoRoot: string): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      timeout: 5_000,
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get files changed since a given commit SHA.
+ */
+function getChangedFilesSince(repoRoot: string, sinceCommit: string): string[] | null {
+  try {
+    const output = execFileSync('git', ['diff', '--name-only', `${sinceCommit}..HEAD`], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      timeout: 10_000,
+    });
+    return output.trim().split('\n').filter(Boolean);
+  } catch {
+    return null; // fallback to full scan
+  }
+}
+
+/**
+ * Expand changed files to include their dependents from the codebase index.
+ * If file A changed and module B imports from module A, include B too.
+ */
+function expandWithDependents(changedFiles: string[], state: AutoSessionState): string[] {
+  if (!state.codebaseIndex?.reverse_edges) return changedFiles;
+
+  const expanded = new Set(changedFiles);
+  const reverseEdges = state.codebaseIndex.reverse_edges;
+
+  for (const file of changedFiles) {
+    // Find which module this file belongs to
+    const normalized = file.replace(/\\/g, '/');
+    for (const mod of state.codebaseIndex.modules) {
+      const modPath = mod.path.replace(/\\/g, '/');
+      if (normalized === modPath || normalized.startsWith(modPath + '/')) {
+        // Add all modules that import this one
+        const dependents = reverseEdges[mod.path];
+        if (dependents) {
+          for (const dep of dependents) {
+            // Add the module directory as a prefix — scanner will match files within
+            expanded.add(dep);
+            // Also add any files we know about in that module
+            for (const otherMod of state.codebaseIndex!.modules) {
+              if (otherMod.path === dep) {
+                expanded.add(otherMod.path);
+              }
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  return [...expanded];
+}
+
+/**
+ * Compute the set of files to scan incrementally, or undefined for a full scan.
+ *
+ * Returns undefined (full scan) when:
+ * - First cycle (no lastScanCommit)
+ * - git diff fails
+ * - Changed files exceed 30% of repo (incremental is pointless)
+ * - Deep or docs-audit cycle (needs full view)
+ */
+async function computeIncrementalFiles(state: AutoSessionState, scoutPath: string): Promise<string[] | undefined> {
+  // Skip incremental on first cycle, deep cycles, or when explicitly disabled
+  if (!state.lastScanCommit) return undefined;
+  if (state.cycleCount <= 1) return undefined;
+
+  const headCommit = getHeadCommit(scoutPath);
+  if (!headCommit || headCommit === state.lastScanCommit) {
+    // No changes since last scan — still do a full scan to find new improvements
+    // (the scout prompt changes each cycle via learnings, escalation, etc.)
+    return undefined;
+  }
+
+  const changed = getChangedFilesSince(scoutPath, state.lastScanCommit);
+  if (!changed || changed.length === 0) return undefined;
+
+  // If too many files changed, fall back to full scan
+  const totalModules = state.codebaseIndex?.modules.length ?? 100;
+  if (changed.length > totalModules * 0.3) {
+    return undefined;
+  }
+
+  // Expand with dependents
+  const expanded = expandWithDependents(changed, state);
+
+  if (state.options.verbose) {
+    state.displayAdapter.log(chalk.gray(`  Incremental: ${changed.length} changed, ${expanded.length} after dependents`));
+  }
+
+  return expanded;
+}
+
+/**
+ * Record the current HEAD as the last scan commit.
+ */
+function updateLastScanCommit(state: AutoSessionState, scoutPath: string): void {
+  const head = getHeadCommit(scoutPath);
+  if (head) {
+    state.lastScanCommit = head;
+  }
 }

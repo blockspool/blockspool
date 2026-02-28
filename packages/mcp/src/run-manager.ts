@@ -276,6 +276,9 @@ export class RunManager {
       // Dry-run + QA commands
       dry_run: config.dry_run ?? false,
       qa_commands: config.qa_commands ?? [],
+
+      // Conflict detection sensitivity for parallel deconfliction
+      conflict_sensitivity: config.conflict_sensitivity ?? 'normal',
     };
 
     // Detect project metadata (test runner, framework, etc.)

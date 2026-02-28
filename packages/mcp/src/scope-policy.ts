@@ -179,7 +179,7 @@ export function deriveScopePolicy(input: DeriveScopeInput): ScopePolicy {
     }
   }
 
-  return {
+  const policy: ScopePolicy = {
     allowed_paths: input.allowedPaths,
     denied_paths: ALWAYS_DENIED,
     denied_patterns: FILE_DENY_PATTERNS,
@@ -189,6 +189,7 @@ export function deriveScopePolicy(input: DeriveScopeInput): ScopePolicy {
     worktree_root: input.worktreeRoot,
     risk_assessment: riskAssessment,
   };
+  return policy;
 }
 
 // ---------------------------------------------------------------------------

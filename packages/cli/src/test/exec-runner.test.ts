@@ -527,6 +527,8 @@ function createMockProcess(opts: {
   mockChild.kill = vi.fn();
   mockChild.killed = false;
   mockChild.pid = undefined;
+  mockChild.exitCode = null;
+  mockChild.signalCode = null;
 
   // Simulate data emission
   if (!opts.hang) {

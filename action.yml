@@ -1,0 +1,158 @@
+name: 'PromptWheel'
+description: 'Autonomous codebase improvement — scouts, fixes, and creates PRs'
+author: 'PromptWheel'
+
+branding:
+  icon: 'refresh-cw'
+  color: 'blue'
+
+inputs:
+  hours:
+    description: 'Time budget in hours (accepts decimals: 0.5 = 30min)'
+    required: false
+    default: '1'
+  provider:
+    description: 'Backend provider: codex, claude, kimi, local'
+    required: false
+    default: 'codex'
+  scope:
+    description: 'Directory to focus on (default: entire repo)'
+    required: false
+  formula:
+    description: 'Formula: deep, security-audit, test-coverage, cleanup, docs'
+    required: false
+  allow:
+    description: 'Only allow these categories (comma-separated)'
+    required: false
+  block:
+    description: 'Block these categories (comma-separated)'
+    required: false
+  max-prs:
+    description: 'Maximum number of PRs to create'
+    required: false
+    default: '5'
+  safe:
+    description: 'Safe mode — restrict to low-risk categories only'
+    required: false
+    default: 'false'
+  dry-run:
+    description: 'Preview without making changes'
+    required: false
+    default: 'false'
+  pr:
+    description: 'Create pull requests instead of direct commits'
+    required: false
+    default: 'true'
+  cli-version:
+    description: 'CLI version to install (default: latest)'
+    required: false
+    default: 'latest'
+  output:
+    description: 'Output format: json (writes structured JSON report to .promptwheel/reports/)'
+    required: false
+  extra-args:
+    description: 'Additional CLI arguments (passed verbatim)'
+    required: false
+
+outputs:
+  prs-created:
+    description: 'Number of PRs created'
+    value: ${{ steps.run.outputs.prs-created }}
+  tickets-completed:
+    description: 'Number of tickets completed'
+    value: ${{ steps.run.outputs.tickets-completed }}
+  tickets-failed:
+    description: 'Number of tickets that failed'
+    value: ${{ steps.run.outputs.tickets-failed }}
+  report-json:
+    description: 'Path to JSON report (when output=json)'
+    value: ${{ steps.run.outputs.report-json }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install PromptWheel CLI
+      shell: bash
+      run: npm install -g @promptwheel/cli@${{ inputs.cli-version }}
+
+    - name: Initialize PromptWheel
+      shell: bash
+      run: promptwheel solo init --yes 2>/dev/null || true
+
+    - name: Run PromptWheel
+      id: run
+      shell: bash
+      env:
+        # Auth keys are passed via repository secrets — users set these in their workflow
+        OPENAI_API_KEY: ${{ env.OPENAI_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ env.ANTHROPIC_API_KEY }}
+        MOONSHOT_API_KEY: ${{ env.MOONSHOT_API_KEY }}
+        # Disable interactive prompts
+        CI: 'true'
+      run: |
+        set +e
+
+        ARGS="--yes --no-tui"
+        ARGS="$ARGS --hours ${{ inputs.hours }}"
+        ARGS="$ARGS --provider ${{ inputs.provider }}"
+        ARGS="$ARGS --max-prs ${{ inputs.max-prs }}"
+
+        if [ "${{ inputs.pr }}" = "true" ]; then
+          ARGS="$ARGS --pr"
+        fi
+
+        if [ "${{ inputs.safe }}" = "true" ]; then
+          ARGS="$ARGS --safe"
+        fi
+
+        if [ "${{ inputs.dry-run }}" = "true" ]; then
+          ARGS="$ARGS --dry-run"
+        fi
+
+        if [ -n "${{ inputs.scope }}" ]; then
+          ARGS="$ARGS --scope ${{ inputs.scope }}"
+        fi
+
+        if [ -n "${{ inputs.formula }}" ]; then
+          ARGS="$ARGS --formula ${{ inputs.formula }}"
+        fi
+
+        if [ -n "${{ inputs.allow }}" ]; then
+          ARGS="$ARGS --allow ${{ inputs.allow }}"
+        fi
+
+        if [ -n "${{ inputs.block }}" ]; then
+          ARGS="$ARGS --block ${{ inputs.block }}"
+        fi
+
+        if [ -n "${{ inputs.output }}" ]; then
+          ARGS="$ARGS --output ${{ inputs.output }}"
+        fi
+
+        if [ -n "${{ inputs.extra-args }}" ]; then
+          ARGS="$ARGS ${{ inputs.extra-args }}"
+        fi
+
+        echo "Running: promptwheel solo auto $ARGS"
+        promptwheel solo auto $ARGS 2>&1 | tee /tmp/promptwheel-output.log
+        EXIT_CODE=${PIPESTATUS[0]}
+
+        # Parse outputs from log
+        PRS=$(grep -c '✓.*PR.*created\|PR:.*github.com' /tmp/promptwheel-output.log 2>/dev/null || echo "0")
+        COMPLETED=$(grep -c '^  ✓' /tmp/promptwheel-output.log 2>/dev/null || echo "0")
+        FAILED=$(grep -c '^  ✗' /tmp/promptwheel-output.log 2>/dev/null || echo "0")
+
+        # Find JSON report path if generated
+        JSON_REPORT=$(grep -oP '(?<=JSON report: ).*\.json' /tmp/promptwheel-output.log 2>/dev/null || echo "")
+
+        echo "prs-created=$PRS" >> "$GITHUB_OUTPUT"
+        echo "tickets-completed=$COMPLETED" >> "$GITHUB_OUTPUT"
+        echo "tickets-failed=$FAILED" >> "$GITHUB_OUTPUT"
+        echo "report-json=$JSON_REPORT" >> "$GITHUB_OUTPUT"
+
+        exit $EXIT_CODE

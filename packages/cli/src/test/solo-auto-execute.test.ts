@@ -270,6 +270,7 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
     scoutTimeoutMs: 60_000,
     maxScoutFiles: 100,
     activeBackendName: 'codex',
+    lastScanCommit: null,
 
     scoutBackend: undefined,
     executionBackend: undefined,

@@ -238,6 +238,11 @@ function normalizeProposal(
       proposal.estimated_complexity = 'simple';
     }
 
+    // Normalize target_symbols (optional, for symbol-aware conflict detection)
+    if (proposal.target_symbols && !Array.isArray(proposal.target_symbols)) {
+      proposal.target_symbols = undefined;
+    }
+
     return proposal;
   } catch (err) {
     if (process.env.PROMPTWHEEL_VERBOSE) {
@@ -297,12 +302,18 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
     // Phase 1: Discover files
     report({ phase: 'discovering' });
 
-    const files = scanFiles({
+    let files = scanFiles({
       cwd: projectPath,
       include: [scope],
       exclude,
       maxFiles: options.maxFiles ?? 60,
     });
+
+    // Incremental scanning: restrict to changed files when provided
+    if (options.changedFiles && options.changedFiles.length > 0) {
+      const changedSet = new Set(options.changedFiles.map(f => f.replace(/\\/g, '/')));
+      files = files.filter(f => changedSet.has(f.path.replace(/\\/g, '/')));
+    }
 
     if (files.length === 0) {
       return {

@@ -218,6 +218,7 @@ export class CodexScoutBackend implements ScoutBackend {
               impact_score: { type: 'number' },
               rationale: { type: 'string' },
               estimated_complexity: { type: 'string' },
+              target_symbols: { type: 'array', items: { type: 'string' } },
             },
             required: ['category', 'title', 'description', 'confidence', 'impact_score', 'files',
               'acceptance_criteria', 'verification_commands', 'allowed_paths', 'rationale', 'estimated_complexity'],

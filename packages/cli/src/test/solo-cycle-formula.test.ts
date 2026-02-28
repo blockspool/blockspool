@@ -173,4 +173,78 @@ describe('getCycleCategories', () => {
     expect(allow).toEqual(['refactor', 'docs', 'types', 'perf', 'security', 'fix', 'cleanup']);
     expect(block).toEqual(['deps', 'auth', 'config', 'migration']);
   });
+
+  // ---------------------------------------------------------------------------
+  // --allow flag
+  // ---------------------------------------------------------------------------
+
+  it('uses exactly the specified categories with --allow', () => {
+    const ctx = makeCtx({ options: { allow: 'security,fix' } });
+    const { allow, block } = getCycleCategories(ctx, null);
+
+    expect(allow).toEqual(['security', 'fix']);
+    expect(block).toEqual([]);
+  });
+
+  it('--allow overrides safe mode', () => {
+    const ctx = makeCtx({ options: { safe: true, allow: 'deps,auth' } });
+    const { allow, block } = getCycleCategories(ctx, null);
+
+    expect(allow).toEqual(['deps', 'auth']);
+    expect(block).toEqual([]);
+  });
+
+  it('--allow overrides formula categories', () => {
+    const formula = makeFormula({ categories: ['refactor', 'docs'] });
+    const ctx = makeCtx({ options: { allow: 'security' } });
+    const { allow } = getCycleCategories(ctx, formula);
+
+    expect(allow).toEqual(['security']);
+  });
+
+  // ---------------------------------------------------------------------------
+  // --block flag
+  // ---------------------------------------------------------------------------
+
+  it('adds categories to block list with --block', () => {
+    const ctx = makeCtx({ options: { block: 'security,fix' } });
+    const { allow, block } = getCycleCategories(ctx, null);
+
+    expect(block).toContain('security');
+    expect(block).toContain('fix');
+    // Also still contains default blocks
+    expect(block).toContain('deps');
+    // Blocked categories removed from allow
+    expect(allow).not.toContain('security');
+    expect(allow).not.toContain('fix');
+  });
+
+  it('--block removes categories from allow list', () => {
+    const ctx = makeCtx({ options: { block: 'refactor,docs' } });
+    const { allow } = getCycleCategories(ctx, null);
+
+    expect(allow).not.toContain('refactor');
+    expect(allow).not.toContain('docs');
+    // Other defaults still present
+    expect(allow).toContain('types');
+    expect(allow).toContain('perf');
+  });
+
+  it('--block stacks with safe mode', () => {
+    const ctx = makeCtx({ options: { safe: true, block: 'refactor' } });
+    const { allow, block } = getCycleCategories(ctx, null);
+
+    // Safe defaults minus refactor
+    expect(allow).toEqual(['docs', 'types', 'perf']);
+    expect(block).toContain('refactor');
+  });
+
+  it('--allow takes precedence over --block', () => {
+    // When --allow is set, --block is ignored (allow is the complete list)
+    const ctx = makeCtx({ options: { allow: 'security,fix', block: 'security' } });
+    const { allow, block } = getCycleCategories(ctx, null);
+
+    expect(allow).toEqual(['security', 'fix']);
+    expect(block).toEqual([]);
+  });
 });

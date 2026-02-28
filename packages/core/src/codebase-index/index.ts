@@ -16,7 +16,8 @@ import { execFileSync } from 'node:child_process';
 
 // Re-export AST analysis types
 export { type AstGrepModule } from './ast-analysis.js';
-export { mapExtensionToLang, analyzeFileAst } from './ast-analysis.js';
+export { mapExtensionToLang, analyzeFileAst, extractTopLevelSymbols, extractCallEdges, extractImportedNames } from './ast-analysis.js';
+export { loadAstCache, type AstCache, type AstCacheEntry } from './ast-cache.js';
 
 // Re-export everything from shared (pure algorithms + types + constants)
 export {
@@ -30,6 +31,8 @@ export {
   type AstAnalysisResult,
   type AstFinding,
   type AstFindingEntry,
+  type SymbolRange,
+  type CallEdge,
   type DeadExportEntry,
   type StructuralIssue,
   type TypeScriptAnalysis,
@@ -62,13 +65,17 @@ import {
   computeGraphMetrics,
 } from './shared.js';
 import type { AstGrepModule as AstGrepModuleType } from './ast-analysis.js';
-import { analyzeFileAst, mapExtensionToLang } from './ast-analysis.js';
+import { analyzeFileAst, mapExtensionToLang, extractTopLevelSymbols, extractCallEdges, extractImportedNames } from './ast-analysis.js';
 import { loadAstCache, saveAstCache, isEntryCurrent, isFindingsCurrent, type AstCache } from './ast-cache.js';
-import { detectDeadExports, detectStructuralIssues } from './dead-code.js';
-import { getPatterns, scanPatterns, FINDINGS_VERSION } from './ast-patterns.js';
+import { detectDeadExports, detectDeadFunctionsFused, detectStructuralIssues } from './dead-code.js';
+import { getPatterns, scanPatterns, FINDINGS_VERSION, getPatternVersions, arePatternVersionsCurrent } from './ast-patterns.js';
+import { getLangFamily } from './ast-analysis.js';
 
 // Re-export format-analysis
 export { formatAnalysisForPrompt } from './format-analysis.js';
+
+// Re-export dead code analysis utilities for consumers with ts-morph data
+export { fuseCallGraphs, detectDeadFunctionsFused } from './dead-code.js';
 
 // ---------------------------------------------------------------------------
 // I/O helpers
@@ -124,6 +131,9 @@ export function getTrackedDirectories(projectRoot: string): Set<string> | null {
   }
 }
 
+/** Max modules to discover. Prevents unbounded scanning in large monorepos. */
+const MAX_MODULES = 80;
+
 // ---------------------------------------------------------------------------
 // buildCodebaseIndex
 // ---------------------------------------------------------------------------
@@ -149,7 +159,7 @@ export function buildCodebaseIndex(
   }
 
   function walkForModules(dir: string, depth: number): void {
-    if (modules.length >= 80) return;
+    if (modules.length >= MAX_MODULES) return;
 
     let entries: fs.Dirent[];
     try {
@@ -176,7 +186,7 @@ export function buildCodebaseIndex(
     // Register this dir as a module if it has source files
     if (sourceFiles.length > 0 && depth > 0) {
       const relPath = path.relative(projectRoot, dir);
-      if (relPath && modules.length < 80) {
+      if (relPath && modules.length < MAX_MODULES) {
         // Placeholder — classified after import scanning (Step 2)
         modules.push({
           path: relPath,
@@ -193,13 +203,18 @@ export function buildCodebaseIndex(
     // Recurse into subdirs (up to depth 2)
     if (depth < 3) {
       for (const sub of subdirs) {
-        if (modules.length >= 80) break;
+        if (modules.length >= MAX_MODULES) break;
         walkForModules(path.join(dir, sub.name), depth + 1);
       }
     }
   }
 
   walkForModules(projectRoot, 0);
+
+  const moduleCapHit = modules.length >= MAX_MODULES;
+  if (moduleCapHit) {
+    console.warn(`[promptwheel] Module cap hit: discovered ${modules.length} modules (max ${MAX_MODULES}). Some modules may be excluded from analysis. Use \`scope\` to narrow the scan.`);
+  }
 
   const modulePaths = modules.map(m => m.path);
 
@@ -309,23 +324,46 @@ export function buildCodebaseIndex(
           totalComplexity += cached.complexity;
           filesAnalyzed++;
 
-          if (isFindingsCurrent(cached, FINDINGS_VERSION)) {
+          const langFamily = getLangFamily(langKey);
+          const patternsCurrent = arePatternVersionsCurrent(cached.patternVersions, langFamily)
+            || isFindingsCurrent(cached, FINDINGS_VERSION); // fallback for pre-patternVersions cache
+          if (patternsCurrent) {
             // State A: unchanged + findings current → full cache hit
             if (cached.findings) {
               for (const f of cached.findings) {
                 allFindings.push({ file: relFile, patternId: f.patternId, message: f.message, line: f.line, severity: f.severity, category: f.category });
               }
             }
+            // Lazy backfill: populate symbols if missing from older cache entries
+            if (!cached.symbols) {
+              try {
+                const content = fs.readFileSync(filePath, 'utf-8');
+                const symbols = extractTopLevelSymbols(content, langKey, astGrepModule);
+                if (symbols) {
+                  updatedCache[relFile] = { ...cached, symbols };
+                }
+              } catch { /* non-fatal */ }
+            }
           } else {
-            // State B: unchanged + findings stale → re-parse for patterns only
+            // State B: unchanged + findings stale → re-parse for patterns (+ symbols if missing)
             try {
               const content = fs.readFileSync(filePath, 'utf-8');
               const langId = astGrepModule.Lang[langKey];
               if (langId) {
                 const root = astGrepModule.parse(langId, content).root();
-                const findings = scanPatterns(root, langKey, content, patterns);
+                // Backfill symbols and importedNames while we have the content loaded
+                const symbols = cached.symbols ?? extractTopLevelSymbols(content, langKey, astGrepModule) ?? undefined;
+                const importedNames = cached.importedNames ?? (extractImportedNames(root, langKey) || undefined);
+                const findings = scanPatterns(root, langKey, content, patterns, symbols);
                 const storedFindings = findings.length > 0 ? findings : undefined;
-                updatedCache[relFile] = { ...cached, findings: storedFindings, findingsVersion: FINDINGS_VERSION };
+                updatedCache[relFile] = {
+                  ...cached,
+                  findings: storedFindings,
+                  findingsVersion: FINDINGS_VERSION,
+                  patternVersions: getPatternVersions(),
+                  symbols,
+                  importedNames: importedNames?.length ? importedNames : undefined,
+                };
                 if (storedFindings) {
                   for (const f of storedFindings) {
                     allFindings.push({ file: relFile, patternId: f.patternId, message: f.message, line: f.line, severity: f.severity, category: f.category });
@@ -339,15 +377,18 @@ export function buildCodebaseIndex(
           continue;
         }
 
-        // State C: file changed → full re-parse with patterns
+        // State C: file changed → full re-parse with patterns + symbols
         try {
           const content = fs.readFileSync(filePath, 'utf-8');
-          const result = analyzeFileAst(content, filePath, langKey, astGrepModule, patterns);
+          // Extract symbols first so pattern scanning can attribute findings to functions
+          const symbols = extractTopLevelSymbols(content, langKey, astGrepModule) ?? undefined;
+          const result = analyzeFileAst(content, filePath, langKey, astGrepModule, patterns, symbols);
           if (result) {
             moduleExports.push(...result.exports);
             totalComplexity += result.complexity;
             filesAnalyzed++;
             const storedFindings = result.findings && result.findings.length > 0 ? result.findings : undefined;
+            const callEdges = extractCallEdges(content, langKey, astGrepModule, symbols) ?? undefined;
             updatedCache[relFile] = {
               mtime: stat.mtimeMs,
               size: stat.size,
@@ -356,6 +397,10 @@ export function buildCodebaseIndex(
               complexity: result.complexity,
               findings: storedFindings,
               findingsVersion: FINDINGS_VERSION,
+              patternVersions: getPatternVersions(),
+              symbols,
+              callEdges: callEdges?.length ? callEdges : undefined,
+              importedNames: result.importedNames,
             };
             if (storedFindings) {
               for (const f of storedFindings) {
@@ -486,6 +531,7 @@ export function buildCodebaseIndex(
   // Step 7: Dead code + structural analysis
   // Dead exports require AST data (exportsByModule). Structural issues use graph metrics.
   let deadExports: import('./shared.js').DeadExportEntry[] | undefined;
+  let callEdgeSummaries: Record<string, string[]> | undefined;
 
   if (analysisBackend === 'ast-grep') {
     // Build per-module export/import maps from AST cache
@@ -500,7 +546,81 @@ export function buildCodebaseIndex(
       const deps = dependencyEdges[mod.path];
       if (deps) importsByModule[mod.path] = deps;
     }
-    deadExports = detectDeadExports(modules, dependencyEdges, exportsByModule, importsByModule);
+
+    // Collect actual imported binding names from AST cache (more accurate than specifiers)
+    const cachedData = loadAstCache(projectRoot);
+    const allImportedBindings = new Set<string>();
+    const namespaceSpecifiers = new Set<string>();
+    for (const entry of Object.values(cachedData)) {
+      if (entry.importedNames) {
+        for (const name of entry.importedNames) {
+          if (name.startsWith('*:')) {
+            namespaceSpecifiers.add(name.slice(2)); // track namespace import specifiers
+          } else {
+            allImportedBindings.add(name);
+          }
+        }
+      }
+    }
+    deadExports = detectDeadExports(
+      modules, dependencyEdges, exportsByModule, importsByModule,
+      30,
+      allImportedBindings.size > 0 ? allImportedBindings : undefined,
+      namespaceSpecifiers.size > 0 ? namespaceSpecifiers : undefined,
+    );
+
+    // Fused dead function detection: collect per-file call edges and exports from AST cache
+    const exportsByFile: Record<string, ExportEntry[]> = {};
+    const callEdgesByFile: Record<string, import('./shared.js').CallEdge[]> = {};
+    for (const [relFile, entry] of Object.entries(cachedData)) {
+      if (entry.exports?.length) exportsByFile[relFile] = entry.exports;
+      if (entry.callEdges?.length) callEdgesByFile[relFile] = entry.callEdges;
+    }
+    if (Object.keys(callEdgesByFile).length > 0) {
+      const deadFns = detectDeadFunctionsFused(exportsByFile, callEdgesByFile, undefined, 20);
+      // Merge into deadExports, avoiding duplicates by name
+      if (deadFns.length > 0) {
+        const existingNames = new Set((deadExports ?? []).map(d => `${d.module}:${d.name}`));
+        for (const fn of deadFns) {
+          if (!existingNames.has(`${fn.module}:${fn.name}`)) {
+            (deadExports ??= []).push(fn);
+          }
+        }
+      }
+    }
+
+    // Build per-module cross-file call summaries for focus modules
+    // Format: "funcA calls importedB, importedC" (only cross-file calls with importSource)
+    if (Object.keys(callEdgesByFile).length > 0) {
+      const modCallSummaries: Record<string, string[]> = {};
+      for (const mod of modules) {
+        const summaryLines: string[] = [];
+        // Find files in this module
+        const modPrefix = mod.path + '/';
+        for (const [relFile, edges] of Object.entries(callEdgesByFile)) {
+          if (!relFile.startsWith(modPrefix)) continue;
+          // Group cross-file calls by caller
+          const callerMap = new Map<string, Set<string>>();
+          for (const edge of edges) {
+            if (!edge.importSource) continue;
+            const callees = callerMap.get(edge.caller) ?? new Set();
+            callees.add(edge.callee);
+            callerMap.set(edge.caller, callees);
+          }
+          for (const [caller, callees] of callerMap) {
+            const calleeList = [...callees].slice(0, 5);
+            const suffix = callees.size > 5 ? ` (+${callees.size - 5} more)` : '';
+            summaryLines.push(`${caller} calls ${calleeList.join(', ')}${suffix}`);
+          }
+        }
+        if (summaryLines.length > 0) {
+          modCallSummaries[mod.path] = summaryLines.slice(0, 10); // cap per module
+        }
+      }
+      if (Object.keys(modCallSummaries).length > 0) {
+        callEdgeSummaries = modCallSummaries;
+      }
+    }
   }
 
   // Structural issues only need graph data (no AST required)
@@ -521,6 +641,8 @@ export function buildCodebaseIndex(
     dead_exports: deadExports,
     structural_issues: structuralIssues,
     ast_findings: allFindings.length > 0 ? allFindings : undefined,
+    module_cap_hit: moduleCapHit || undefined,
+    call_edge_summaries: callEdgeSummaries,
   };
 }
 

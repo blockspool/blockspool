@@ -51,6 +51,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
       dry_run: z.boolean().optional().describe('Dry-run mode: scout only, no ticket creation or execution (default: false).'),
       qa_commands: z.array(z.string()).optional().describe('QA commands to always run after every ticket (e.g. ["pytest", "cargo test"]).'),
       enable_custom_tools: z.boolean().optional().describe('Explicitly enable repository custom tools from .promptwheel/tools/*.json (default: false, unless PROMPTWHEEL_ENABLE_CUSTOM_TOOLS is set).'),
+      conflict_sensitivity: z.enum(['strict', 'normal', 'relaxed']).optional().describe('Conflict detection sensitivity for parallel deconfliction (default: normal).'),
       safe: z.boolean().optional().describe('Safe mode: restrict to low-risk categories only (refactor, docs, types, perf). Blocks security, fix, cleanup, deps, auth, config, migration.'),
     },
     async (params) => {
@@ -90,6 +91,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
         dry_run: params.dry_run,
         qa_commands: params.qa_commands,
         enable_custom_tools: params.enable_custom_tools,
+        conflict_sensitivity: params.conflict_sensitivity,
       };
 
       let formulaInfo: { name: string; description: string } | undefined;
@@ -386,8 +388,25 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
     async () => {
       const state = getState();
       try {
+        // Capture db and project_id before end() nullifies the run
+        const db = state.db;
+        const projectId = state.run.require().project_id;
         const finalState = state.end();
         const durationMs = Date.now() - new Date(finalState.started_at).getTime();
+
+        // Abort remaining ready/in_progress tickets to prevent stale accumulation
+        let ticketsAborted = 0;
+        try {
+          for (const status of ['ready', 'in_progress'] as const) {
+            const staleTickets = await repos.tickets.listByProject(db, projectId, { status });
+            for (const ticket of staleTickets) {
+              await repos.tickets.updateStatus(db, ticket.id, 'aborted');
+              ticketsAborted++;
+            }
+          }
+        } catch (err) {
+          console.warn(`[promptwheel] failed to abort stale tickets: ${(err as Error).message}`);
+        }
 
         // Clean up loop-state.json so the stop hook doesn't block exit
         try {
@@ -424,6 +443,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
               coverage_percent: finalState.files_total > 0 ? Math.round((finalState.files_scanned / finalState.files_total) * 100) : 0,
               sectors_scanned: finalState.sectors_scanned,
               sectors_total: finalState.sectors_total,
+              tickets_aborted: ticketsAborted,
               worktrees_removed: worktreesRemoved,
               message: (() => {
                 const pct = finalState.files_total > 0 ? Math.round((finalState.files_scanned / finalState.files_total) * 100) : 0;

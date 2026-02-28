@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createProcessLifecycleController } from './types.js';
 import type {
   BackendHarnessOptions,
-  ExecutionResult,
+  ClaudeResult,
   BackendResultOverrides,
   ProcessRunnerChunkContext,
   ProcessRunnerOptions,
@@ -11,19 +11,6 @@ import type {
 
 const DEFAULT_PROGRESS_TICK_MS = 3000;
 const DEFAULT_TIMEOUT_GRACE_MS = 5000;
-
-/** Detect API rate-limit / usage-limit errors in backend stderr or error text */
-export function isRateLimitError(text: string): boolean {
-  const lower = text.toLowerCase();
-  return (
-    lower.includes('usage_limit_reached') ||
-    lower.includes('the usage limit has been reached') ||
-    lower.includes('rate_limit_error') ||
-    lower.includes('rate limit exceeded') ||
-    lower.includes('429 too many requests') ||
-    lower.includes('overloaded_error')
-  );
-}
 
 /** Format elapsed time as human-readable string */
 export function formatElapsed(ms: number): string {
@@ -126,7 +113,7 @@ export async function runProcess(opts: ProcessRunnerOptions): Promise<ProcessRun
   });
 }
 
-export async function runBackendHarness(opts: BackendHarnessOptions): Promise<ExecutionResult> {
+export async function runBackendHarness(opts: BackendHarnessOptions): Promise<ClaudeResult> {
   const result = await runProcess({
     ...opts.process,
     timeoutMs: opts.timeoutMs,
@@ -149,8 +136,6 @@ export async function runBackendHarness(opts: BackendHarnessOptions): Promise<Ex
     ...(overrides.traceTimestamps !== undefined ? { traceTimestamps: overrides.traceTimestamps } : {}),
   };
 
-  const rateLimited = isRateLimitError(stderr);
-
   if (result.timedOut) {
     return {
       success: false,
@@ -159,7 +144,6 @@ export async function runBackendHarness(opts: BackendHarnessOptions): Promise<Ex
       stderr,
       exitCode,
       timedOut: true,
-      rateLimited,
       durationMs: result.durationMs,
       ...traceData,
     };
@@ -173,7 +157,6 @@ export async function runBackendHarness(opts: BackendHarnessOptions): Promise<Ex
       stderr,
       exitCode: null,
       timedOut: false,
-      rateLimited: rateLimited || isRateLimitError(result.error.message),
       durationMs: result.durationMs,
       ...traceData,
     };
@@ -187,7 +170,6 @@ export async function runBackendHarness(opts: BackendHarnessOptions): Promise<Ex
       stderr,
       exitCode,
       timedOut: false,
-      rateLimited,
       durationMs: result.durationMs,
       ...traceData,
     };

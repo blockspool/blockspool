@@ -77,7 +77,7 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
       success: false,
       durationMs: Date.now() - startTime,
       error: errorParts.join('\n'),
-      failureReason: claudeResult.timedOut ? 'timeout' : claudeResult.rateLimited ? 'rate_limited' : 'agent_error',
+      failureReason: claudeResult.timedOut ? 'timeout' : 'agent_error',
       artifacts: { ...ctx.artifactPaths },
     };
     await ctx.saveRunSummary(result);

@@ -174,10 +174,16 @@ Respond with ONLY a JSON object (no markdown, no explanation):
       "confidence": 75,
       "impact_score": 5,
       "rationale": "Why this improvement matters",
-      "estimated_complexity": "trivial|simple|moderate|complex"
+      "estimated_complexity": "trivial|simple|moderate|complex",
+      "risk": "low|medium|high",
+      "touched_files_estimate": 3,
+      "rollback_note": "git revert",
+      "target_symbols": ["functionName", "ClassName"]
     }
   ]
 }
+
+Note: "target_symbols" is optional but recommended — list the function/class/variable names this change modifies. This enables parallel execution of proposals that touch the same file but different symbols.
 
 If no improvements are needed, return: {"proposals": []}${coverageContext ? `
 

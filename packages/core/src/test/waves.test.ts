@@ -13,12 +13,16 @@ import {
   proposalsConflict,
   partitionIntoWaves,
   buildScoutEscalation,
+  predictMergeConflict,
+  orderMergeSequence,
+  tryStructuralMerge,
   CONFLICT_PRONE_FILENAMES,
   SHARED_DIRECTORY_PATTERNS,
   PACKAGE_PATTERN,
   DIRECTORY_OVERLAP_NORMAL,
   DIRECTORY_OVERLAP_STRICT,
 } from '../waves/shared.js';
+import type { SymbolMap } from '../waves/shared.js';
 import type { CodebaseIndex } from '../codebase-index/shared.js';
 import type { SectorState } from '../sectors/shared.js';
 
@@ -392,6 +396,43 @@ describe('proposalsConflict', () => {
     const b = { files: ['src/a.ts'] };
     expect(proposalsConflict(a, b)).toBe(false);
   });
+
+  // Symbol-aware conflict detection tests
+  it('same file, disjoint target_symbols → no conflict', () => {
+    const a = { files: ['src/auth.ts'], target_symbols: ['handleLogin'] };
+    const b = { files: ['src/auth.ts'], target_symbols: ['handleSignup'] };
+    expect(proposalsConflict(a, b)).toBe(false);
+  });
+
+  it('same file, overlapping target_symbols → conflict', () => {
+    const a = { files: ['src/auth.ts'], target_symbols: ['handleLogin', 'validateToken'] };
+    const b = { files: ['src/auth.ts'], target_symbols: ['handleLogin'] };
+    expect(proposalsConflict(a, b)).toBe(true);
+  });
+
+  it('same file, no target_symbols → falls back to path-based (conflict)', () => {
+    const a = { files: ['src/auth.ts'] };
+    const b = { files: ['src/auth.ts'] };
+    expect(proposalsConflict(a, b)).toBe(true);
+  });
+
+  it('same file, only one has target_symbols → falls back to path-based (conflict)', () => {
+    const a = { files: ['src/auth.ts'], target_symbols: ['handleLogin'] };
+    const b = { files: ['src/auth.ts'] };
+    expect(proposalsConflict(a, b)).toBe(true);
+  });
+
+  it('different files, disjoint symbols → no conflict (symbols irrelevant)', () => {
+    const a = { files: ['src/auth.ts'], target_symbols: ['handleLogin'] };
+    const b = { files: ['src/users.ts'], target_symbols: ['handleSignup'] };
+    expect(proposalsConflict(a, b, { sensitivity: 'relaxed' })).toBe(false);
+  });
+
+  it('same file, empty target_symbols arrays → falls back to path-based (conflict)', () => {
+    const a = { files: ['src/auth.ts'], target_symbols: [] as string[] };
+    const b = { files: ['src/auth.ts'], target_symbols: [] as string[] };
+    expect(proposalsConflict(a, b)).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -466,6 +507,39 @@ describe('partitionIntoWaves', () => {
     const waves = partitionIntoWaves(proposals);
     expect(waves).toHaveLength(1);
     expect(waves[0]).toHaveLength(2);
+  });
+
+  it('same file with disjoint target_symbols land in same wave', () => {
+    const proposals = [
+      { files: ['src/auth.ts'], target_symbols: ['handleLogin'] },
+      { files: ['src/auth.ts'], target_symbols: ['handleSignup'] },
+    ];
+    const waves = partitionIntoWaves(proposals);
+    expect(waves).toHaveLength(1);
+    expect(waves[0]).toHaveLength(2);
+  });
+
+  it('same file with overlapping target_symbols go to separate waves', () => {
+    const proposals = [
+      { files: ['src/auth.ts'], target_symbols: ['handleLogin'] },
+      { files: ['src/auth.ts'], target_symbols: ['handleLogin', 'validateToken'] },
+    ];
+    const waves = partitionIntoWaves(proposals);
+    expect(waves).toHaveLength(2);
+  });
+
+  it('mixed: some with symbols, some without', () => {
+    const proposals = [
+      { files: ['packages/auth/src/auth.ts'], target_symbols: ['handleLogin'] },
+      { files: ['packages/auth/src/auth.ts'] }, // no symbols → conflicts with file overlap
+      { files: ['packages/billing/src/utils.ts'] }, // different package → no conflict
+    ];
+    const waves = partitionIntoWaves(proposals);
+    // First proposal has symbols but second doesn't → they conflict
+    // Third is independent (different package)
+    expect(waves).toHaveLength(2);
+    expect(waves[0]).toHaveLength(2); // first + third
+    expect(waves[1]).toHaveLength(1); // second
   });
 });
 
@@ -561,5 +635,183 @@ describe('buildScoutEscalation', () => {
     // Should show at most 8 modules
     const backtickModules = result.match(/`mod-\d+`/g) ?? [];
     expect(backtickModules.length).toBeLessThanOrEqual(8);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// predictMergeConflict
+// ---------------------------------------------------------------------------
+
+describe('predictMergeConflict', () => {
+  const symbolMap: SymbolMap = {
+    'src/auth.ts': [
+      { name: 'handleLogin', kind: 'function', startLine: 1, endLine: 20 },
+      { name: 'handleSignup', kind: 'function', startLine: 25, endLine: 50 },
+      { name: 'validateToken', kind: 'function', startLine: 55, endLine: 80 },
+    ],
+  };
+
+  it('no shared files → safe', () => {
+    expect(predictMergeConflict(
+      ['src/auth.ts'], ['src/user.ts'],
+      { 'src/auth.ts': ['handleLogin'] },
+      { 'src/user.ts': ['createUser'] },
+      symbolMap,
+    )).toBe('safe');
+  });
+
+  it('shared file, disjoint symbols → safe', () => {
+    expect(predictMergeConflict(
+      ['src/auth.ts'], ['src/auth.ts'],
+      { 'src/auth.ts': ['handleLogin'] },
+      { 'src/auth.ts': ['handleSignup'] },
+      symbolMap,
+    )).toBe('safe');
+  });
+
+  it('shared file, overlapping symbol → risky', () => {
+    expect(predictMergeConflict(
+      ['src/auth.ts'], ['src/auth.ts'],
+      { 'src/auth.ts': ['handleLogin'] },
+      { 'src/auth.ts': ['handleLogin'] },
+      symbolMap,
+    )).toBe('risky');
+  });
+
+  it('shared file, missing symbol data → unknown', () => {
+    expect(predictMergeConflict(
+      ['src/auth.ts'], ['src/auth.ts'],
+      { 'src/auth.ts': ['handleLogin'] },
+      { 'src/auth.ts': ['handleSignup'] },
+      {}, // no symbol map data
+    )).toBe('unknown');
+  });
+
+  it('shared file, one side has no symbols listed → unknown', () => {
+    expect(predictMergeConflict(
+      ['src/auth.ts'], ['src/auth.ts'],
+      { 'src/auth.ts': ['handleLogin'] },
+      {},
+      symbolMap,
+    )).toBe('unknown');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// orderMergeSequence
+// ---------------------------------------------------------------------------
+
+describe('orderMergeSequence', () => {
+  const symbolMap: SymbolMap = {
+    'src/auth.ts': [
+      { name: 'handleLogin', kind: 'function', startLine: 1, endLine: 20 },
+      { name: 'handleSignup', kind: 'function', startLine: 25, endLine: 50 },
+    ],
+    'src/user.ts': [
+      { name: 'createUser', kind: 'function', startLine: 1, endLine: 30 },
+    ],
+  };
+
+  it('places safe merges before risky ones', () => {
+    const candidates = [
+      // Risky: overlaps with candidate 1 on handleLogin
+      { files: ['src/auth.ts'], targetSymbols: { 'src/auth.ts': ['handleLogin'] } },
+      // Risky: overlaps with candidate 0 on handleLogin
+      { files: ['src/auth.ts'], targetSymbols: { 'src/auth.ts': ['handleLogin'] } },
+      // Safe: touches a different file entirely
+      { files: ['src/user.ts'], targetSymbols: { 'src/user.ts': ['createUser'] } },
+    ];
+    const order = orderMergeSequence(candidates, symbolMap);
+    // The safe candidate (index 2) should come first
+    expect(order[0]).toBe(2);
+  });
+
+  it('returns original order when no symbol data available', () => {
+    const candidates = [
+      { files: ['src/auth.ts'], targetSymbols: {} },
+      { files: ['src/auth.ts'], targetSymbols: {} },
+    ];
+    const order = orderMergeSequence(candidates, {});
+    expect(order).toEqual([0, 1]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tryStructuralMerge
+// ---------------------------------------------------------------------------
+
+describe('tryStructuralMerge', () => {
+  const symbols = [
+    { name: 'foo', kind: 'function' as const, startLine: 1, endLine: 3 },
+    { name: 'bar', kind: 'function' as const, startLine: 5, endLine: 7 },
+  ];
+
+  it('resolves disjoint symbol changes', () => {
+    const base = 'function foo() {\n  return 1;\n}\n\nfunction bar() {\n  return 2;\n}';
+    const ours = 'function foo() {\n  return 10;\n}\n\nfunction bar() {\n  return 2;\n}';
+    const theirs = 'function foo() {\n  return 1;\n}\n\nfunction bar() {\n  return 20;\n}';
+
+    const result = tryStructuralMerge(base, ours, theirs, symbols, symbols, symbols);
+    expect(result).not.toBeNull();
+    expect(result).toContain('return 10');
+    expect(result).toContain('return 20');
+  });
+
+  it('returns null when both sides modify the same symbol', () => {
+    const base = 'function foo() {\n  return 1;\n}\n\nfunction bar() {\n  return 2;\n}';
+    const ours = 'function foo() {\n  return 10;\n}\n\nfunction bar() {\n  return 2;\n}';
+    const theirs = 'function foo() {\n  return 99;\n}\n\nfunction bar() {\n  return 2;\n}';
+
+    const result = tryStructuralMerge(base, ours, theirs, symbols, symbols, symbols);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when symbol counts differ', () => {
+    const base = 'function foo() {\n  return 1;\n}';
+    const ours = 'function foo() {\n  return 1;\n}';
+    const theirs = 'function foo() {\n  return 1;\n}\n\nfunction baz() {\n  return 3;\n}';
+    const oursSymbols = [{ name: 'foo', kind: 'function' as const, startLine: 1, endLine: 3 }];
+    const theirsSymbols = [
+      { name: 'foo', kind: 'function' as const, startLine: 1, endLine: 3 },
+      { name: 'baz', kind: 'function' as const, startLine: 5, endLine: 7 },
+    ];
+
+    const result = tryStructuralMerge(base, ours, theirs, oursSymbols, oursSymbols, theirsSymbols);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when symbol names differ (reordered)', () => {
+    const base = 'function foo() {\n  return 1;\n}\n\nfunction bar() {\n  return 2;\n}';
+    const ours = 'function foo() {\n  return 1;\n}\n\nfunction bar() {\n  return 2;\n}';
+    const theirs = 'function bar() {\n  return 2;\n}\n\nfunction foo() {\n  return 1;\n}';
+    const theirsSymbols = [
+      { name: 'bar', kind: 'function' as const, startLine: 1, endLine: 3 },
+      { name: 'foo', kind: 'function' as const, startLine: 5, endLine: 7 },
+    ];
+
+    const result = tryStructuralMerge(base, ours, theirs, symbols, symbols, theirsSymbols);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when symbols are empty', () => {
+    const base = 'x';
+    const result = tryStructuralMerge(base, base, base, [], [], []);
+    expect(result).toBeNull();
+  });
+
+  it('handles case where neither side changed', () => {
+    const base = 'function foo() {\n  return 1;\n}\n\nfunction bar() {\n  return 2;\n}';
+    const result = tryStructuralMerge(base, base, base, symbols, symbols, symbols);
+    expect(result).not.toBeNull();
+    expect(result).toBe(base);
+  });
+
+  it('handles only "theirs" changed', () => {
+    const base = 'function foo() {\n  return 1;\n}\n\nfunction bar() {\n  return 2;\n}';
+    const theirs = 'function foo() {\n  return 1;\n}\n\nfunction bar() {\n  return 99;\n}';
+    const result = tryStructuralMerge(base, base, theirs, symbols, symbols, symbols);
+    expect(result).not.toBeNull();
+    expect(result).toContain('return 99');
+    expect(result).toContain('return 1');
   });
 });

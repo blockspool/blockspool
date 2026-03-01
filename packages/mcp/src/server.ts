@@ -38,7 +38,7 @@ export async function createServer(options: ServerOptions): Promise<{
 
   const server = new McpServer({
     name: 'promptwheel',
-    version: '0.7.31',
+    version: '0.7.32',
   });
 
   // Register tool groups

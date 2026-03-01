@@ -250,6 +250,18 @@ export interface SessionRuntime {
     freshnessDropCount?: number;
     /** Number of distinct categories in proposals at generation time. */
     proposalCategoryCount?: number;
+    /** Number of proposal groups identified by blueprint file-overlap analysis. */
+    blueprintGroupCount?: number;
+    /** Number of cross-category conflicts detected by blueprint. */
+    blueprintConflictCount?: number;
+    /** Number of enabler proposals (depended upon by others). */
+    blueprintEnablerCount?: number;
+    /** Number of mergeable near-duplicate proposal pairs. */
+    blueprintMergeableCount?: number;
+    /** Whether QA was retried with test-fix expansion. */
+    qualityRetried?: boolean;
+    /** Number of quality issues detected during QA. */
+    qualityIssueCount?: number;
     /** Model used for execution (from model routing) */
     modelUsed?: string;
     /** Formulas used in parallel scouting for this cycle */

@@ -55,6 +55,7 @@ export interface Learning {
       | 'baseline_healed'
       | 'drill_completed'
       | 'drill_stalled'
+      | 'drill_blueprint'
       | 'manual';
     detail?: string;
   };

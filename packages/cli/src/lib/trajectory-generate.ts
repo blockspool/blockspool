@@ -75,12 +75,26 @@ export interface GenerateFromProposalsOptions {
   sessionPhase?: string;
   /** Codebase analysis context — dead exports, structural issues, coupling metrics */
   analysisContext?: string;
+  /** Pre-computed blueprint analysis of proposals (grouping, conflicts, enablers) */
+  blueprintContext?: string;
+  /** Blueprint config thresholds — passed through to computeBlueprint and quality gate */
+  blueprintConfig?: {
+    groupOverlapThreshold?: number;
+    mergeableOverlapThreshold?: number;
+    qualityGateStepCountSlack?: number;
+  };
 }
 
 export interface GenerateResult {
   trajectory: Trajectory;
   yaml: string;
   filePath: string;
+  /** Captured planning analysis from LLM's <planning> block (if present) */
+  planningAnalysis?: string;
+  /** Whether the quality gate triggered a retry */
+  qualityRetried?: boolean;
+  /** Quality issues found (empty if passed) */
+  qualityIssues?: string[];
 }
 
 export async function generateTrajectory(opts: GenerateOptions): Promise<GenerateResult> {
@@ -149,6 +163,11 @@ export async function generateTrajectory(opts: GenerateOptions): Promise<Generat
 /**
  * Generate a trajectory from scout proposals (used by drill mode).
  * Clusters and sequences proposals into ordered trajectory steps.
+ *
+ * When blueprintContext is provided, the prompt includes strategic analysis
+ * and requires two-phase output (<planning> analysis → JSON). A post-generation
+ * quality gate validates the trajectory; if it fails, one retry is attempted
+ * with the critique appended to the prompt.
  */
 export async function generateTrajectoryFromProposals(opts: GenerateFromProposalsOptions): Promise<GenerateResult> {
   // 1. Build codebase context
@@ -174,7 +193,7 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
 
   // 2. Format proposals and build prompt
   const proposalsBlock = formatProposalsForTrajectoryPrompt(opts.proposals);
-  const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+  const contextOpts = {
     previousTrajectories: opts.previousTrajectories,
     diversityHint: opts.diversityHint,
     sectorContext: opts.sectorContext,
@@ -190,35 +209,49 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
     convergenceHint: opts.convergenceHint,
     sessionPhase: opts.sessionPhase,
     analysisContext: opts.analysisContext,
-  });
+    blueprintContext: opts.blueprintContext,
+  };
+  const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, contextOpts);
 
   // 3. Call LLM (sonnet for cost efficiency)
-  const result = await runClaude({
-    prompt,
+  const callLLM = async (p: string) => runClaude({
+    prompt: p,
     cwd: opts.repoRoot,
     timeoutMs: opts.timeoutMs ?? 120_000,
     model: opts.model ?? 'sonnet',
   });
 
+  const result = await callLLM(prompt);
+
   if (!result.success) {
     throw new Error(`Trajectory generation failed during LLM call: ${result.error}`);
   }
 
-  // 4. Parse JSON response
-  const parsed = parseClaudeOutput<{ name: string; description: string; steps: unknown[] }>(result.output);
+  // 4. Extract planning analysis (if two-phase output was used)
+  const planningAnalysis = extractPlanningAnalysis(result.output);
+
+  // 5. Parse JSON response
+  const rawOutput = planningAnalysis
+    ? result.output.replace(/<planning>[\s\S]*?<\/planning>/g, '').trim()
+    : result.output;
+  let parsed = parseClaudeOutput<{ name: string; description: string; steps: unknown[] }>(rawOutput);
+  if (!parsed || !parsed.name || !parsed.steps?.length) {
+    // Fallback: try parsing the full output (in case JSON was outside planning block)
+    parsed = parseClaudeOutput<{ name: string; description: string; steps: unknown[] }>(result.output);
+  }
   if (!parsed || !parsed.name || !parsed.steps?.length) {
     const preview = (result.output || '').slice(0, 200);
     throw new Error(`Trajectory generation failed during response parsing (name: ${parsed?.name ?? 'missing'}, steps: ${parsed?.steps?.length ?? 0}, output: "${preview}")`);
   }
 
-  // 5. Ensure drill- prefix + timestamp for uniqueness
+  // 6. Ensure drill- prefix + timestamp for uniqueness
   const timestamp = Date.now();
   if (!parsed.name.startsWith('drill-')) {
     parsed.name = `drill-${parsed.name}`;
   }
   parsed.name = `${parsed.name}-${timestamp}`;
 
-  // 6. Validate and build Trajectory
+  // 7. Validate and build Trajectory
   let trajectory: Trajectory;
   try {
     trajectory = validateAndBuild(parsed);
@@ -226,28 +259,108 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
     throw new Error(`Trajectory generation failed during validation: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // 6b. Enforce dependency graph ordering
+  // 8. Quality gate — validate trajectory quality if blueprint was provided
+  let qualityRetried = false;
+  let qualityIssues: string[] = [];
+  if (opts.blueprintContext) {
+    try {
+      const { validateTrajectoryQuality } = await import('@promptwheel/core/proposals/trajectory-critic');
+      const proposalInputs = opts.proposals.map(p => ({
+        title: p.title,
+        category: p.category,
+        files: p.files,
+        impact_score: p.impact_score,
+        confidence: p.confidence,
+      }));
+      const { computeBlueprint } = await import('@promptwheel/core/proposals/blueprint');
+      const blueprint = computeBlueprint(proposalInputs, depEdges, opts.blueprintConfig);
+      const qualityConfig = opts.blueprintConfig?.qualityGateStepCountSlack !== undefined
+        ? { stepCountSlack: opts.blueprintConfig.qualityGateStepCountSlack }
+        : undefined;
+      const qualityResult = validateTrajectoryQuality(
+        trajectory.steps,
+        proposalInputs,
+        blueprint,
+        opts.ambitionLevel ?? 'moderate',
+        qualityConfig,
+      );
+      qualityIssues = qualityResult.issues;
+
+      if (!qualityResult.passed) {
+        qualityRetried = true;
+        // Retry once with critique appended
+        const retryPrompt = prompt + '\n\n' + qualityResult.critique;
+        const retryResult = await callLLM(retryPrompt);
+        if (retryResult.success) {
+          const retryRawOutput = extractPlanningAnalysis(retryResult.output)
+            ? retryResult.output.replace(/<planning>[\s\S]*?<\/planning>/g, '').trim()
+            : retryResult.output;
+          let retryParsed = parseClaudeOutput<{ name: string; description: string; steps: unknown[] }>(retryRawOutput);
+          if (!retryParsed || !retryParsed.name || !retryParsed.steps?.length) {
+            retryParsed = parseClaudeOutput<{ name: string; description: string; steps: unknown[] }>(retryResult.output);
+          }
+          if (retryParsed?.name && retryParsed.steps?.length) {
+            if (!retryParsed.name.startsWith('drill-')) {
+              retryParsed.name = `drill-${retryParsed.name}`;
+            }
+            retryParsed.name = `${retryParsed.name}-${timestamp}`;
+            try {
+              trajectory = validateAndBuild(retryParsed);
+              // Re-check quality (informational only, no further retry)
+              const retryQuality = validateTrajectoryQuality(
+                trajectory.steps,
+                proposalInputs,
+                blueprint,
+                opts.ambitionLevel ?? 'moderate',
+                qualityConfig,
+              );
+              qualityIssues = retryQuality.issues;
+            } catch {
+              // Retry validation failed — keep original trajectory
+            }
+          }
+        }
+      }
+    } catch {
+      // Quality gate import or computation failed — proceed without it
+    }
+  }
+
+  // 9. Enforce dependency graph ordering
   if (Object.keys(depEdges).length > 0) {
     trajectory = enforceGraphOrdering(trajectory, depEdges);
   }
 
-  // 7. Serialize to YAML
+  // 10. Serialize to YAML
   const yaml = serializeTrajectoryToYaml(trajectory);
 
-  // 8. Verify round-trip
+  // 11. Verify round-trip
   const roundTripped = parseTrajectoryYaml(yaml);
   if (roundTripped.steps.length !== trajectory.steps.length) {
     throw new Error('Trajectory generation failed during YAML round-trip validation');
   }
 
-  // 9. Write to disk
+  // 12. Write to disk
   const slug = slugify(trajectory.name);
   const dir = path.join(opts.repoRoot, '.promptwheel', 'trajectories');
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, `${slug}.yaml`);
   fs.writeFileSync(filePath, yaml, 'utf-8');
 
-  return { trajectory, yaml, filePath };
+  return { trajectory, yaml, filePath, planningAnalysis: planningAnalysis ?? undefined, qualityRetried, qualityIssues };
+}
+
+// ---------------------------------------------------------------------------
+// Planning analysis extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the <planning>...</planning> block from LLM output.
+ * Returns the content inside the tags, or null if not found.
+ */
+export function extractPlanningAnalysis(output: string): string | null {
+  const match = output.match(/<planning>([\s\S]*?)<\/planning>/);
+  return match ? match[1].trim() : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +500,7 @@ export function buildGenerateFromProposalsPrompt(
     convergenceHint?: string;
     sessionPhase?: string;
     analysisContext?: string;
+    blueprintContext?: string;
   },
 ): string {
   const sections: string[] = [];
@@ -520,6 +634,16 @@ ${context.escalationContext}`);
 ${context.convergenceHint}`);
   }
 
+  if (context?.blueprintContext) {
+    sections.push(`## Strategic Analysis (pre-computed)
+
+The following algorithmic analysis of the proposals has been computed. Use it to inform your trajectory structure:
+
+${context.blueprintContext}
+
+Respect this analysis: place enabler groups first, isolate conflicting proposals into separate steps, and merge near-duplicate proposals.`);
+  }
+
   sections.push(`## Requirements
 
 1. Cluster related proposals into coherent steps. A step may combine 1-3 related proposals that touch the same area.
@@ -588,7 +712,18 @@ ${context?.previousTrajectories ? '13' : '12'}. **Scope from file paths:** Each 
 
 ## Output Format
 
-Respond with ONLY a JSON object (no markdown, no explanation):
+${context?.blueprintContext ? `Respond in TWO phases:
+
+**Phase 1:** Output a <planning> block analyzing the proposals:
+<planning>
+- Theme: What is the trajectory theme?
+- Groups: Which proposals cluster together?
+- Dependencies: What must come first?
+- Conflicts: Any proposals that shouldn't be in the same step?
+- Arc: Describe the execution progression
+</planning>
+
+**Phase 2:** Output the trajectory JSON (no markdown):` : 'Respond with ONLY a JSON object (no markdown, no explanation):'}
 
 {
   "name": "drill-kebab-case-name",

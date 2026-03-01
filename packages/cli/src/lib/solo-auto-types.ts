@@ -250,6 +250,10 @@ export interface SessionRuntime {
     freshnessDropCount?: number;
     /** Number of distinct categories in proposals at generation time. */
     proposalCategoryCount?: number;
+    /** Model used for execution (from model routing) */
+    modelUsed?: string;
+    /** Formulas used in parallel scouting for this cycle */
+    formulasUsed?: string[];
   }>;
   /** Categories already covered by drill trajectories this session */
   drillCoveredCategories: Map<string, number>;
@@ -265,6 +269,12 @@ export interface SessionRuntime {
     proposalAvgImpact?: number;
     freshnessDropCount?: number;
     proposalCategoryCount?: number;
+    blueprintGroupCount?: number;
+    blueprintConflictCount?: number;
+    blueprintEnablerCount?: number;
+    blueprintMergeableCount?: number;
+    qualityRetried?: boolean;
+    qualityIssueCount?: number;
   } | null;
   /** Ratio of proposals dropped by freshness filter last generation (0-1) — bridges to cooldown */
   drillLastFreshnessDropRatio: number | null;

@@ -38,7 +38,7 @@ export class ClaudeExecutionBackend implements ExecutionBackend {
  * Run Claude Code CLI
  */
 export async function runClaude(opts: BackendRunOptions): Promise<ClaudeResult> {
-  const { worktreePath, prompt, timeoutMs, verbose, onProgress, onRawOutput } = opts;
+  const { worktreePath, prompt, timeoutMs, verbose, onProgress, onRawOutput, model } = opts;
 
   // Gate: require ANTHROPIC_API_KEY for automated Claude Code usage
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -61,7 +61,10 @@ export async function runClaude(opts: BackendRunOptions): Promise<ClaudeResult> 
     getProgressPhase: () => lastPhase,
     process: {
       command: 'claude',
-      args: ['-p', '--dangerously-skip-permissions', '--output-format', 'stream-json'],
+      args: [
+        '-p', '--dangerously-skip-permissions', '--output-format', 'stream-json',
+        ...(model ? ['--model', model] : []),
+      ],
       cwd: worktreePath,
       env: { ...process.env, CLAUDE_CODE_NON_INTERACTIVE: '1' },
       stdin: prompt,

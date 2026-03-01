@@ -5,6 +5,7 @@
 
 const BLOCK_ORDER = [
   'guidelines',
+  'portfolio',
   'metadata',
   'taste',
   'goal',
@@ -30,6 +31,11 @@ export class ScoutPromptBuilder {
 
   addGuidelines(content: string): this {
     if (content) this.blocks.set('guidelines', content);
+    return this;
+  }
+
+  addPortfolio(content: string): this {
+    if (content) this.blocks.set('portfolio', content);
     return this;
   }
 

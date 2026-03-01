@@ -1126,6 +1126,18 @@ function finishDrillTrajectory(state: AutoSessionState, outcome: 'completed' | '
         });
       }
     }
+
+    // Blueprint insight — correlate enabler placement with outcome
+    const lastEntry = state.drillHistory[state.drillHistory.length - 1];
+    if (lastEntry?.blueprintEnablerCount && lastEntry.blueprintEnablerCount > 0) {
+      const label = outcome === 'completed' ? 'succeeded' : `stalled at ${Math.round(lastEntry.completionPct * 100)}%`;
+      addLearning(state.repoRoot, {
+        text: `Blueprint: ${lastEntry.blueprintEnablerCount} enabler(s), ${lastEntry.blueprintGroupCount ?? 0} group(s), ${lastEntry.blueprintConflictCount ?? 0} conflict(s) → ${label}`.slice(0, 200),
+        category: outcome === 'completed' ? 'pattern' : 'warning',
+        source: { type: 'drill_blueprint', detail: traj.name },
+        tags: [...categories, 'blueprint'],
+      });
+    }
   }
 
   const rate = stepsTotal > 0 ? Math.round((stepsCompleted / stepsTotal) * 100) : 0;

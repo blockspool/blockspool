@@ -368,6 +368,20 @@ export interface DrillHistoryEntry {
   freshnessDropCount?: number;
   /** Number of distinct categories in proposals at generation time — measures diversity at input. */
   proposalCategoryCount?: number;
+  /** Number of proposal groups identified by blueprint file-overlap analysis. */
+  blueprintGroupCount?: number;
+  /** Number of cross-category conflicts detected by blueprint. */
+  blueprintConflictCount?: number;
+  /** Number of enabler proposals (depended upon by others). */
+  blueprintEnablerCount?: number;
+  /** Number of mergeable near-duplicate proposal pairs. */
+  blueprintMergeableCount?: number;
+  /** Whether the quality gate triggered a retry on this trajectory. */
+  qualityRetried?: boolean;
+  /** Number of quality issues found (0 = clean pass). */
+  qualityIssueCount?: number;
+  /** Model used for execution (from model routing) */
+  modelUsed?: string;
 }
 
 // ── Drill metrics ────────────────────────────────────────────────────────────
@@ -389,6 +403,14 @@ export interface DrillMetrics {
   step1FailureRate: number;
   /** Step-position failure rates — which positions (1st, 2nd, 3rd+) fail most often */
   stepPositionFailureRates: Array<{ position: number; failureRate: number; total: number }>;
+  /** Fraction of trajectories where the quality gate fired (triggered a retry). */
+  qualityGateFireRate: number;
+  /** Fraction of quality-gate retries that resulted in a completed trajectory. */
+  qualityGateRetrySuccessRate: number;
+  /** Distribution of models used for execution (model name → count) */
+  modelDistribution?: Record<string, number>;
+  /** Fraction of recovery attempts that succeeded (0-1). Undefined when no recoveries attempted. */
+  recoverySuccessRate?: number;
 }
 
 /**
@@ -403,6 +425,7 @@ export function computeDrillMetrics(history: DrillHistoryEntry[]): DrillMetrics 
       avgStepCompletionRate: 0, weightedStepCompletionRate: 0,
       avgStepsPerTrajectory: 0, categorySuccessRates: {}, topCategories: [], stalledCategories: [],
       step1FailureRate: 0, stepPositionFailureRates: [],
+      qualityGateFireRate: 0, qualityGateRetrySuccessRate: 0,
     };
   }
 
@@ -489,6 +512,23 @@ export function computeDrillMetrics(history: DrillHistoryEntry[]): DrillMetrics 
     .map((s, i) => ({ position: i + 1, failureRate: s.total > 0 ? s.failed / s.total : 0, total: s.total }))
     .filter(s => s.total >= 2); // need at least 2 data points
 
+  // Quality gate metrics — how often it fires and whether retries help
+  const qualityRetriedEntries = history.filter(h => h.qualityRetried === true);
+  const qualityGateFireRate = qualityRetriedEntries.length / history.length;
+  const qualityGateRetrySuccessRate = qualityRetriedEntries.length > 0
+    ? qualityRetriedEntries.filter(h => h.outcome === 'completed').length / qualityRetriedEntries.length
+    : 0;
+
+  // Model distribution from history entries that have modelUsed
+  let modelDistribution: Record<string, number> | undefined;
+  const entriesWithModel = history.filter(h => h.modelUsed);
+  if (entriesWithModel.length > 0) {
+    modelDistribution = {};
+    for (const h of entriesWithModel) {
+      modelDistribution[h.modelUsed!] = (modelDistribution[h.modelUsed!] ?? 0) + 1;
+    }
+  }
+
   return {
     totalTrajectories: history.length,
     completionRate,
@@ -501,6 +541,9 @@ export function computeDrillMetrics(history: DrillHistoryEntry[]): DrillMetrics 
     stalledCategories,
     step1FailureRate,
     stepPositionFailureRates,
+    qualityGateFireRate,
+    qualityGateRetrySuccessRate,
+    modelDistribution,
   };
 }
 
@@ -822,6 +865,12 @@ export function recordDrillTrajectoryOutcome(
     proposalAvgImpact?: number;
     freshnessDropCount?: number;
     proposalCategoryCount?: number;
+    blueprintGroupCount?: number;
+    blueprintConflictCount?: number;
+    blueprintEnablerCount?: number;
+    blueprintMergeableCount?: number;
+    qualityRetried?: boolean;
+    qualityIssueCount?: number;
   },
 ): void {
   // Collect categories and scopes from all steps
@@ -856,6 +905,12 @@ export function recordDrillTrajectoryOutcome(
     proposalAvgImpact: telemetry?.proposalAvgImpact,
     freshnessDropCount: telemetry?.freshnessDropCount,
     proposalCategoryCount: telemetry?.proposalCategoryCount,
+    blueprintGroupCount: telemetry?.blueprintGroupCount,
+    blueprintConflictCount: telemetry?.blueprintConflictCount,
+    blueprintEnablerCount: telemetry?.blueprintEnablerCount,
+    blueprintMergeableCount: telemetry?.blueprintMergeableCount,
+    qualityRetried: telemetry?.qualityRetried,
+    qualityIssueCount: telemetry?.qualityIssueCount,
   });
 
   state.drillLastOutcome = outcome;
@@ -1388,6 +1443,15 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
         }
       }
     }
+    // Quality gate effectiveness — helps LLM understand trajectory validation
+    if (metrics.qualityGateFireRate > 0) {
+      parts.push(`Quality gate: fires on ${Math.round(metrics.qualityGateFireRate * 100)}% of trajectories, retry success: ${Math.round(metrics.qualityGateRetrySuccessRate * 100)}%.`);
+    }
+    // Model distribution — shows which models have been used
+    if (metrics.modelDistribution && Object.keys(metrics.modelDistribution).length > 0) {
+      const dist = Object.entries(metrics.modelDistribution).map(([m, n]) => `${m}: ${n}`).join(', ');
+      parts.push(`Model distribution: ${dist}`);
+    }
     metricsHint = parts.join('\n');
   }
 
@@ -1572,6 +1636,36 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     state.displayAdapter.log(chalk.gray(`  Drill: dropped ${preFiltered.length - filteredProposals.length} test-only proposal(s)`));
   }
 
+  // Compute proposal blueprint for strategic analysis
+  let blueprintContext: string | undefined;
+  let blueprintGroupCount: number | undefined;
+  let blueprintConflictCount: number | undefined;
+  let blueprintEnablerCount: number | undefined;
+  let blueprintMergeableCount: number | undefined;
+  try {
+    const { computeBlueprint, formatBlueprintForPrompt } = await import('@promptwheel/core/proposals/blueprint');
+    const blueprintProposals = filteredProposals.map(p => ({
+      title: p.title,
+      category: p.category,
+      files: p.files,
+      impact_score: p.impact_score,
+      confidence: p.confidence,
+    }));
+    const depEdgesMap = state.codebaseIndex?.dependency_edges ?? {};
+    const bpConf = state.autoConf.drill?.blueprint;
+    const blueprint = computeBlueprint(blueprintProposals, depEdgesMap, bpConf);
+    blueprintContext = formatBlueprintForPrompt(blueprint, blueprintProposals);
+    blueprintGroupCount = blueprint.groups.length;
+    blueprintConflictCount = blueprint.conflicts.length;
+    blueprintEnablerCount = blueprint.enablers.length;
+    blueprintMergeableCount = blueprint.mergeablePairs.length;
+    if (state.options.verbose) {
+      state.displayAdapter.log(chalk.gray(`    Blueprint: ${blueprint.executionArc}`));
+    }
+  } catch {
+    // Blueprint computation is optional — proceed without it
+  }
+
   state.displayAdapter.log(chalk.cyan(`  Drill: generating trajectory from ${filteredProposals.length} proposal(s)...`));
   if (state.options.verbose && effectiveAmbition !== 'moderate') {
     state.displayAdapter.log(chalk.gray(`    Ambition: ${effectiveAmbition}${effectiveAmbition !== baseAmbition ? ` (adjusted from ${baseAmbition})` : ''}`));
@@ -1608,6 +1702,8 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
       convergenceHint,
       sessionPhase: state.sessionPhase,
       analysisContext: buildAnalysisContext(state),
+      blueprintContext,
+      blueprintConfig: state.autoConf.drill?.blueprint,
     });
 
     // Activate the generated trajectory
@@ -1632,9 +1728,25 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     state.drillLastGeneratedAtCycle = state.cycleCount;
     state.drillTrajectoriesGenerated++;
 
+    // Augment generation telemetry with blueprint + quality gate data
+    if (state.drillGenerationTelemetry) {
+      state.drillGenerationTelemetry.blueprintGroupCount = blueprintGroupCount;
+      state.drillGenerationTelemetry.blueprintConflictCount = blueprintConflictCount;
+      state.drillGenerationTelemetry.blueprintEnablerCount = blueprintEnablerCount;
+      state.drillGenerationTelemetry.blueprintMergeableCount = blueprintMergeableCount;
+      state.drillGenerationTelemetry.qualityRetried = result.qualityRetried;
+      state.drillGenerationTelemetry.qualityIssueCount = result.qualityIssues?.length ?? 0;
+    }
+
     const stepCount = traj.steps.length;
     state.displayAdapter.log(chalk.green(`  Drill: trajectory "${traj.name}" activated (${stepCount} steps)`));
     if (state.options.verbose) state.displayAdapter.log(chalk.gray(`    ${result.filePath}`));
+    if (result.qualityRetried) {
+      state.displayAdapter.log(chalk.yellow(`    Quality gate: retried (${result.qualityIssues?.length ?? 0} issue(s) remaining)`));
+    }
+    if (state.options.verbose && result.planningAnalysis) {
+      state.displayAdapter.log(chalk.gray(`    Planning analysis captured (${result.planningAnalysis.length} chars)`));
+    }
     if (state.currentTrajectoryStep) {
       state.displayAdapter.log(chalk.cyan(`    First step: ${state.currentTrajectoryStep.title}`));
     }

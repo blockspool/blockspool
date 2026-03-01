@@ -16,6 +16,7 @@ import { registerAnalyticsCommands } from './solo-analytics.js';
 import { registerDaemonCommands } from './solo-daemon.js';
 import { registerTrajectoryCommands } from './solo-trajectory.js';
 import { registerExportMetricsCommand } from './solo-export-metrics.js';
+import { registerPortfolioCommands } from './solo-portfolio.js';
 
 // Re-export types from extracted modules
 export type { FailureReason, CompletionOutcome, RunTicketResult } from '../lib/solo-ticket-types.js';
@@ -48,6 +49,8 @@ Examples:
   promptwheel solo trajectory list     List all trajectories and status
   promptwheel solo trajectory show <n> Show trajectory details
   promptwheel solo trajectory generate "goal" Generate a trajectory from a goal
+  promptwheel solo portfolio       Show project portfolio
+  promptwheel solo portfolio reset Reset project portfolio
   promptwheel solo tui             Launch interactive terminal UI
   promptwheel solo reset           Clear all local state
   promptwheel solo export          Export state for debugging
@@ -62,4 +65,5 @@ registerNudgeCommands(soloCommand);
 registerAnalyticsCommands(soloCommand);
 registerDaemonCommands(soloCommand);
 registerTrajectoryCommands(soloCommand);
+registerPortfolioCommands(soloCommand);
 registerExportMetricsCommand(soloCommand);

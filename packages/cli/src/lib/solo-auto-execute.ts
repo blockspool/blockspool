@@ -14,6 +14,7 @@ import { getPromptwheelDir } from './solo-config.js';
 import { formatGuidelinesForPrompt } from './guidelines.js';
 import { selectRelevant, formatLearningsForPrompt, extractTags, addLearning, confirmLearning, recordAccess, recordApplication, type StructuredKnowledge } from './learnings.js';
 import { classifyFailure } from './failure-classifier.js';
+import { analyzeFailure } from './recovery-analyzer.js';
 import { normalizeQaConfig } from './solo-utils.js';
 import { computeTicketTimeout } from './solo-auto-utils.js';
 import { recordPrFiles } from './file-cooldown.js';
@@ -32,6 +33,7 @@ import { getAdaptiveParallelCount, sleep } from './dedup.js';
 import { partitionIntoWaves, enrichWithSymbols, type ConflictSensitivity, type SymbolMap } from './wave-scheduling.js';
 import { orderMergeSequence } from '@promptwheel/core/waves/shared';
 import { loadAstCache } from '@promptwheel/core/codebase-index';
+import { getModelForStep } from '@promptwheel/core/proposals/step-classifier';
 import type { TicketOutcome } from './run-history.js';
 import { computeCoverage } from './sectors.js';
 import type { ProgressSnapshot } from './display-adapter.js';
@@ -61,6 +63,14 @@ export interface ProposalResult {
   failureReason?: string;
   /** Actual files changed (from git status, scope-verified). More accurate than proposal.files. */
   actualChangedFiles?: string[];
+  /** Model used for execution (from model routing) */
+  modelUsed?: string;
+  /** Whether recovery analysis was attempted after initial failure */
+  recoveryAttempted?: boolean;
+  /** Recovery action taken (retry_with_hint, narrow_scope, skip) */
+  recoveryAction?: string;
+  /** Whether the recovery retry succeeded */
+  recoverySucceeded?: boolean;
 }
 
 /**
@@ -114,12 +124,28 @@ export async function processOneProposal(
   let wasRetried = false;
   let lastError: string | undefined;
   let lastFailureReason: string | undefined;
+  let recoveryAttempted = false;
+  let recoveryHint: string | undefined;
+  let recoveryAction: string | undefined;
   const maxScopeRetries = 2;
 
   while (retryCount <= maxScopeRetries) {
     try {
       state.displayAdapter.ticketProgress(currentTicket.id, `Executing: ${proposal.title}`);
       const executeStart = Date.now();
+
+      // Model routing: select model based on step complexity
+      let routedModel: string | undefined;
+      if (state.autoConf.modelRouting?.enabled !== false && state.autoConf.modelRouting) {
+        routedModel = getModelForStep(
+          {
+            categories: proposal.category ? [proposal.category] : [],
+            allowed_paths: proposal.files ?? proposal.allowed_paths ?? [],
+          },
+          state.autoConf.modelRouting,
+        );
+      }
+
       const result = await soloRunTicket({
         ticket: currentTicket,
         repoRoot: state.repoRoot,
@@ -148,11 +174,14 @@ export async function processOneProposal(
         acceptanceCriteria: proposal.acceptance_criteria,
         retryContext: retryCount > 0 ? {
           attempt: retryCount,
-          previousError: (lastError ?? '').slice(0, 500),
+          previousError: (recoveryHint
+            ? `${(lastError ?? '').slice(0, 300)}\n\nRecovery hint: ${recoveryHint}`
+            : (lastError ?? '')).slice(0, 500),
           failureReason: lastFailureReason ?? 'unknown',
         } : undefined,
         qaBaseline: cycleQaBaseline ?? undefined,
         formulaHint: state.currentFormulaName !== 'default' ? state.currentFormulaName : undefined,
+        model: routedModel,
         ...(state.milestoneMode && state.milestoneBranch ? {
           baseBranch: state.milestoneBranch,
           skipPush: true,
@@ -237,7 +266,7 @@ export async function processOneProposal(
             }
           }
           if (result.traceAnalysis) state.allTraceAnalyses.push(result.traceAnalysis);
-          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds, actualChangedFiles: result.changedFiles };
+          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds, actualChangedFiles: result.changedFiles, modelUsed: routedModel, ...(recoveryAttempted ? { recoveryAttempted, recoveryAction, recoverySucceeded: true } : {}) };
         }
 
         await runs.markSuccess(state.adapter, currentRun.id, { prUrl: result.prUrl });
@@ -298,7 +327,7 @@ export async function processOneProposal(
           });
           if (result.traceAnalysis) state.allTraceAnalyses.push(result.traceAnalysis);
           state.displayAdapter.ticketDone(currentTicket.id, true, 'Committed to direct branch');
-          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds, actualChangedFiles: result.changedFiles };
+          return { success: true, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds, actualChangedFiles: result.changedFiles, modelUsed: routedModel, ...(recoveryAttempted ? { recoveryAttempted, recoveryAction, recoverySucceeded: true } : {}) };
         }
 
         // Auto-merge
@@ -313,7 +342,7 @@ export async function processOneProposal(
           recordPrFiles(state.repoRoot, result.prUrl, proposal.files ?? proposal.allowed_paths ?? []);
         }
         if (result.traceAnalysis) state.allTraceAnalyses.push(result.traceAnalysis);
-        return { success: true, prUrl: result.prUrl, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds, actualChangedFiles: result.changedFiles };
+        return { success: true, prUrl: result.prUrl, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds, actualChangedFiles: result.changedFiles, modelUsed: routedModel, ...(recoveryAttempted ? { recoveryAttempted, recoveryAction, recoverySucceeded: true } : {}) };
       } else if (result.scopeExpanded && retryCount < maxScopeRetries) {
         lastError = result.error;
         lastFailureReason = result.failureReason ?? 'scope_violation';
@@ -336,6 +365,52 @@ export async function processOneProposal(
         });
         continue;
       } else {
+        // Recovery analysis — try to recover from failure before giving up
+        if (!recoveryAttempted && retryCount < maxScopeRetries) {
+          const recovery = analyzeFailure(result, proposal);
+          recoveryAttempted = true;
+          recoveryAction = recovery.action;
+
+          if (recovery.action === 'retry_with_hint') {
+            retryCount++;
+            wasRetried = true;
+            lastError = result.error;
+            lastFailureReason = result.failureReason ?? 'unknown';
+            state.displayAdapter.ticketProgress(currentTicket.id, `Recovery: retrying with diagnostic hint (${retryCount}/${maxScopeRetries})...`);
+
+            await runs.markFailure(state.adapter, currentRun.id, `Recovery retry: ${recovery.action}`);
+            currentRun = await runs.create(state.adapter, {
+              projectId: state.project.id,
+              type: 'worker',
+              ticketId: currentTicket.id,
+              metadata: { auto: true, recoveryRetry: retryCount, recoveryAction: recovery.action },
+            });
+
+            // Set recovery hint — will be threaded into retryContext on next iteration
+            recoveryHint = recovery.hint;
+            continue;
+          }
+
+          if (recovery.action === 'narrow_scope') {
+            retryCount++;
+            wasRetried = true;
+            lastError = result.error;
+            lastFailureReason = result.failureReason ?? 'unknown';
+            state.displayAdapter.ticketProgress(currentTicket.id, `Recovery: narrowing scope to ${recovery.files.length} files...`);
+
+            await runs.markFailure(state.adapter, currentRun.id, `Recovery: narrow_scope`);
+            currentRun = await runs.create(state.adapter, {
+              projectId: state.project.id,
+              type: 'worker',
+              ticketId: currentTicket.id,
+              metadata: { auto: true, recoveryRetry: retryCount, recoveryAction: 'narrow_scope' },
+            });
+            continue;
+          }
+
+          // recovery.action === 'skip' — fall through to normal failure handling
+        }
+
         await runs.markFailure(state.adapter, currentRun.id, result.error || result.failureReason || 'unknown');
         await tickets.updateStatus(state.adapter, currentTicket.id, 'blocked');
         const failReason = result.scopeExpanded
@@ -398,7 +473,10 @@ export async function processOneProposal(
           } catch { /* non-fatal */ }
         }
         state.displayAdapter.ticketDone(currentTicket.id, false, `Failed: ${failReason}`);
-        return { success: false, injectedLearningIds, failureReason: result.failureReason ?? 'agent_error' };
+        return {
+          success: false, injectedLearningIds, failureReason: result.failureReason ?? 'agent_error',
+          recoveryAttempted, recoveryAction, recoverySucceeded: false,
+        };
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);

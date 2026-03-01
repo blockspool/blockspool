@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { slugify, validateAndBuild, computeSuggestedScope, sanitizeVerificationCommands, buildGenerateFromProposalsPrompt } from '../lib/trajectory-generate.js';
+import { slugify, validateAndBuild, computeSuggestedScope, sanitizeVerificationCommands, buildGenerateFromProposalsPrompt, extractPlanningAnalysis } from '../lib/trajectory-generate.js';
 import { generateTrajectoryFromProposals } from '../lib/trajectory-generate.js';
 
 // ---------------------------------------------------------------------------
@@ -589,5 +589,184 @@ describe('buildGenerateFromProposalsPrompt — ambition levels', () => {
       ambitionLevel: 'moderate',
     });
     expect(prompt).toContain('3-5 steps');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractPlanningAnalysis
+// ---------------------------------------------------------------------------
+
+describe('extractPlanningAnalysis', () => {
+  it('extracts content from <planning> tags', () => {
+    const output = `<planning>
+Theme: Security hardening
+Groups: Auth and session proposals cluster
+Dependencies: Core before auth
+</planning>
+
+{
+  "name": "drill-security",
+  "description": "Security trajectory",
+  "steps": []
+}`;
+
+    const analysis = extractPlanningAnalysis(output);
+    expect(analysis).toContain('Theme: Security hardening');
+    expect(analysis).toContain('Dependencies: Core before auth');
+  });
+
+  it('returns null when no planning block present', () => {
+    const output = '{ "name": "drill-test", "description": "test", "steps": [] }';
+    expect(extractPlanningAnalysis(output)).toBeNull();
+  });
+
+  it('handles multiline planning content', () => {
+    const output = `<planning>
+Line 1
+Line 2
+Line 3
+</planning>
+{"name":"x","description":"y","steps":[]}`;
+
+    const analysis = extractPlanningAnalysis(output);
+    expect(analysis).toContain('Line 1');
+    expect(analysis).toContain('Line 3');
+  });
+
+  it('trims whitespace from extracted content', () => {
+    const output = '<planning>  trimmed  </planning>{}';
+    expect(extractPlanningAnalysis(output)).toBe('trimmed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildGenerateFromProposalsPrompt — blueprint context
+// ---------------------------------------------------------------------------
+
+describe('buildGenerateFromProposalsPrompt — blueprint context', () => {
+  const proposalsBlock = '1. [fix] Fix auth bug (score: 5.0)\n   Files: src/auth.ts';
+  const indexBlock = '';
+  const metaBlock = '';
+
+  it('includes strategic analysis section when blueprintContext is provided', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+      blueprintContext: 'Arc: 2 group(s) total\n\nGroups:\n  1. [fix] Fix auth → scope: src/auth/**',
+    });
+    expect(prompt).toContain('## Strategic Analysis (pre-computed)');
+    expect(prompt).toContain('Arc: 2 group(s) total');
+    expect(prompt).toContain('Respect this analysis');
+  });
+
+  it('omits strategic analysis when no blueprintContext', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {});
+    expect(prompt).not.toContain('## Strategic Analysis');
+  });
+
+  it('includes two-phase output format when blueprintContext is provided', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {
+      blueprintContext: 'Arc: 1 group(s) total',
+    });
+    expect(prompt).toContain('Phase 1');
+    expect(prompt).toContain('<planning>');
+    expect(prompt).toContain('Phase 2');
+  });
+
+  it('uses single-phase output when no blueprintContext', () => {
+    const prompt = buildGenerateFromProposalsPrompt(proposalsBlock, indexBlock, metaBlock, {});
+    expect(prompt).toContain('Respond with ONLY a JSON object');
+    expect(prompt).not.toContain('Phase 1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateTrajectoryFromProposals — quality gate retry (mocked LLM)
+// ---------------------------------------------------------------------------
+
+describe('generateTrajectoryFromProposals — quality gate', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'traj-qg-'));
+    fs.mkdirSync(path.join(tmpDir, '.promptwheel', 'trajectories'), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  const sampleProposals = [
+    {
+      title: 'Fix auth types',
+      description: 'Fix type issues in auth',
+      category: 'types',
+      files: ['src/auth/login.ts', 'src/auth/session.ts'],
+      allowed_paths: ['src/auth/**'],
+      acceptance_criteria: ['Types fixed'],
+      verification_commands: ['npm run typecheck'],
+      confidence: 85,
+      impact_score: 7,
+      rationale: 'Type safety',
+      estimated_complexity: 'simple',
+    },
+  ];
+
+  it('includes planningAnalysis when LLM outputs planning block', async () => {
+    const { runClaude, parseClaudeOutput } = await import('@promptwheel/core/scout');
+
+    (runClaude as any).mockResolvedValue({
+      success: true,
+      output: '<planning>\nTheme: Type safety\nDeps: none\n</planning>\n\n{"name":"drill-types","description":"types","steps":[{"id":"s1","title":"Fix types","description":"fix","scope":"src/auth/**","categories":["types"],"acceptance_criteria":["done"],"verification_commands":["npm run typecheck"],"depends_on":[]}]}',
+    });
+
+    (parseClaudeOutput as any).mockReturnValue({
+      name: 'drill-types',
+      description: 'types',
+      steps: [{
+        id: 's1',
+        title: 'Fix types',
+        description: 'fix',
+        scope: 'src/auth/**',
+        categories: ['types'],
+        acceptance_criteria: ['done'],
+        verification_commands: ['npm run typecheck'],
+        depends_on: [],
+      }],
+    });
+
+    const result = await generateTrajectoryFromProposals({
+      proposals: sampleProposals,
+      repoRoot: tmpDir,
+      blueprintContext: 'Arc: 1 group(s) total',
+    });
+
+    expect(result.planningAnalysis).toContain('Theme: Type safety');
+  });
+
+  it('returns qualityRetried=false when quality gate passes', async () => {
+    const { runClaude, parseClaudeOutput } = await import('@promptwheel/core/scout');
+
+    (runClaude as any).mockResolvedValue({
+      success: true,
+      output: 'mock output',
+    });
+
+    (parseClaudeOutput as any).mockReturnValue({
+      name: 'drill-types',
+      description: 'types',
+      steps: [
+        { id: 's1', title: 'Fix types', description: 'fix', scope: 'src/auth/**', categories: ['types'], acceptance_criteria: ['done'], verification_commands: ['npm run typecheck'], depends_on: [] },
+        { id: 's2', title: 'Test types', description: 'test', scope: 'src/auth/**', categories: ['test'], acceptance_criteria: ['done'], verification_commands: ['npm test'], depends_on: ['s1'] },
+        { id: 's3', title: 'Cleanup', description: 'cleanup', scope: 'src/auth/**', categories: ['cleanup'], acceptance_criteria: ['done'], verification_commands: ['npm run lint'], depends_on: ['s2'] },
+      ],
+    });
+
+    const result = await generateTrajectoryFromProposals({
+      proposals: sampleProposals,
+      repoRoot: tmpDir,
+      blueprintContext: 'Arc: 1 group(s) total',
+    });
+
+    expect(result.qualityRetried).toBe(false);
   });
 });

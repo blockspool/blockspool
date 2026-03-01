@@ -13,6 +13,8 @@ export interface BackendRunOptions {
   onProgress: (msg: string) => void;
   /** Stream raw stdout/stderr chunks for live TUI display */
   onRawOutput?: (chunk: string) => void;
+  /** Override the model used for this execution (e.g. 'haiku', 'sonnet', 'opus') */
+  model?: string;
 }
 
 /**

@@ -30,6 +30,7 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
     verbose,
     onProgress,
     onRawOutput: opts.onRawOutput,
+    model: opts.model,
   });
 
   // Save agent artifact

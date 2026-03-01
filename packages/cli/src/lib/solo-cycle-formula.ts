@@ -2,8 +2,9 @@
  * Formula and category selection logic for auto-mode cycles.
  */
 
-import { readRunState, isDocsAuditDue } from './run-state.js';
+import { readRunState, isDocsAuditDue, type FormulaStats } from './run-state.js';
 import { loadFormula, type Formula } from './formulas.js';
+import type { TasteProfile } from './taste-profile.js';
 
 export interface CycleFormulaContext {
   activeFormula: Formula | null;
@@ -133,4 +134,98 @@ export function getCycleCategories(ctx: CycleFormulaContext, formula: Formula | 
   }
 
   return { allow, block };
+}
+
+/**
+ * Select 2-3 non-conflicting formulas for parallel scouting.
+ *
+ * Selection criteria:
+ * - Taste profile: preferred formula categories score higher
+ * - Category diversity: don't pick two formulas with overlapping categories
+ * - Cooldown: respect per-formula cooldowns from FormulaStats
+ * - Max formulas: configurable, default 2, max 3
+ */
+export function getParallelFormulas(
+  state: {
+    autoConf: Record<string, any>;
+    tasteProfile: TasteProfile | null;
+    activeFormula: Formula | null;
+    deepFormula: Formula | null;
+    currentFormulaName: string;
+    repoRoot: string;
+    cycleCount: number;
+  },
+  allFormulas: Formula[],
+  maxFormulas?: number,
+): Formula[] {
+  const max = Math.min(maxFormulas ?? 2, 3);
+
+  // If a user-specified formula is active, only run that one
+  if (state.activeFormula) return [state.activeFormula];
+
+  if (allFormulas.length <= 1) return allFormulas.slice(0, 1);
+
+  // Exclude special-purpose formulas from parallel selection
+  const excluded = new Set(['deep', 'docs-audit']);
+  const candidates = allFormulas.filter(f => !excluded.has(f.name));
+
+  if (candidates.length === 0) return allFormulas.slice(0, 1);
+
+  const rs = readRunState(state.repoRoot);
+  const selected: Formula[] = [];
+  const usedCategories = new Set<string>();
+
+  // Score each formula
+  const scored = candidates.map(f => {
+    let score = 0;
+    const taste = state.tasteProfile;
+
+    // Taste preference: boost formulas whose categories align with preferred
+    if (taste) {
+      const categories = f.categories ?? [];
+      for (const cat of categories) {
+        if (taste.preferredCategories.includes(cat)) score += 3;
+        if (taste.avoidCategories.includes(cat)) score -= 5;
+      }
+    }
+
+    // Don't re-pick the current formula (minor penalty)
+    if (f.name === state.currentFormulaName) score -= 1;
+
+    // Per-formula cooldown: penalize formulas that ran very recently
+    const stats: FormulaStats | undefined = rs.formulaStats[f.name];
+    if (stats && stats.recentCycles > 0) {
+      const cyclesSinceLast = state.cycleCount - (stats.lastResetCycle ?? 0);
+      if (cyclesSinceLast <= 1) score -= 3; // just ran — penalize
+    }
+
+    // Boost formulas with better recent success rates
+    if (stats && stats.recentTicketsTotal > 0) {
+      const successRate = stats.recentTicketsSucceeded / stats.recentTicketsTotal;
+      score += Math.round(successRate * 2);
+    }
+
+    return { formula: f, score };
+  });
+
+  // Sort by score descending
+  scored.sort((a, b) => b.score - a.score);
+
+  for (const { formula } of scored) {
+    if (selected.length >= max) break;
+
+    const categories = formula.categories ?? [];
+
+    // Check category overlap with already-selected formulas
+    if (selected.length > 0 && categories.length > 0) {
+      const overlapCount = categories.filter(c => usedCategories.has(c)).length;
+      // Skip if more than half the categories overlap
+      if (overlapCount > categories.length / 2) continue;
+    }
+
+    selected.push(formula);
+    for (const c of categories) usedCategories.add(c);
+  }
+
+  return selected;
 }

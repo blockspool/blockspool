@@ -139,6 +139,8 @@ export interface RunTicketOptions {
   acceptanceCriteria?: string[];
   /** Context from a previous failed attempt — helps agent avoid repeating mistakes */
   retryContext?: { attempt: number; previousError: string; failureReason: string };
+  /** Override the model used for execution (from model routing) */
+  model?: string;
 }
 
 /**

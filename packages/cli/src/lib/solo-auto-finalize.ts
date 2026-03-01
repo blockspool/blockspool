@@ -278,6 +278,19 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
   displayConvergenceSummary(summaryCtx);
   displayWheelHealth(summaryCtx);
   await recordSessionHistory(summaryCtx);
+
+  // Update project portfolio with cross-session context
+  try {
+    const { buildOrUpdatePortfolio, savePortfolio } = await import('./portfolio.js');
+    const updatedPortfolio = buildOrUpdatePortfolio(
+      state.repoRoot,
+      state.codebaseIndex,
+      state.drillHistory,
+      state.allLearnings,
+    );
+    savePortfolio(state.repoRoot, updatedPortfolio);
+  } catch { /* non-fatal */ }
+
   displayFinalSummary(summaryCtx);
 
   if (reportPath) {

@@ -676,13 +676,19 @@ describe('executeProposals', () => {
 
   describe('scope expansion (retry)', () => {
     it('retries execution after scope expansion', async () => {
-      // First call: scope expanded, second call: also fails (to avoid
-      // the wasRetried bug in recordOutcome success path)
+      // First call: scope expanded, second call: also fails (triggers recovery retry),
+      // third call: also fails (exhausts retries)
       vi.mocked(soloRunTicket)
         .mockResolvedValueOnce({
           success: false,
           durationMs: 5000,
           scopeExpanded: { addedPaths: ['src/extra.ts'], newRetryCount: 1 },
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          durationMs: 5000,
+          error: 'still fails',
+          failureReason: 'agent_error',
         })
         .mockResolvedValueOnce({
           success: false,
@@ -696,8 +702,8 @@ describe('executeProposals', () => {
 
       await executeProposals(state, proposals);
 
-      // soloRunTicket is called twice: initial + retry after scope expansion
-      expect(soloRunTicket).toHaveBeenCalledTimes(2);
+      // soloRunTicket is called three times: initial + scope expansion retry + recovery retry
+      expect(soloRunTicket).toHaveBeenCalledTimes(3);
     });
 
     it('creates new run for scope expansion retry', async () => {
@@ -712,6 +718,12 @@ describe('executeProposals', () => {
           durationMs: 5000,
           error: 'still fails',
           failureReason: 'agent_error',
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          durationMs: 5000,
+          error: 'still fails',
+          failureReason: 'agent_error',
         });
 
       const { runs } = await import('@promptwheel/core/repos');
@@ -720,9 +732,9 @@ describe('executeProposals', () => {
 
       await executeProposals(state, proposals);
 
-      // First run creation + retry run creation = 2 calls
-      expect(runs.create).toHaveBeenCalledTimes(2);
-      // The retry run should have scopeRetry metadata
+      // First run creation + scope expansion retry + recovery retry = 3 calls
+      expect(runs.create).toHaveBeenCalledTimes(3);
+      // The scope retry run should have scopeRetry metadata
       expect(runs.create).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -737,6 +749,12 @@ describe('executeProposals', () => {
           success: false,
           durationMs: 5000,
           scopeExpanded: { addedPaths: ['src/extra.ts'], newRetryCount: 1 },
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          durationMs: 5000,
+          error: 'still fails',
+          failureReason: 'agent_error',
         })
         .mockResolvedValueOnce({
           success: false,

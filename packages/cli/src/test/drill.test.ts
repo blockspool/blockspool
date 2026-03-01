@@ -47,6 +47,12 @@ function makeEntry(overrides: Partial<DrillHistoryEntry> = {}): DrillHistoryEntr
     modifiedFiles: overrides.modifiedFiles,
     ambitionLevel: overrides.ambitionLevel,
     stepOutcomes: overrides.stepOutcomes,
+    blueprintGroupCount: overrides.blueprintGroupCount,
+    blueprintConflictCount: overrides.blueprintConflictCount,
+    blueprintEnablerCount: overrides.blueprintEnablerCount,
+    blueprintMergeableCount: overrides.blueprintMergeableCount,
+    qualityRetried: overrides.qualityRetried,
+    qualityIssueCount: overrides.qualityIssueCount,
   };
 }
 
@@ -2012,5 +2018,153 @@ describe('validateDrillConfig — sigmoid and staleness', () => {
     expect(result.sigmoidK).toBe(6);
     expect(result.sigmoidCenter).toBeCloseTo(0.5);
     expect(result.stalenessLogBase).toBe(11);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blueprint telemetry in recordDrillTrajectoryOutcome
+// ---------------------------------------------------------------------------
+
+describe('recordDrillTrajectoryOutcome — blueprint telemetry', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'drill-bp-'));
+    fs.mkdirSync(path.join(tmpDir, '.promptwheel'), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('stores blueprint telemetry fields when provided', () => {
+    const state = makeDrillState({
+      repoRoot: tmpDir,
+      drillHistory: [],
+      drillLastOutcome: null,
+      drillCoveredCategories: new Map(),
+      drillCoveredScopes: new Map(),
+      autoConf: { drill: { historyCap: 100 } },
+    });
+    recordDrillTrajectoryOutcome(
+      state as any,
+      'bp-test', 'Blueprint test', 3, 2, 0, 'completed',
+      [{ id: 's1', title: 'Step 1', categories: ['refactor'] }],
+      undefined, undefined, undefined, undefined,
+      {
+        stepOutcomes: [{ id: 's1', status: 'completed' }],
+        blueprintGroupCount: 3,
+        blueprintConflictCount: 1,
+        blueprintEnablerCount: 2,
+        blueprintMergeableCount: 0,
+        qualityRetried: true,
+        qualityIssueCount: 2,
+      },
+    );
+    expect(state.drillHistory).toHaveLength(1);
+    const entry = state.drillHistory[0];
+    expect(entry.blueprintGroupCount).toBe(3);
+    expect(entry.blueprintConflictCount).toBe(1);
+    expect(entry.blueprintEnablerCount).toBe(2);
+    expect(entry.blueprintMergeableCount).toBe(0);
+    expect(entry.qualityRetried).toBe(true);
+    expect(entry.qualityIssueCount).toBe(2);
+  });
+
+  it('handles entries without blueprint fields (backward compat)', () => {
+    const state = makeDrillState({
+      repoRoot: tmpDir,
+      drillHistory: [],
+      drillLastOutcome: null,
+      drillCoveredCategories: new Map(),
+      drillCoveredScopes: new Map(),
+      autoConf: { drill: { historyCap: 100 } },
+    });
+    recordDrillTrajectoryOutcome(
+      state as any,
+      'no-bp', 'No blueprint', 2, 1, 0, 'stalled',
+      [{ id: 's1', title: 'Step 1', categories: ['fix'] }],
+    );
+    const entry = state.drillHistory[0];
+    expect(entry.blueprintGroupCount).toBeUndefined();
+    expect(entry.qualityRetried).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeDrillMetrics — quality gate metrics
+// ---------------------------------------------------------------------------
+
+describe('computeDrillMetrics — quality gate metrics', () => {
+  it('computes fire rate from mixed entries', () => {
+    const history = [
+      makeEntry({ qualityRetried: true, outcome: 'completed' }),
+      makeEntry({ qualityRetried: true, outcome: 'stalled' }),
+      makeEntry({ qualityRetried: undefined, outcome: 'completed' }),
+      makeEntry({ qualityRetried: undefined, outcome: 'completed' }),
+    ];
+    const metrics = computeDrillMetrics(history);
+    expect(metrics.qualityGateFireRate).toBeCloseTo(0.5); // 2 out of 4
+  });
+
+  it('computes retry success rate', () => {
+    const history = [
+      makeEntry({ qualityRetried: true, outcome: 'completed' }),
+      makeEntry({ qualityRetried: true, outcome: 'stalled' }),
+      makeEntry({ qualityRetried: true, outcome: 'completed' }),
+    ];
+    const metrics = computeDrillMetrics(history);
+    expect(metrics.qualityGateRetrySuccessRate).toBeCloseTo(2 / 3);
+  });
+
+  it('returns zero when no entries have qualityRetried', () => {
+    const history = [
+      makeEntry({ outcome: 'completed' }),
+      makeEntry({ outcome: 'stalled' }),
+    ];
+    const metrics = computeDrillMetrics(history);
+    expect(metrics.qualityGateFireRate).toBe(0);
+    expect(metrics.qualityGateRetrySuccessRate).toBe(0);
+  });
+
+  it('backward compat: entries without new fields do not break metrics', () => {
+    // Simulate old entries without blueprint/quality fields
+    const history = [
+      makeEntry({ outcome: 'completed' }),
+      makeEntry({ outcome: 'stalled' }),
+      makeEntry({ outcome: 'completed' }),
+    ];
+    const metrics = computeDrillMetrics(history);
+    expect(metrics.totalTrajectories).toBe(3);
+    expect(metrics.qualityGateFireRate).toBe(0);
+    expect(metrics.qualityGateRetrySuccessRate).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateDrillConfig — blueprint thresholds
+// ---------------------------------------------------------------------------
+
+describe('validateDrillConfig — blueprint thresholds', () => {
+  it('clamps blueprint groupOverlapThreshold to [0.3, 0.8]', () => {
+    expect(validateDrillConfig({ blueprint: { groupOverlapThreshold: 0.1 } }).blueprint!.groupOverlapThreshold).toBe(0.3);
+    expect(validateDrillConfig({ blueprint: { groupOverlapThreshold: 0.9 } }).blueprint!.groupOverlapThreshold).toBe(0.8);
+    expect(validateDrillConfig({ blueprint: { groupOverlapThreshold: 0.6 } }).blueprint!.groupOverlapThreshold).toBeCloseTo(0.6);
+  });
+
+  it('clamps blueprint mergeableOverlapThreshold to [0.5, 0.9]', () => {
+    expect(validateDrillConfig({ blueprint: { mergeableOverlapThreshold: 0.2 } }).blueprint!.mergeableOverlapThreshold).toBe(0.5);
+    expect(validateDrillConfig({ blueprint: { mergeableOverlapThreshold: 1.0 } }).blueprint!.mergeableOverlapThreshold).toBe(0.9);
+    expect(validateDrillConfig({ blueprint: { mergeableOverlapThreshold: 0.7 } }).blueprint!.mergeableOverlapThreshold).toBeCloseTo(0.7);
+  });
+
+  it('clamps blueprint qualityGateStepCountSlack to [0, 5]', () => {
+    expect(validateDrillConfig({ blueprint: { qualityGateStepCountSlack: -1 } }).blueprint!.qualityGateStepCountSlack).toBe(0);
+    expect(validateDrillConfig({ blueprint: { qualityGateStepCountSlack: 10 } }).blueprint!.qualityGateStepCountSlack).toBe(5);
+    expect(validateDrillConfig({ blueprint: { qualityGateStepCountSlack: 3 } }).blueprint!.qualityGateStepCountSlack).toBe(3);
+  });
+
+  it('does not create blueprint section when not provided', () => {
+    expect(validateDrillConfig({}).blueprint).toBeUndefined();
   });
 });

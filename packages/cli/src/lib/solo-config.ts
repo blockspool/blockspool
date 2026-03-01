@@ -128,6 +128,13 @@ export interface AutoConfig {
    * - 'relaxed': Only direct file overlap + glob overlap (most parallel, riskier)
    */
   conflictSensitivity?: 'strict' | 'normal' | 'relaxed';
+  /** Model routing: automatically select cheaper models for simpler steps */
+  modelRouting?: {
+    simple?: string;   // default 'haiku'
+    moderate?: string; // default 'sonnet'
+    complex?: string;  // default 'opus'
+    enabled?: boolean; // default true
+  };
   /** Max consecutive idle cycles (no completed tickets) before spin stops (default: 15) */
   maxIdleCycles?: number;
   /**
@@ -152,6 +159,15 @@ export interface AutoConfig {
     enabled?: boolean;
     /** Override the default lens list. Names must match built-in or custom formula names. */
     lenses?: string[];
+  };
+  /** Parallel multi-formula scouting — run multiple formula scouts simultaneously */
+  parallelScout?: {
+    /** Enable parallel scouting (default: false, opt-in) */
+    enabled?: boolean;
+    /** Maximum formulas to scout in parallel (default: 2, max: 3) */
+    maxFormulas?: number;
+    /** Jaccard overlap threshold for deduplicating proposals across formulas (default: 0.7) */
+    dedupeThreshold?: number;
   };
   /**
    * Drill mode settings — auto-trajectory generation in spin mode.
@@ -195,6 +211,15 @@ export interface AutoConfig {
     sigmoidCenter?: number;
     /** Log base for staleness decay calculation (default: 11, range: 2-100). Higher values slow staleness decay. */
     stalenessLogBase?: number;
+    /** Blueprint analysis thresholds — controls grouping, merging, and quality gate sensitivity. */
+    blueprint?: {
+      /** Jaccard overlap threshold for grouping proposals (default: 0.5, range: 0.3-0.8). Lower groups more aggressively. */
+      groupOverlapThreshold?: number;
+      /** Jaccard overlap threshold for detecting mergeable near-duplicates (default: 0.7, range: 0.5-0.9). Lower merges more. */
+      mergeableOverlapThreshold?: number;
+      /** Extra steps allowed above ambition range before quality gate flags (default: 2, range: 0-5). Lower is stricter. */
+      qualityGateStepCountSlack?: number;
+    };
   };
 }
 
@@ -234,6 +259,15 @@ export function validateDrillConfig(drill: NonNullable<AutoConfig['drill']>): No
   validated.sigmoidK = clamp(drill.sigmoidK, 1, 20, 6);
   validated.sigmoidCenter = clamp(drill.sigmoidCenter, 0, 1, 0.5);
   validated.stalenessLogBase = clamp(drill.stalenessLogBase, 2, 100, 11);
+
+  // Validate blueprint thresholds
+  if (drill.blueprint) {
+    validated.blueprint = {
+      groupOverlapThreshold: clamp(drill.blueprint.groupOverlapThreshold, 0.3, 0.8, 0.5),
+      mergeableOverlapThreshold: clamp(drill.blueprint.mergeableOverlapThreshold, 0.5, 0.9, 0.7),
+      qualityGateStepCountSlack: clamp(drill.blueprint.qualityGateStepCountSlack, 0, 5, 2),
+    };
+  }
 
   return validated;
 }

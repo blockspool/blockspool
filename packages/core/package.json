@@ -1,6 +1,6 @@
 {
   "name": "@promptwheel/core",
-  "version": "0.7.29",
+  "version": "0.7.31",
   "description": "Core business logic and database adapter interface for PromptWheel",
   "author": "PromptWheel",
   "homepage": "https://promptwheel.com",
@@ -79,6 +79,18 @@
     "./proposals/shared": {
       "types": "./dist/proposals/shared.d.ts",
       "import": "./dist/proposals/shared.js"
+    },
+    "./proposals/blueprint": {
+      "types": "./dist/proposals/blueprint.d.ts",
+      "import": "./dist/proposals/blueprint.js"
+    },
+    "./proposals/trajectory-critic": {
+      "types": "./dist/proposals/trajectory-critic.d.ts",
+      "import": "./dist/proposals/trajectory-critic.js"
+    },
+    "./proposals/step-classifier": {
+      "types": "./dist/proposals/step-classifier.d.ts",
+      "import": "./dist/proposals/step-classifier.js"
     },
     "./sectors/shared": {
       "types": "./dist/sectors/shared.d.ts",

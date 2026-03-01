@@ -1,6 +1,6 @@
 {
   "name": "@promptwheel/cli",
-  "version": "0.7.33",
+  "version": "0.7.34",
   "description": "PromptWheel CLI - AI coding agent orchestrator — autonomous runs, human-reviewed PRs",
   "author": "PromptWheel",
   "homepage": "https://promptwheel.com",
@@ -55,8 +55,8 @@
   },
   "dependencies": {
     "@ast-grep/napi": "^0.35.0",
-    "@promptwheel/core": "^0.7.31",
-    "@promptwheel/sqlite": "^0.7.31",
+    "@promptwheel/core": "^0.7.34",
+    "@promptwheel/sqlite": "^0.7.34",
     "chalk": "^5.3.0",
     "commander": "^14.0.3",
     "minimatch": "^10.1.1",

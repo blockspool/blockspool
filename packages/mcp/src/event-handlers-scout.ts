@@ -112,6 +112,24 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
     : `Attempt ${s.scout_retries + 1}: Explored ${exploredDirs.join(', ') || '(unknown)'}. Found ${rawProposals.length} proposals.`;
   s.scout_exploration_log.push(logEntry);
 
+  // Update sector scan stats if a sector was selected for this cycle.
+  // This must happen BEFORE the empty-proposals check so that zero-yield
+  // sectors are still recorded — otherwise rotation keeps picking the same
+  // exhausted sector indefinitely.
+  if (s.selected_sector_path) {
+    try {
+      const loaded = loadSectorsState(ctx.run.rootPath);
+      if (loaded) {
+        recordScanResultCore(loaded.state, s.selected_sector_path, s.scout_cycles, rawProposals.length);
+        atomicWriteJsonSync(loaded.filePath, loaded.state);
+      }
+    } catch (err) {
+      console.warn(`[promptwheel] record sector scan stats: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    s.current_sector_path = s.selected_sector_path;
+    s.selected_sector_path = undefined;
+  }
+
   if (rawProposals.length === 0) {
     if (s.scout_retries < MAX_SCOUT_RETRIES) {
       s.scout_retries++;
@@ -130,21 +148,6 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
       new_phase: 'DONE',
       message: 'No proposals in scout output after all retries, transitioning to DONE',
     };
-  }
-
-  // Update sector scan stats if a sector was selected for this cycle
-  if (s.selected_sector_path) {
-    try {
-      const loaded = loadSectorsState(ctx.run.rootPath);
-      if (loaded) {
-        recordScanResultCore(loaded.state, s.selected_sector_path, s.scout_cycles, rawProposals.length);
-        atomicWriteJsonSync(loaded.filePath, loaded.state);
-      }
-    } catch (err) {
-      console.warn(`[promptwheel] record sector scan stats: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    s.current_sector_path = s.selected_sector_path;
-    s.selected_sector_path = undefined;
   }
 
   // skip_review: create tickets directly without adversarial review pass

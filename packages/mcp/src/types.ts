@@ -116,6 +116,8 @@ export interface RunState {
 
   // Config
   scope: string;
+  /** Original user-provided scope — preserved across sector rotations */
+  config_scope: string;
   formula: string | null;
   categories: string[];
   min_confidence: number;

@@ -674,6 +674,50 @@ describe('advance — dry_run mode', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Sector rotation scope preservation
+// ---------------------------------------------------------------------------
+
+describe('advance — sector rotation respects config_scope', () => {
+  it('does not overwrite scope when user provides explicit non-catch-all scope', async () => {
+    startRun({ scope: 'packages/**' });
+    const s = run.require();
+
+    expect(s.config_scope).toBe('packages/**');
+    expect(s.scope).toBe('packages/**');
+
+    const resp = await advance(ctx());
+
+    // After advance, scope should still be the user's explicit scope
+    expect(s.scope).toBe('packages/**');
+    expect(resp.constraints.allowed_paths).toContain('packages/**');
+  });
+
+  it('allows sector rotation when scope is default catch-all', async () => {
+    startRun(); // default scope = '**'
+    const s = run.require();
+
+    expect(s.config_scope).toBe('**');
+
+    // Scope may be changed by sector rotation (if sectors.json exists) or stay as '**'
+    // Either way, config_scope should remain unchanged
+    await advance(ctx());
+    expect(s.config_scope).toBe('**');
+  });
+
+  it('backfills config_scope for legacy sessions missing it', () => {
+    startRun({ scope: 'src/**' });
+    const s = run.require();
+
+    // Simulate a legacy session state missing config_scope
+    delete (s as Record<string, unknown>).config_scope;
+
+    // require() should backfill from scope
+    const backfilled = run.require();
+    expect(backfilled.config_scope).toBe('src/**');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // qa_commands session-level
 // ---------------------------------------------------------------------------
 

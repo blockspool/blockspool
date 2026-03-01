@@ -293,18 +293,28 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
 
   // Sector rotation: use core pickNextSector for full 9-tiebreaker sort
   // Skip when a trajectory is active — trajectory scope takes priority
+  // Skip when user provides explicit (non-catch-all) scope — honor their restriction
   if (!s.active_trajectory) {
-    try {
-      const sectorsState = loadSectorsState(ctx.project.rootPath);
-      if (sectorsState) {
-        const picked = pickNextSectorCore(sectorsState, s.scout_cycles);
-        if (picked) {
-          s.scope = picked.scope;
-          s.selected_sector_path = picked.sector.path;
+    const userScope = s.config_scope;
+    const isCatchAll = !userScope || userScope === '**' || userScope === '*';
+
+    if (isCatchAll) {
+      // No user restriction — use sector rotation to focus each cycle
+      try {
+        const sectorsState = loadSectorsState(ctx.project.rootPath);
+        if (sectorsState) {
+          const picked = pickNextSectorCore(sectorsState, s.scout_cycles);
+          if (picked) {
+            s.scope = picked.scope;
+            s.selected_sector_path = picked.sector.path;
+          }
         }
+      } catch (err) {
+        run.appendEvent('SECTOR_ROTATION_FAILED', { error: err instanceof Error ? err.message : String(err) });
       }
-    } catch (err) {
-      run.appendEvent('SECTOR_ROTATION_FAILED', { error: err instanceof Error ? err.message : String(err) });
+    } else {
+      // User specified explicit scope — honor it, skip sector rotation
+      s.scope = userScope;
     }
   }
 

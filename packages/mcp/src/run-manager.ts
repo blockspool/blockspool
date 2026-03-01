@@ -223,6 +223,7 @@ export class RunManager {
       expires_at: expiresAt,
 
       scope: config.scope ?? SCOUT_DEFAULTS.SCOPE,
+      config_scope: config.scope ?? SCOUT_DEFAULTS.SCOPE,
       formula: config.formula ?? null,
       categories: config.categories ?? [...SCOUT_DEFAULTS.CATEGORIES],
       min_confidence: config.min_confidence ?? SCOUT_DEFAULTS.MIN_CONFIDENCE,
@@ -376,6 +377,10 @@ export class RunManager {
   require(): RunState {
     if (!this.state) {
       throw new Error('No active run. Call promptwheel_start_session first.');
+    }
+    // Backfill config_scope for sessions created before this field existed
+    if (!this.state.config_scope) {
+      this.state.config_scope = this.state.scope;
     }
     return this.state;
   }

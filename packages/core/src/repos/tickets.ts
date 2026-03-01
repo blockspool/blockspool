@@ -33,6 +33,8 @@ export interface Ticket {
   retryCount: number;
   createdAt: Date;
   updatedAt: Date;
+  /** Runtime-only metadata (not persisted). Used for symbol enrichment during deconfliction. */
+  metadata?: Record<string, unknown> | null;
 }
 
 interface TicketRow {

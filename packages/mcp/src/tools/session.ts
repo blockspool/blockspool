@@ -425,7 +425,7 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
         // Codebase index stats
         const indexStats = s.codebase_index ? {
           modules_indexed: s.codebase_index.modules.length,
-          files_scanned: s.codebase_index.modules.reduce((sum, m) => sum + m.files.length, 0),
+          files_scanned: s.codebase_index.modules.reduce((sum, m) => sum + (m.production_file_count ?? m.file_count ?? 0), 0),
         } : undefined;
 
         return {

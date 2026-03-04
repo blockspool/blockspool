@@ -6,7 +6,7 @@
 
 **Orchestrate AI coding agents. Plan, execute, learn, repeat.**
 
-PromptWheel coordinates autonomous coding agents across your codebase — executing in parallel, learning across runs, and producing draft PRs you review before merging. Every session builds on the last — sectors rotate, learnings accumulate, formulas adapt.
+PromptWheel coordinates autonomous coding agents across your codebase — executing in parallel, learning across runs, and producing draft PRs you review before merging.
 
 ---
 
@@ -42,7 +42,7 @@ promptwheel --hours 8 --batch-size 30
 promptwheel --plan
 ```
 
-Also works with [Codex](docs/authentication.md) (`--codex`), [Kimi](docs/authentication.md) (`--kimi`), and [local models](docs/authentication.md) (`--local`).
+Also works with [Codex](docs/authentication.md) (`--codex`).
 
 ---
 
@@ -52,19 +52,14 @@ PromptWheel isn't a one-shot tool. Each session compounds on the last:
 
 ```
 Session 1                    Session 5                    Session 20
-Scout everywhere             Sectors rotate focus         High-yield sectors targeted
-Execute, learn from failures Learnings prevent repeats    Polished sectors auto-skipped
-Track what works             Formulas adapt (UCB1)        Category confidence tuned
-                             Deep review triggers         Feedback loop tightening
+Scout everywhere             Focus shifts to weak areas   High-yield areas targeted
+Execute, learn from failures Learnings prevent repeats    Confidence tuned per category
+Track what works             Drill generates trajectories Feedback loop tightening
 ```
-
-**Sectors** — Your codebase is divided into logical regions. Each run focuses on different sectors using EMA-weighted rotation, concentrating effort where proposals succeed and skipping exhausted areas.
 
 **Learnings** — Failures and successes persist across sessions with temporal decay. Relevant learnings are injected into future prompts so the same mistakes aren't repeated.
 
-**Formula adaptation** — Built-in formulas (security, tests, types, cleanup, docs, deep) rotate using UCB1 bandit scoring — balancing what's worked before with exploration of less-tried approaches.
-
-**Session arc** — Long runs progress through warmup (conservative), main (full rotation with deep triggers), and cooldown (light cleanup) phases automatically.
+**Drill** — In spin mode, PromptWheel auto-generates multi-step trajectories from scout proposals, sequencing related improvements and adapting ambition based on completion history.
 
 ---
 
@@ -118,21 +113,6 @@ Configure in `.promptwheel/config.json`:
 
 ---
 
-## Formulas
-
-Repeatable recipes for what to look for:
-
-```bash
-promptwheel --formula security-audit   # OWASP vulnerabilities
-promptwheel --formula test-coverage    # Missing unit tests
-promptwheel --formula type-safety      # Remove any/unknown casts
-promptwheel --formula cleanup          # Dead code, unused imports
-promptwheel --formula docs             # Documentation gaps
-promptwheel --deep                     # Architectural review
-```
-
-Custom formulas live in `.promptwheel/formulas/` as YAML files with scope, categories, confidence thresholds, and optional measurement targets.
-
 ## Integrations
 
 Connect external MCP tools that run on a schedule during spin mode:
@@ -177,11 +157,11 @@ Scout ──> Filter ──> Execute (parallel) ──> QA ──> PR
   └──── next cycle (sectors rotate, learnings grow) ─┘
 ```
 
-1. **Scout** — scans a sector for improvements using the active formula
+1. **Scout** — scans your codebase for improvements
 2. **Filter** — dedup, impact scoring, adversarial review, trust ladder
 3. **Execute** — parallel tickets in isolated git worktrees
 4. **QA** — typecheck, tests, lint (retries with test-fix on failure)
-5. **PR** — draft PR per ticket, or batched into milestone PRs
+5. **PR** — draft PR per ticket, or direct commits
 
 ---
 
@@ -191,15 +171,13 @@ Scout ──> Filter ──> Execute (parallel) ──> QA ──> PR
 /promptwheel:run                         Spin+drill (default)
 /promptwheel:run plan                    Planning mode (approve first)
 /promptwheel:run hours=4                 Timed spin
-/promptwheel:run formula=security-audit  Focused formula
 /promptwheel:run deep                    Architectural review
 /promptwheel:trajectory activate <name>  Start a trajectory
 /promptwheel:status                      Check progress
-/promptwheel:analytics                   View system metrics
 /promptwheel:nudge hint="focus on auth"  Steer mid-run
 ```
 
-See [Plugin Reference](docs/plugin.md) for all 14 slash commands.
+See [Plugin Reference](docs/plugin.md) for all slash commands.
 
 ---
 
@@ -209,12 +187,10 @@ See [Plugin Reference](docs/plugin.md) for all 14 slash commands.
 promptwheel                     # Spin+drill (default)
 promptwheel --hours 4           # Timed spin
 promptwheel --plan              # Planning mode (scout, approve, execute)
-promptwheel --formula <name>    # Use a specific formula
 promptwheel --deep              # Architectural review
 promptwheel --dry-run           # Scout only, no execution
 promptwheel nudge "hint"        # Steer a running session
 promptwheel status              # View current state
-promptwheel doctor              # Check prerequisites
 ```
 
 See [CLI Reference](docs/cli-reference.md) for the complete list.
@@ -225,7 +201,7 @@ See [CLI Reference](docs/cli-reference.md) for the complete list.
 
 - **Node.js 18+**
 - **Git repository**
-- **Claude Code** (plugin) or an **API key** (Anthropic, OpenAI, Moonshot, or local)
+- **Claude Code** (plugin) or an **Anthropic API key**
 
 ---
 
@@ -244,7 +220,7 @@ PromptWheel is an orchestration layer. It coordinates autonomous agents in paral
 Every change runs through typecheck and tests. Failed tickets are blocked, not merged. Scope enforcement sandboxes each ticket. All PRs are drafts by default.
 
 **How much does it cost?**
-PromptWheel is free and open source. It uses your existing AI credentials. The local backend (`--local`) is completely free.
+PromptWheel is free and open source. It uses your existing Claude Code subscription or Anthropic API key.
 
 ---
 
@@ -261,5 +237,5 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>PromptWheel v0.7.35</b>
+  <b>PromptWheel v0.7.36</b>
 </p>

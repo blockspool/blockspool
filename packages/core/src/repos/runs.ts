@@ -50,7 +50,7 @@ function rowToRun(row: RunRow): Run {
     startedAt: row.started_at ? new Date(row.started_at) : null,
     completedAt: row.completed_at ? new Date(row.completed_at) : null,
     error: row.error,
-    metadata: row.metadata ? JSON.parse(row.metadata) : {},
+    metadata: row.metadata ? (() => { try { return JSON.parse(row.metadata!); } catch { return {}; } })() : {},
     createdAt: new Date(row.created_at),
   };
 }

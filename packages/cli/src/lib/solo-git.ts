@@ -4,7 +4,11 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { SymbolRange } from '@promptwheel/core/codebase-index/shared';
+import { exec, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 /**
  * Mutex for serializing git operations on the main repo.
@@ -28,10 +32,7 @@ export async function gitExec(
   cmd: string,
   opts: { cwd: string; encoding?: 'utf-8'; maxBuffer?: number; stdio?: 'ignore' }
 ): Promise<string> {
-  const { exec } = await import('child_process');
-  const { promisify } = await import('util');
-  const execPromise = promisify(exec);
-  const result = await execPromise(cmd, {
+  const result = await execAsync(cmd, {
     cwd: opts.cwd,
     encoding: opts.encoding || 'utf-8',
     maxBuffer: opts.maxBuffer || 10 * 1024 * 1024,
@@ -49,10 +50,7 @@ export async function gitExecFile(
   args: string[],
   opts: { cwd: string },
 ): Promise<string> {
-  const { execFile } = await import('child_process');
-  const { promisify } = await import('util');
-  const execFilePromise = promisify(execFile);
-  const result = await execFilePromise(cmd, args, {
+  const result = await execFileAsync(cmd, args, {
     cwd: opts.cwd,
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
@@ -66,7 +64,7 @@ export async function gitExecFile(
 export async function cleanupWorktree(repoRoot: string, worktreePath: string) {
   try {
     if (fs.existsSync(worktreePath)) {
-      await gitExec(`git worktree remove --force "${worktreePath}"`, { cwd: repoRoot });
+      await gitExecFile('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
     }
   } catch {
     // Ignore worktree removal errors
@@ -78,7 +76,7 @@ export async function cleanupWorktree(repoRoot: string, worktreePath: string) {
  */
 export async function deleteTicketBranch(repoRoot: string, branchName: string) {
   try {
-    await gitExec(`git branch -D "${branchName}"`, { cwd: repoRoot });
+    await gitExecFile('git', ['branch', '-D', branchName], { cwd: repoRoot });
   } catch {
     // Branch may already be deleted
   }
@@ -149,24 +147,24 @@ export async function createMilestoneBranch(
 
     // Clean up any existing milestone worktree
     if (fs.existsSync(milestoneWorktreePath)) {
-      await gitExec(`git worktree remove --force "${milestoneWorktreePath}"`, { cwd: repoRoot });
+      await gitExecFile('git', ['worktree', 'remove', '--force', milestoneWorktreePath], { cwd: repoRoot });
     }
 
     // Fetch latest
     try {
-      await gitExec(`git fetch origin ${baseBranch}`, { cwd: repoRoot });
+      await gitExecFile('git', ['fetch', 'origin', baseBranch], { cwd: repoRoot });
     } catch {
       // Continue with what we have
     }
 
     // Create milestone branch from origin/baseBranch
     try {
-      await gitExec(`git branch "${milestoneBranch}" "origin/${baseBranch}"`, { cwd: repoRoot });
+      await gitExecFile('git', ['branch', milestoneBranch, `origin/${baseBranch}`], { cwd: repoRoot });
     } catch {
       // Branch may already exist
     }
 
-    await gitExec(`git worktree add "${milestoneWorktreePath}" "${milestoneBranch}"`, { cwd: repoRoot });
+    await gitExecFile('git', ['worktree', 'add', milestoneWorktreePath, milestoneBranch], { cwd: repoRoot });
   });
 
   return { milestoneBranch, milestoneWorktreePath };
@@ -175,74 +173,13 @@ export async function createMilestoneBranch(
 /**
  * Attempt to resolve rebase conflicts using AST symbol ranges.
  *
- * For each conflicting file, reads base/ours/theirs from git's index stages,
- * loads symbol data from the AST cache, and tries structural resolution
- * (disjoint symbol blocks → safe to combine both changes).
- *
- * Returns true if ALL conflicts were resolved and rebase can continue.
- * Returns false if any conflict couldn't be structurally resolved.
- */
-async function tryResolveRebaseConflicts(
-  cwd: string,
-  symbolsByFile: Record<string, SymbolRange[]>,
-): Promise<boolean> {
-  // Lazy import to avoid circular dependency
-  const { tryStructuralMerge } = await import('@promptwheel/core/waves/shared');
-
-  // Get list of conflicting files (unmerged entries)
-  let conflictOutput: string;
-  try {
-    conflictOutput = await gitExec('git diff --name-only --diff-filter=U', { cwd });
-  } catch {
-    return false;
-  }
-
-  const conflictingFiles = conflictOutput.trim().split('\n').filter(Boolean);
-  if (conflictingFiles.length === 0) return false;
-
-  for (const file of conflictingFiles) {
-    // Get base/ours/theirs from git index stages
-    let base: string, ours: string, theirs: string;
-    try {
-      base = await gitExec(`git show :1:${file}`, { cwd });
-      ours = await gitExec(`git show :2:${file}`, { cwd });
-      theirs = await gitExec(`git show :3:${file}`, { cwd });
-    } catch {
-      return false; // Can't read versions — bail
-    }
-
-    // Get symbol data for this file from AST cache
-    const symbols = symbolsByFile[file];
-    if (!symbols || symbols.length === 0) return false;
-
-    // Use the same symbols for all three versions — conservative assumption.
-    // If symbol structure changed, tryStructuralMerge detects the mismatch
-    // (different block count/names) and returns null.
-    const resolved = tryStructuralMerge(base, ours, theirs, symbols, symbols, symbols);
-    if (resolved === null) return false;
-
-    // Write resolved content and stage it
-    const absPath = path.join(cwd, file);
-    fs.writeFileSync(absPath, resolved, 'utf-8');
-    await gitExecFile('git', ['add', file], { cwd });
-  }
-
-  return true;
-}
-
-/**
  * Merge a ticket branch into the milestone branch under git mutex.
  * Returns success/conflict status.
- *
- * When symbolsByFile is provided (from AST cache), attempts structural
- * merge resolution for rebase conflicts where both sides modified
- * different functions in the same file.
  */
 export async function mergeTicketToMilestone(
   repoRoot: string,
   ticketBranch: string,
   milestoneWorktreePath: string,
-  symbolsByFile?: Record<string, SymbolRange[]>,
 ): Promise<{ success: boolean; conflicted: boolean }> {
   return withGitMutex(async () => {
     try {
@@ -253,13 +190,13 @@ export async function mergeTicketToMilestone(
     } catch {
       // Abort the failed merge
       try {
-        await gitExec('git merge --abort', { cwd: milestoneWorktreePath });
+        await gitExecFile('git', ['merge', '--abort'], { cwd: milestoneWorktreePath });
       } catch {
         // Ignore abort errors
       }
 
       // Retry: rebase ticket branch onto milestone, then merge
-      const milestoneBranchName = (await gitExec('git rev-parse --abbrev-ref HEAD', {
+      const milestoneBranchName = (await gitExecFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
         cwd: milestoneWorktreePath,
       })).trim();
       try {
@@ -279,29 +216,11 @@ export async function mergeTicketToMilestone(
         });
         return { success: true, conflicted: false };
       } catch {
-        // Rebase or merge-after-rebase failed — try structural resolution
-        if (symbolsByFile && Object.keys(symbolsByFile).length > 0) {
-          try {
-            const resolved = await tryResolveRebaseConflicts(repoRoot, symbolsByFile);
-            if (resolved) {
-              // All conflicts structurally resolved — continue the rebase
-              await gitExec('git rebase --continue', { cwd: repoRoot });
-              // Switch back to milestone branch
-              await gitExecFile('git', ['checkout', milestoneBranchName], { cwd: milestoneWorktreePath });
-              // Try merge again
-              await gitExecFile('git', ['merge', '--no-ff', ticketBranch, '-m', `Merge ${ticketBranch}`], {
-                cwd: milestoneWorktreePath,
-              });
-              return { success: true, conflicted: false };
-            }
-          } catch {
-            // Structural resolution failed — fall through to abort
-          }
-        }
+        // Rebase failed — abort and report conflict
 
         // Abort any in-progress rebase or merge
-        try { await gitExec('git rebase --abort', { cwd: repoRoot }); } catch { /* ignore */ }
-        try { await gitExec('git merge --abort', { cwd: milestoneWorktreePath }); } catch { /* ignore */ }
+        try { await gitExecFile('git', ['rebase', '--abort'], { cwd: repoRoot }); } catch { /* ignore */ }
+        try { await gitExecFile('git', ['merge', '--abort'], { cwd: milestoneWorktreePath }); } catch { /* ignore */ }
         // Restore HEAD to milestone branch if rebase left it on ticket branch
         try {
           await gitExecFile('git', ['checkout', milestoneBranchName], { cwd: milestoneWorktreePath });
@@ -331,7 +250,7 @@ export async function pushAndPrMilestone(
   await assertPushSafe(milestoneWorktreePath, config?.allowedRemote);
 
   // Push the milestone branch
-  await gitExec(`git push -u origin "${milestoneBranch}"`, { cwd: milestoneWorktreePath });
+  await gitExecFile('git', ['push', '-u', 'origin', milestoneBranch], { cwd: milestoneWorktreePath });
 
   // Build PR body
   const bulletList = summaries.map(s => `- ${s}`).join('\n');
@@ -349,8 +268,8 @@ export async function pushAndPrMilestone(
   } catch {
     // PR might already exist for this branch — try to find it
     try {
-      const existing = (await gitExec(
-        `gh pr view "${milestoneBranch}" --json url --jq .url`,
+      const existing = (await gitExecFile(
+        'gh', ['pr', 'view', milestoneBranch, '--json', 'url', '--jq', '.url'],
         { cwd: milestoneWorktreePath }
       )).trim();
       if (existing.startsWith('https://')) return existing;
@@ -483,9 +402,8 @@ export async function checkPrStatuses(
   repoRoot: string,
   prUrls: string[],
 ): Promise<Array<{ url: string; state: 'open' | 'merged' | 'closed'; mergedAt?: string; branch?: string }>> {
-  const results: Array<{ url: string; state: 'open' | 'merged' | 'closed'; mergedAt?: string; branch?: string }> = [];
-  for (const url of prUrls) {
-    try {
+  const settled = await Promise.allSettled(
+    prUrls.map(async (url) => {
       const raw = await gitExecFile(
         'gh', ['pr', 'view', url, '--json', 'state,mergedAt,headRefName'],
         { cwd: repoRoot },
@@ -494,10 +412,13 @@ export async function checkPrStatuses(
       const state = parsed.state === 'MERGED' ? 'merged' as const
         : parsed.state === 'CLOSED' ? 'closed' as const
         : 'open' as const;
-      results.push({ url, state, mergedAt: parsed.mergedAt || undefined, branch: parsed.headRefName || undefined });
-    } catch {
-      // Non-fatal — skip this PR
-    }
+      return { url, state, mergedAt: parsed.mergedAt || undefined, branch: parsed.headRefName || undefined };
+    }),
+  );
+  // Collect fulfilled results, skip rejected (non-fatal per-PR errors)
+  const results: Array<{ url: string; state: 'open' | 'merged' | 'closed'; mergedAt?: string; branch?: string }> = [];
+  for (const r of settled) {
+    if (r.status === 'fulfilled') results.push(r.value);
   }
   return results;
 }

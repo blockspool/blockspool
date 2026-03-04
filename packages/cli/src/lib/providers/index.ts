@@ -1,5 +1,5 @@
 /**
- * Generic provider registry for CLI backends (Claude, Codex, Kimi, OpenAI-Local, etc.)
+ * Generic provider registry for CLI backends (Claude, Codex, etc.)
  *
  * Each provider defines metadata, auth requirements, and factory methods
  * for creating scout and execution backends.
@@ -10,16 +10,12 @@ export type { ProviderConfig, ProviderFactoryOpts, ExecutionFactoryOpts } from '
 import type { ProviderConfig } from './types.js';
 import { claude } from './claude.js';
 import { codex } from './codex.js';
-import { kimi } from './kimi.js';
-import { openaiLocal } from './openai-local.js';
 import { anthropicBatch } from './anthropic-batch.js';
 
 const providers = new Map<string, ProviderConfig>();
 
 providers.set('claude', claude);
 providers.set('codex', codex);
-providers.set('kimi', kimi);
-providers.set('openai-local', openaiLocal);
 providers.set('anthropic-batch', anthropicBatch);
 
 /**

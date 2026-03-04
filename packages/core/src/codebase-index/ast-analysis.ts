@@ -8,9 +8,7 @@
  * The ast-grep parse() function is synchronous — no async needed.
  */
 
-import type { AstAnalysisResult, ExportEntry, AstFinding, SymbolRange, CallEdge } from './shared.js';
-import type { AstPattern } from './ast-patterns.js';
-import { scanPatterns } from './ast-patterns.js';
+import type { AstAnalysisResult, ExportEntry, SymbolRange, CallEdge } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Types for dependency injection
@@ -89,8 +87,8 @@ export function analyzeFileAst(
   filePath: string,
   langKey: string,
   astGrep: AstGrepModule,
-  patterns?: AstPattern[],
-  symbols?: SymbolRange[],
+  _patterns?: unknown,
+  _symbols?: SymbolRange[],
 ): AstAnalysisResult | null {
   try {
     const lang = astGrep.Lang[langKey];
@@ -100,11 +98,7 @@ export function analyzeFileAst(
     const exports = extractExportsAst(root, langKey);
     const importedNames = extractImportedNames(root, langKey);
     const complexity = estimateCyclomaticComplexity(root, langKey);
-    const findings: AstFinding[] | undefined = patterns
-      ? scanPatterns(root, langKey, content, patterns, symbols) || undefined
-      : undefined;
     const result: AstAnalysisResult = { imports, exports, complexity };
-    if (findings && findings.length > 0) result.findings = findings;
     if (importedNames.length > 0) result.importedNames = importedNames;
     return result;
   } catch {
@@ -642,6 +636,7 @@ export function extractTopLevelSymbols(
 
     const symbols: SymbolRange[] = [];
     const seen = new Set<string>();
+    let searchFrom = 0; // Track position to avoid indexOf returning first occurrence for duplicates
 
     // Walk only direct children of root (top-level declarations)
     const topChildren = root.children();
@@ -667,9 +662,11 @@ export function extractTopLevelSymbols(
         /* eslint-enable security/detect-unsafe-regex */
       }
 
-      // Compute line ranges from text positions within content
-      const startOffset = content.indexOf(text);
+      // Compute line ranges from text positions within content.
+      // Search forward from the last match to handle duplicate text correctly.
+      const startOffset = content.indexOf(text, searchFrom);
       if (startOffset === -1) continue;
+      searchFrom = startOffset + text.length;
       const startLine = offsetToLine(content, startOffset);
       const endLine = offsetToLine(content, startOffset + text.length);
 
@@ -765,10 +762,15 @@ export function extractCallEdges(
 
     // Find all call expressions
     const callNodes = findAllByKind(root, 'call_expression');
+    let callSearchFrom = 0;
     for (const callNode of callNodes) {
       if (edges.length >= MAX_CALL_EDGES_PER_FILE) break;
 
       const callText = callNode.text();
+      // Track search position to handle duplicate call text correctly
+      const callOffset = content.indexOf(callText, callSearchFrom);
+      if (callOffset !== -1) callSearchFrom = callOffset + 1;
+
       // Extract the function name being called
       // Handles: foo(), bar.baz(), ns.func()
       let callee: string | null = null;
@@ -781,7 +783,7 @@ export function extractCallEdges(
         // Check if obj is a namespace import
         if (importBindings.has(obj)) {
           callee = method;
-          const callLine = offsetToLine(content, content.indexOf(callText));
+          const callLine = callOffset !== -1 ? offsetToLine(content, callOffset) : 0;
           const caller = findEnclosingFunction(callLine, symbols);
           if (caller) {
             edges.push({
@@ -804,7 +806,7 @@ export function extractCallEdges(
           continue;
         }
 
-        const callLine = offsetToLine(content, content.indexOf(callText));
+        const callLine = callOffset !== -1 ? offsetToLine(content, callOffset) : 0;
         const caller = findEnclosingFunction(callLine, symbols);
         if (!caller) continue;
 

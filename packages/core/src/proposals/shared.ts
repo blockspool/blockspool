@@ -72,7 +72,7 @@ export const PROPOSALS_DEFAULTS = {
   /** Minimum confidence to pass (0 = fundamentally flawed) */
   MIN_CONFIDENCE: 1,
   /** Default minimum impact score filter */
-  DEFAULT_MIN_IMPACT: 3,
+  DEFAULT_MIN_IMPACT: 5,
   /** Dedup similarity threshold */
   DEDUP_THRESHOLD: 0.6,
 } as const;

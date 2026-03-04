@@ -1,7 +1,7 @@
 /**
  * Wave scheduling utilities for conflict-free parallel execution.
  *
- * Pure algorithms (conflict detection, partitioning, escalation) live in
+ * Pure algorithms (conflict detection, partitioning) live in
  * @promptwheel/core/waves/shared. This file provides metric instrumentation
  * and re-exports.
  */
@@ -28,12 +28,6 @@ export {
   hasSharedParentConflict,
   touchesSamePackage,
   proposalsConflict,
-  hasImportChainConflict,
-  buildScoutEscalation,
-  enrichWithSymbols,
-  predictMergeConflict,
-  orderMergeSequence,
-  type SymbolMap,
 } from '@promptwheel/core/waves/shared';
 
 // Import for local use

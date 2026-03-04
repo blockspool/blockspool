@@ -27,8 +27,6 @@ const CODEX_PATHS = ['AGENTS.md'];
 const BACKEND_PATHS: Record<string, string[]> = {
   claude: CLAUDE_PATHS,
   codex: CODEX_PATHS,
-  kimi: ['KIMI.md'],
-  'openai-local': ['CLAUDE.md'],
 };
 
 /**
@@ -54,7 +52,6 @@ export function resolveGuidelinesPaths(
 export function getBaselineFilename(backend: GuidelinesBackend = 'claude'): string {
   const BACKEND_FILENAMES: Record<string, string> = {
     codex: 'AGENTS.md',
-    kimi: 'KIMI.md',
   };
   return BACKEND_FILENAMES[backend] ?? 'CLAUDE.md';
 }

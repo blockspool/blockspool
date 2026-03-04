@@ -65,6 +65,8 @@ export interface ScoutRepoOptions {
   path?: string;
   /** Glob pattern for files */
   scope?: string;
+  /** Glob patterns to exclude from scanning */
+  exclude?: string[];
   /** Filter to categories */
   types?: ProposalCategory[];
   /** Categories to exclude */
@@ -232,6 +234,7 @@ export async function scoutRepo(
       scope: opts.scope ?? 'src/**',
       types: opts.types,
       excludeTypes: opts.excludeTypes,
+      exclude: opts.exclude,
       maxProposals: opts.maxProposals ?? 10,
       minConfidence: opts.minConfidence ?? 50,
       projectPath: repoRoot,

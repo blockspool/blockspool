@@ -170,19 +170,6 @@ describe('loadGoals', () => {
     expect(goals.some(g => g.name === 'valid')).toBe(true);
   });
 
-  it('parses min_confidence from YAML', () => {
-    writeGoalYaml('with-conf.yaml', [
-      'name: with-confidence',
-      'min_confidence: 70',
-      'measure_cmd: echo 1',
-      'measure_target: 10',
-      'measure_direction: up',
-    ].join('\n'));
-
-    const goals = loadGoals(tmpDir);
-    expect(goals).toHaveLength(1);
-    expect(goals[0].minConfidence).toBe(70);
-  });
 });
 
 // ---------------------------------------------------------------------------

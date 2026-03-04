@@ -22,7 +22,7 @@ import { DEFAULT_AUTO_CONFIG } from './solo-config.js';
 
 // Re-export so existing importers don't break
 export { sleep, normalizeTitle, titleSimilarity, isDuplicateProposal, getDeduplicationContext, getAdaptiveParallelCount } from './dedup.js';
-export { partitionIntoWaves, buildScoutEscalation } from './wave-scheduling.js';
+export { partitionIntoWaves } from './wave-scheduling.js';
 
 // New modular imports
 import { initSession, shouldContinue, type AutoModeOptions } from './solo-auto-state.js';
@@ -32,9 +32,7 @@ import { filterProposals } from './solo-auto-filter.js';
 import { executeProposals } from './solo-auto-execute.js';
 import { finalizeSession } from './solo-auto-finalize.js';
 import { maybeDrillGenerateTrajectory, tryPreVerifyTrajectoryStep, computeAmbitionLevel } from './solo-auto-drill.js';
-import { recordExecutionYield } from './lens-rotation.js';
-import { computeCoverage } from './sectors.js';
-import type { ProgressSnapshot, SectorMapData, SectorMapRow } from './display-adapter.js';
+import type { ProgressSnapshot } from './display-adapter.js';
 
 /**
  * Run auto work mode - process ready tickets in parallel
@@ -324,7 +322,6 @@ export async function runAutoWorkMode(options: {
  * Defaults to spin mode with drill: scout, fix, repeat.
  * With --plan: planning mode — scout all → roadmap → approve → execute → done.
  *
- * In daemon mode, returns the exit code instead of calling process.exit().
  */
 export async function runAutoMode(options: AutoModeOptions): Promise<number> {
   const state = await initSession(options);
@@ -337,16 +334,12 @@ export async function runAutoMode(options: AutoModeOptions): Promise<number> {
     }
 
     const exitCode = await finalizeSession(state);
-    if (!options.daemon) {
-      process.exit(exitCode);
-    }
+    process.exit(exitCode);
     return exitCode;
   } catch (err) {
     // Best-effort finalization even on error — push milestone PRs, save state
     // finalizeSession handles its own resource cleanup in a finally block
-    let exitCode = 1;
-    try { exitCode = await finalizeSession(state); } catch { /* already cleaned up */ }
-    if (options.daemon) return exitCode;
+    try { await finalizeSession(state); } catch { /* already cleaned up */ }
     throw err;
   }
 }
@@ -367,96 +360,8 @@ function buildProgressSnapshot(
     ticketsActive: 0,
     elapsedMs: Date.now() - state.startTime,
     timeBudgetMs: state.totalMinutes ? state.totalMinutes * 60_000 : undefined,
-    sectorCoverage: state.sectorState
-      ? (() => { const c = computeCoverage(state.sectorState); return { scanned: c.scannedSectors, total: c.totalSectors, percent: c.sectorPercent }; })()
-      : undefined,
     cycleProgress: state._cycleProgress ?? undefined,
   };
-}
-
-function buildSectorMapData(
-  state: import('./solo-auto-state.js').AutoSessionState,
-): SectorMapData | null {
-  if (!state.sectorState) return null;
-
-  const sectors: SectorMapRow[] = state.sectorState.sectors
-    .filter(s => s.production)
-    .map(s => {
-      const total = s.successCount + s.failureCount;
-      let status: SectorMapRow['status'];
-      if (s.path === state.currentSectorId) status = 'scanning';
-      else if (s.polishedAt && s.polishedAt > 0) status = 'polished';
-      else if (s.scanCount > 0) status = 'scanned';
-      else status = 'pending';
-
-      return {
-        path: s.path,
-        fileCount: s.productionFileCount,
-        scans: s.scanCount,
-        yield: s.proposalYield,
-        successRate: total > 0 ? s.successCount / total : 0,
-        status,
-        isCurrent: s.path === state.currentSectorId,
-      };
-    });
-
-  const cov = computeCoverage(state.sectorState);
-  const coverage = {
-    scannedSectors: cov.scannedSectors,
-    totalSectors: cov.totalSectors,
-    scannedFiles: cov.scannedFiles,
-    totalFiles: cov.totalFiles,
-    percent: cov.percent,
-  };
-
-  // Lens matrix coverage: covered pairs / (lenses × production sectors)
-  const productionSectors = sectors.length;
-  const totalPairs = state.lensRotation.length * productionSectors;
-  let coveredPairs = 0;
-  for (const scanned of state.lensMatrix.values()) {
-    coveredPairs += scanned.size;
-  }
-  const lens = {
-    current: state.currentLens,
-    index: state.lensIndex,
-    total: state.lensRotation.length,
-    matrixCoverage: totalPairs > 0 ? coveredPairs / totalPairs : 0,
-  };
-
-  // Drill info
-  let drill: SectorMapData['drill'] = null;
-  if (state.drillMode) {
-    const traj = state.activeTrajectory;
-    const trajState = state.activeTrajectoryState;
-    const step = state.currentTrajectoryStep;
-    drill = {
-      active: !!traj,
-      trajectoryName: traj?.name,
-      stepProgress: traj && trajState
-        ? `${Object.values(trajState.stepStates).filter(s => s.status === 'completed').length}/${traj.steps.length}`
-        : undefined,
-      targetSector: step?.scope,
-    };
-  }
-
-  // Aggregate stats from raw sector data
-  const prodSectors = state.sectorState.sectors.filter(s => s.production);
-  let totalScans = 0, totalSuccesses = 0, totalFailures = 0;
-  let yieldSum = 0, yieldCount = 0;
-  for (const s of prodSectors) {
-    totalScans += s.scanCount;
-    totalSuccesses += s.successCount;
-    totalFailures += s.failureCount;
-    if (s.scanCount > 0) { yieldSum += s.proposalYield; yieldCount++; }
-  }
-  const totals = {
-    totalScans,
-    totalTickets: totalSuccesses + totalFailures,
-    totalSuccesses,
-    avgYield: yieldCount > 0 ? yieldSum / yieldCount : 0,
-  };
-
-  return { sectors, coverage, lens, drill, totals };
 }
 
 /**
@@ -464,10 +369,6 @@ function buildSectorMapData(
  * Runs until Ctrl+C, --hours expires, or cycle/PR limits are hit.
  */
 async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionState): Promise<void> {
-  // Push initial sector map so the TUI map view is populated immediately
-  const initialSmd = buildSectorMapData(state);
-  if (initialSmd) state.displayAdapter.sectorMapUpdate(initialSmd);
-
   do {
     const preCycle = await runPreCycleMaintenance(state);
     if (preCycle.shouldSkipCycle) continue;
@@ -551,15 +452,10 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
       }
     }
 
-    // Reset cycle progress — null until batch data arrives, so sectorCoverage is the fallback
     state._cycleProgress = null;
     state.displayAdapter.progressUpdate(buildProgressSnapshot(state, 'scouting'));
 
     const scoutResult = await runScoutPhase(state);
-
-    // Push sector map after scout
-    const smdAfterScout = buildSectorMapData(state);
-    if (smdAfterScout) state.displayAdapter.sectorMapUpdate(smdAfterScout);
 
     if (scoutResult.shouldBreak) break;
     if (scoutResult.shouldRetry) continue;
@@ -570,7 +466,7 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
       state._pendingIntegrationProposals = [];
     }
 
-    const filterResult = await filterProposals(state, scoutResult.proposals, scoutResult.scope, scoutResult.cycleFormula);
+    const filterResult = await filterProposals(state, scoutResult.proposals, scoutResult.scope);
 
     if (filterResult.shouldBreak) break;
     // Accumulate hard-dedup-rejected titles for drill escalation
@@ -589,13 +485,7 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
     // Track execution yield per [lens, sector] — marks pairs where proposals
     // are found but consistently fail (scope too narrow, multi-file coordination, etc.)
     const completedThisCycle = state.cycleOutcomes.filter(o => o.status === 'completed').length;
-    recordExecutionYield(state, completedThisCycle, filterResult.toProcess.length);
-
     await runPostCycleMaintenance(state, filterResult.scope, scoutResult.isDocsAuditCycle);
-
-    // Push sector map after post-cycle maintenance
-    const smdAfterCycle = buildSectorMapData(state);
-    if (smdAfterCycle) state.displayAdapter.sectorMapUpdate(smdAfterCycle);
 
     // Reset progress for idle (cycle complete)
     state._cycleProgress = null;
@@ -604,23 +494,18 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
 }
 
 /**
- * Planning round — scout all sectors, present roadmap, execute approved set.
+ * Planning round — scout codebase, present roadmap, execute approved set.
  * Natural bounded end: no Ctrl+C needed.
  */
 async function runPlanningRound(state: import('./solo-auto-state.js').AutoSessionState): Promise<void> {
-  // Push initial sector map so the TUI map view is populated immediately
-  const initialSmd = buildSectorMapData(state);
-  if (initialSmd) state.displayAdapter.sectorMapUpdate(initialSmd);
-
   const { scoutAllSectors, presentRoadmap } = await import('./solo-auto-planning.js');
 
-  // Phase 1: Scout all sectors
   const { proposals, sectorsScanned } = await scoutAllSectors(state);
 
   if (state.shutdownRequested) return;
 
   state.displayAdapter.log('');
-  state.displayAdapter.log(chalk.gray(`Scanned ${sectorsScanned} sector(s), found ${proposals.length} proposal(s).`));
+  state.displayAdapter.log(chalk.gray(`Scanned ${sectorsScanned} scope(s), found ${proposals.length} proposal(s).`));
 
   // Phase 2: Present roadmap and get approval
   const { approved, cancelled } = await presentRoadmap(state, proposals);

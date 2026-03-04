@@ -5,7 +5,6 @@ import {
   EVENT_MAX_ARTIFACT_BYTES,
   maxRetriesForClass,
   extractErrorSignature,
-  recordSectorOutcome,
   recordTicketDedup,
   stringifyBoundedArtifactJson,
   toBooleanOrUndefined,
@@ -136,7 +135,6 @@ export async function handleQaPassed(ctx: EventContext, payload: Record<string, 
   // Skip PR phase when not creating PRs
   if (!s.create_prs) {
     await recordTicketDedup(ctx.db, ctx.run.rootPath, s.current_ticket_id, true);
-    recordSectorOutcome(ctx.run.rootPath, s.current_sector_path, 'success', s.codebase_index?.reverse_edges);
     ctx.run.completeTicket();
     ctx.run.appendEvent('TICKET_COMPLETED_NO_PR', payload);
     ctx.run.setPhase('NEXT_TICKET');
@@ -234,7 +232,6 @@ export async function handleQaFailed(ctx: EventContext, payload: Record<string, 
     }
     // Record failed ticket in dedup memory + sector failure
     await recordTicketDedup(ctx.db, ctx.run.rootPath, s.current_ticket_id, false, 'qa_failed', ticket);
-    recordSectorOutcome(ctx.run.rootPath, s.current_sector_path, 'failure');
     // Give up on this ticket
     if (s.current_ticket_id) {
       await repos.tickets.updateStatus(ctx.db, s.current_ticket_id, 'blocked');

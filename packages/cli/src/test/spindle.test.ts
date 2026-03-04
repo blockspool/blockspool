@@ -17,7 +17,7 @@ import {
   type SpindleConfig,
   type SpindleState,
 } from '../lib/spindle/index.js';
-import { findRepeatedPhrases } from '../lib/spindle/similarity.js';
+import { findRepeatedPhrases } from '../lib/spindle/index.js';
 
 describe('estimateTokens', () => {
   it('estimates tokens from text length', () => {

@@ -3,8 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { Formula } from '@promptwheel/core/formulas/shared';
-import type { GoalMeasurement } from '../lib/goals.js';
+import type { Goal, GoalMeasurement } from '../lib/goals.js';
 
 // We need to mock fs and child_process before importing the module under test.
 vi.mock('node:fs');
@@ -20,7 +19,7 @@ const { execFileSync } = await import('node:child_process');
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeGoal(overrides: Partial<Formula> & { measure: Formula['measure'] }): Formula {
+function makeGoal(overrides: Partial<Goal> & { measure: Goal['measure'] }): Goal {
   return {
     name: overrides.name ?? 'test-goal',
     description: overrides.description ?? 'A test goal',
@@ -55,7 +54,7 @@ describe('measureGoals', () => {
   });
 
   it('skips goals without a measure field', () => {
-    const goals: Formula[] = [
+    const goals: Goal[] = [
       { name: 'no-measure', description: 'no measure field' },
     ];
     const result = measureGoals(goals, '/repo');

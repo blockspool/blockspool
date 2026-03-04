@@ -1,12 +1,11 @@
 /**
- * Solo lifecycle commands: init, doctor, reset
+ * Solo lifecycle commands: init, reset
  */
 
 import { Command } from 'commander';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import chalk from 'chalk';
-import { createGitService } from '../lib/git.js';
 import {
   getPromptwheelDir,
   getDbPath,
@@ -20,11 +19,6 @@ import {
   withCommandAdapter,
   withOptionalCommandAdapter,
 } from '../lib/command-runtime.js';
-import {
-  runDoctorChecks,
-  formatDoctorReport,
-  formatDoctorReportJson,
-} from '../lib/doctor.js';
 
 export function registerLifecycleCommands(solo: Command): void {
   /**
@@ -86,13 +80,6 @@ export function registerLifecycleCommands(solo: Command): void {
         console.log(chalk.bold('Setup:'), chalk.gray(config.setup));
       }
 
-      // Suggest a starting formula based on project type
-      const formulaSuggestions: string[] = ['default'];
-      if (metadata.type_checker) formulaSuggestions.push('type-safety');
-      if (metadata.test_runner) formulaSuggestions.push('test-coverage');
-      if (metadata.linter) formulaSuggestions.push('cleanup');
-      console.log(chalk.bold('Formulas:'), chalk.gray(formulaSuggestions.join(', ')));
-
       console.log();
       console.log(chalk.gray(`Config: .promptwheel/config.json`));
 
@@ -100,8 +87,6 @@ export function registerLifecycleCommands(solo: Command): void {
       console.log(chalk.bold('Next steps:'));
       console.log('  promptwheel                        Run in spin mode (default)');
       console.log('  promptwheel --plan                 Scout, review roadmap, execute');
-      console.log('  promptwheel --formula deep         Architectural review');
-      console.log('  promptwheel --formula security-audit  Security scan');
     });
 
   /**
@@ -138,34 +123,6 @@ export function registerLifecycleCommands(solo: Command): void {
       } else {
         const latest = files[0];
         console.log(fs.readFileSync(path.join(reportsDir, latest), 'utf-8'));
-      }
-    });
-
-  /**
-   * solo doctor - Check prerequisites and environment
-   */
-  solo
-    .command('doctor')
-    .description('Check prerequisites and environment health')
-    .option('--json', 'Output as JSON')
-    .option('-v, --verbose', 'Show all details')
-    .action(async (options: { json?: boolean; verbose?: boolean }) => {
-      const git = createGitService();
-      const repoRoot = await git.findRepoRoot(process.cwd());
-
-      const report = await runDoctorChecks({
-        repoRoot: repoRoot ?? undefined,
-        verbose: options.verbose,
-      });
-
-      if (options.json) {
-        console.log(formatDoctorReportJson(report));
-      } else {
-        console.log(formatDoctorReport(report));
-      }
-
-      if (!report.canRun) {
-        exitCommand(1, 'Doctor checks failed');
       }
     });
 

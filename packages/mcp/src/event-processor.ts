@@ -9,7 +9,6 @@ import type { DatabaseAdapter } from '@promptwheel/core';
 import type { Project } from '@promptwheel/core';
 import { RunManager } from './run-manager.js';
 import type { EventType } from './types.js';
-import { filterAndCreateTickets } from './proposals.js';
 import { ingestTicketEvent } from './ticket-worker.js';
 import type { EventContext } from './event-helpers.js';
 
@@ -118,25 +117,6 @@ export async function processEvent(
           new_phase: 'DONE',
           message: 'Session cancelled by user',
         };
-      }
-      if (safePayload['skip_review'] === true) {
-        s.skip_review = true;
-        // If there are pending proposals waiting for review, create tickets immediately
-        if (s.pending_proposals && s.pending_proposals.length > 0) {
-          const pendingProposals = s.pending_proposals;
-          s.pending_proposals = null;
-          const result = await filterAndCreateTickets(run, db, pendingProposals);
-          if (result.created_ticket_ids.length > 0) {
-            run.setPhase('NEXT_TICKET');
-            return {
-              processed: true,
-              phase_changed: true,
-              new_phase: 'NEXT_TICKET',
-              message: `skip_review enabled, created ${result.created_ticket_ids.length} tickets from pending proposals`,
-            };
-          }
-        }
-        return { processed: true, phase_changed: false, message: 'skip_review enabled' };
       }
       return { processed: true, phase_changed: false, message: 'User override recorded' };
     }

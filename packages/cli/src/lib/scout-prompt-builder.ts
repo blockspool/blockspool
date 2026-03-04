@@ -7,12 +7,10 @@ const BLOCK_ORDER = [
   'guidelines',
   'portfolio',
   'metadata',
-  'taste',
   'goal',
   'trajectory',
   'index',
   'analysis',
-  'sectorGraph',
   'dedup',
   'cycle',
   'session',
@@ -20,7 +18,6 @@ const BLOCK_ORDER = [
   'escalation',
   'errorPatterns',
   'learnings',
-  'formula',
   'hints',
 ] as const;
 
@@ -44,11 +41,6 @@ export class ScoutPromptBuilder {
     return this;
   }
 
-  addTasteProfile(content: string): this {
-    if (content) this.blocks.set('taste', content);
-    return this;
-  }
-
   addGoalContext(content: string): this {
     if (content) this.blocks.set('goal', content);
     return this;
@@ -66,11 +58,6 @@ export class ScoutPromptBuilder {
 
   addAnalysis(content: string): this {
     if (content) this.blocks.set('analysis', content);
-    return this;
-  }
-
-  addSectorGraph(content: string): this {
-    if (content) this.blocks.set('sectorGraph', content);
     return this;
   }
 
@@ -106,11 +93,6 @@ export class ScoutPromptBuilder {
 
   addLearnings(content: string): this {
     if (content) this.blocks.set('learnings', content);
-    return this;
-  }
-
-  addFormulaPrompt(content: string): this {
-    if (content) this.blocks.set('formula', content);
     return this;
   }
 

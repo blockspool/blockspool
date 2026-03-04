@@ -288,22 +288,10 @@ describe('DirectClient — events.ndjson format', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Formula + hints via DirectClient
+// Hints via DirectClient
 // ---------------------------------------------------------------------------
 
-describe('DirectClient — formula + hints', () => {
-  it('formula affects scout prompt', async () => {
-    const client = await DirectClient.create({ projectPath: tmpDir, db });
-    client.startSession({ step_budget: 50, formula: 'security-audit' });
-
-    const resp = await client.advance();
-    expect(resp.prompt).toContain('security-audit');
-    expect(resp.prompt).toContain('OWASP');
-
-    client.endSession();
-    await client.close();
-  });
-
+describe('DirectClient — hints', () => {
   it('hints appear in scout prompt', async () => {
     const client = await DirectClient.create({ projectPath: tmpDir, db });
     client.startSession({ step_budget: 50 });

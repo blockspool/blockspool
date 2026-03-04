@@ -53,7 +53,7 @@ export {
 } from './shared.js';
 
 // Import for local use
-import type { CodebaseIndex, ModuleEntry, LargeFileEntry, ExportEntry, AstFindingEntry } from './shared.js';
+import type { CodebaseIndex, ModuleEntry, LargeFileEntry, ExportEntry } from './shared.js';
 import {
   SOURCE_EXTENSIONS,
   sampleEvenly,
@@ -66,16 +66,11 @@ import {
 } from './shared.js';
 import type { AstGrepModule as AstGrepModuleType } from './ast-analysis.js';
 import { analyzeFileAst, mapExtensionToLang, extractTopLevelSymbols, extractCallEdges, extractImportedNames } from './ast-analysis.js';
-import { loadAstCache, saveAstCache, isEntryCurrent, isFindingsCurrent, type AstCache } from './ast-cache.js';
-import { detectDeadExports, detectDeadFunctionsFused, detectStructuralIssues } from './dead-code.js';
-import { getPatterns, scanPatterns, FINDINGS_VERSION, getPatternVersions, arePatternVersionsCurrent } from './ast-patterns.js';
-import { getLangFamily } from './ast-analysis.js';
+import { loadAstCache, saveAstCache, isEntryCurrent, type AstCache } from './ast-cache.js';
 
 // Re-export format-analysis
 export { formatAnalysisForPrompt } from './format-analysis.js';
 
-// Re-export dead code analysis utilities for consumers with ts-morph data
-export { fuseCallGraphs, detectDeadFunctionsFused } from './dead-code.js';
 
 // ---------------------------------------------------------------------------
 // I/O helpers
@@ -291,13 +286,11 @@ export function buildCodebaseIndex(
 
   // Step 2c: AST analysis — when ast-grep is available, extract exports and complexity
   let analysisBackend: 'regex' | 'ast-grep' = 'regex';
-  const allFindings: AstFindingEntry[] = [];
   if (astGrepModule) {
     analysisBackend = 'ast-grep';
     const astCache = loadAstCache(projectRoot);
     const updatedCache: AstCache = { ...astCache };
     const allCurrentFiles = new Set<string>();
-    const patterns = getPatterns();
 
     // Per-module: aggregate exports and complexity from individual files
     for (const mod of modules) {
@@ -324,55 +317,15 @@ export function buildCodebaseIndex(
           totalComplexity += cached.complexity;
           filesAnalyzed++;
 
-          const langFamily = getLangFamily(langKey);
-          const patternsCurrent = arePatternVersionsCurrent(cached.patternVersions, langFamily)
-            || isFindingsCurrent(cached, FINDINGS_VERSION); // fallback for pre-patternVersions cache
-          if (patternsCurrent) {
-            // State A: unchanged + findings current → full cache hit
-            if (cached.findings) {
-              for (const f of cached.findings) {
-                allFindings.push({ file: relFile, patternId: f.patternId, message: f.message, line: f.line, severity: f.severity, category: f.category });
-              }
-            }
-            // Lazy backfill: populate symbols if missing from older cache entries
-            if (!cached.symbols) {
-              try {
-                const content = fs.readFileSync(filePath, 'utf-8');
-                const symbols = extractTopLevelSymbols(content, langKey, astGrepModule);
-                if (symbols) {
-                  updatedCache[relFile] = { ...cached, symbols };
-                }
-              } catch { /* non-fatal */ }
-            }
-          } else {
-            // State B: unchanged + findings stale → re-parse for patterns (+ symbols if missing)
+          // Lazy backfill: populate symbols if missing from older cache entries
+          if (!cached.symbols) {
             try {
               const content = fs.readFileSync(filePath, 'utf-8');
-              const langId = astGrepModule.Lang[langKey];
-              if (langId) {
-                const root = astGrepModule.parse(langId, content).root();
-                // Backfill symbols and importedNames while we have the content loaded
-                const symbols = cached.symbols ?? extractTopLevelSymbols(content, langKey, astGrepModule) ?? undefined;
-                const importedNames = cached.importedNames ?? (extractImportedNames(root, langKey) || undefined);
-                const findings = scanPatterns(root, langKey, content, patterns, symbols);
-                const storedFindings = findings.length > 0 ? findings : undefined;
-                updatedCache[relFile] = {
-                  ...cached,
-                  findings: storedFindings,
-                  findingsVersion: FINDINGS_VERSION,
-                  patternVersions: getPatternVersions(),
-                  symbols,
-                  importedNames: importedNames?.length ? importedNames : undefined,
-                };
-                if (storedFindings) {
-                  for (const f of storedFindings) {
-                    allFindings.push({ file: relFile, patternId: f.patternId, message: f.message, line: f.line, severity: f.severity, category: f.category });
-                  }
-                }
+              const symbols = extractTopLevelSymbols(content, langKey, astGrepModule);
+              if (symbols) {
+                updatedCache[relFile] = { ...cached, symbols };
               }
-            } catch {
-              // Re-parse error — keep cached imports/exports/complexity, skip findings
-            }
+            } catch { /* non-fatal */ }
           }
           continue;
         }
@@ -382,12 +335,11 @@ export function buildCodebaseIndex(
           const content = fs.readFileSync(filePath, 'utf-8');
           // Extract symbols first so pattern scanning can attribute findings to functions
           const symbols = extractTopLevelSymbols(content, langKey, astGrepModule) ?? undefined;
-          const result = analyzeFileAst(content, filePath, langKey, astGrepModule, patterns, symbols);
+          const result = analyzeFileAst(content, filePath, langKey, astGrepModule, undefined, symbols);
           if (result) {
             moduleExports.push(...result.exports);
             totalComplexity += result.complexity;
             filesAnalyzed++;
-            const storedFindings = result.findings && result.findings.length > 0 ? result.findings : undefined;
             const callEdges = extractCallEdges(content, langKey, astGrepModule, symbols) ?? undefined;
             updatedCache[relFile] = {
               mtime: stat.mtimeMs,
@@ -395,18 +347,10 @@ export function buildCodebaseIndex(
               imports: result.imports,
               exports: result.exports,
               complexity: result.complexity,
-              findings: storedFindings,
-              findingsVersion: FINDINGS_VERSION,
-              patternVersions: getPatternVersions(),
               symbols,
               callEdges: callEdges?.length ? callEdges : undefined,
               importedNames: result.importedNames,
             };
-            if (storedFindings) {
-              for (const f of storedFindings) {
-                allFindings.push({ file: relFile, patternId: f.patternId, message: f.message, line: f.line, severity: f.severity, category: f.category });
-              }
-            }
           }
         } catch {
           // File read error — skip this file for AST analysis
@@ -528,78 +472,22 @@ export function buildCodebaseIndex(
     mod.fan_out = (dependencyEdges[mod.path] ?? []).length;
   }
 
-  // Step 7: Dead code + structural analysis
-  // Dead exports require AST data (exportsByModule). Structural issues use graph metrics.
-  let deadExports: import('./shared.js').DeadExportEntry[] | undefined;
+  // Step 7: Build per-module cross-file call summaries
   let callEdgeSummaries: Record<string, string[]> | undefined;
 
   if (analysisBackend === 'ast-grep') {
-    // Build per-module export/import maps from AST cache
-    const exportsByModule: Record<string, ExportEntry[]> = {};
-    const importsByModule: Record<string, string[]> = {};
-    for (const mod of modules) {
-      if (mod.exported_names && mod.exported_names.length > 0) {
-        // Reconstruct ExportEntry from module data (kind is lost, use 'other')
-        exportsByModule[mod.path] = mod.exported_names.map(name => ({ name, kind: 'other' as const }));
-      }
-      // Use dependency edges as import proxy
-      const deps = dependencyEdges[mod.path];
-      if (deps) importsByModule[mod.path] = deps;
-    }
-
-    // Collect actual imported binding names from AST cache (more accurate than specifiers)
     const cachedData = loadAstCache(projectRoot);
-    const allImportedBindings = new Set<string>();
-    const namespaceSpecifiers = new Set<string>();
-    for (const entry of Object.values(cachedData)) {
-      if (entry.importedNames) {
-        for (const name of entry.importedNames) {
-          if (name.startsWith('*:')) {
-            namespaceSpecifiers.add(name.slice(2)); // track namespace import specifiers
-          } else {
-            allImportedBindings.add(name);
-          }
-        }
-      }
-    }
-    deadExports = detectDeadExports(
-      modules, dependencyEdges, exportsByModule, importsByModule,
-      30,
-      allImportedBindings.size > 0 ? allImportedBindings : undefined,
-      namespaceSpecifiers.size > 0 ? namespaceSpecifiers : undefined,
-    );
-
-    // Fused dead function detection: collect per-file call edges and exports from AST cache
-    const exportsByFile: Record<string, ExportEntry[]> = {};
     const callEdgesByFile: Record<string, import('./shared.js').CallEdge[]> = {};
     for (const [relFile, entry] of Object.entries(cachedData)) {
-      if (entry.exports?.length) exportsByFile[relFile] = entry.exports;
       if (entry.callEdges?.length) callEdgesByFile[relFile] = entry.callEdges;
     }
-    if (Object.keys(callEdgesByFile).length > 0) {
-      const deadFns = detectDeadFunctionsFused(exportsByFile, callEdgesByFile, undefined, 20);
-      // Merge into deadExports, avoiding duplicates by name
-      if (deadFns.length > 0) {
-        const existingNames = new Set((deadExports ?? []).map(d => `${d.module}:${d.name}`));
-        for (const fn of deadFns) {
-          if (!existingNames.has(`${fn.module}:${fn.name}`)) {
-            (deadExports ??= []).push(fn);
-          }
-        }
-      }
-    }
-
-    // Build per-module cross-file call summaries for focus modules
-    // Format: "funcA calls importedB, importedC" (only cross-file calls with importSource)
     if (Object.keys(callEdgesByFile).length > 0) {
       const modCallSummaries: Record<string, string[]> = {};
       for (const mod of modules) {
         const summaryLines: string[] = [];
-        // Find files in this module
         const modPrefix = mod.path + '/';
         for (const [relFile, edges] of Object.entries(callEdgesByFile)) {
           if (!relFile.startsWith(modPrefix)) continue;
-          // Group cross-file calls by caller
           const callerMap = new Map<string, Set<string>>();
           for (const edge of edges) {
             if (!edge.importSource) continue;
@@ -614,7 +502,7 @@ export function buildCodebaseIndex(
           }
         }
         if (summaryLines.length > 0) {
-          modCallSummaries[mod.path] = summaryLines.slice(0, 10); // cap per module
+          modCallSummaries[mod.path] = summaryLines.slice(0, 10);
         }
       }
       if (Object.keys(modCallSummaries).length > 0) {
@@ -622,9 +510,6 @@ export function buildCodebaseIndex(
       }
     }
   }
-
-  // Structural issues only need graph data (no AST required)
-  const structuralIssues = detectStructuralIssues(modules, dependencyEdges, reverseEdges, dependencyCycles, entrypoints);
 
   return {
     built_at: new Date().toISOString(),
@@ -638,9 +523,6 @@ export function buildCodebaseIndex(
     entrypoints,
     sampled_file_mtimes: sampledFileMtimes,
     analysis_backend: analysisBackend,
-    dead_exports: deadExports,
-    structural_issues: structuralIssues,
-    ast_findings: allFindings.length > 0 ? allFindings : undefined,
     module_cap_hit: moduleCapHit || undefined,
     call_edge_summaries: callEdgeSummaries,
   };

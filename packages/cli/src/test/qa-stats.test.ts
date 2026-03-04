@@ -10,9 +10,6 @@ import {
   loadQaStats,
   saveQaStats,
   recordQaCommandResult,
-  recordBaselineResult,
-  getCommandSuccessRate,
-  autoTuneQaConfig,
   calibrateConfidence,
   resetQaStatsForSession,
   buildBaselineHealthBlock,
@@ -53,7 +50,6 @@ function writeRunState(qualitySignals: { totalTickets: number; firstPassSuccess:
     lastDocsAuditCycle: 0,
     lastRunAt: Date.now(),
     deferredProposals: [],
-    formulaStats: {},
     qualitySignals,
   };
   fs.writeFileSync(runStateFile(), JSON.stringify(state, null, 2));
@@ -72,18 +68,10 @@ function makeStats(overrides: Partial<QaCommandStats> = {}): QaCommandStats {
     lastRunAt: 0,
     consecutiveFailures: 0,
     consecutiveTimeouts: 0,
-    recentBaselineResults: [],
     ...overrides,
   };
 }
 
-function makeQaConfig(commands: Array<{ name: string; cmd: string; timeoutMs?: number }>) {
-  return {
-    commands: commands.map(c => ({ name: c.name, cmd: c.cmd, cwd: '.', timeoutMs: c.timeoutMs })),
-    artifacts: { dir: '.promptwheel/artifacts', maxLogBytes: 200_000, tailBytes: 16_384 },
-    retry: { enabled: false, maxAttempts: 1 },
-  };
-}
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-stats-test-'));
@@ -221,154 +209,6 @@ describe('recordQaCommandResult', () => {
 });
 
 // ---------------------------------------------------------------------------
-// recordBaselineResult
-// ---------------------------------------------------------------------------
-
-describe('recordBaselineResult', () => {
-  it('pushes to ring buffer', async () => {
-    await recordBaselineResult(tmpDir, 'lint', true);
-    await recordBaselineResult(tmpDir, 'lint', false);
-    await recordBaselineResult(tmpDir, 'lint', true);
-
-    const store = readStatsRaw();
-    expect(store.commands.lint.recentBaselineResults).toEqual([true, false, true]);
-  });
-
-  it('caps ring buffer at 10 entries', async () => {
-    for (let i = 0; i < 12; i++) {
-      await recordBaselineResult(tmpDir, 'lint', i % 2 === 0);
-    }
-
-    const store = readStatsRaw();
-    expect(store.commands.lint.recentBaselineResults).toHaveLength(10);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// getCommandSuccessRate
-// ---------------------------------------------------------------------------
-
-describe('getCommandSuccessRate', () => {
-  it('returns -1 for zero runs (no data)', () => {
-    expect(getCommandSuccessRate(makeStats())).toBe(-1);
-  });
-
-  it('computes correct rate', () => {
-    expect(getCommandSuccessRate(makeStats({ totalRuns: 10, successes: 7 }))).toBe(0.7);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// autoTuneQaConfig
-// ---------------------------------------------------------------------------
-
-describe('autoTuneQaConfig', () => {
-  it('passes through all commands when stats are empty', () => {
-    const config = makeQaConfig([
-      { name: 'lint', cmd: 'npm run lint' },
-      { name: 'test', cmd: 'npm test' },
-    ]);
-
-    const result = autoTuneQaConfig(tmpDir, config);
-    expect(result.config.commands).toHaveLength(2);
-    expect(result.disabled).toHaveLength(0);
-  });
-
-  it('does not disable baseline-failing commands (they heal organically)', () => {
-    writeStatsRaw({
-      commands: {
-        lint: makeStats({
-          name: 'lint',
-          recentBaselineResults: [false, false, false, false, false],
-        }),
-      },
-      lastUpdated: 0,
-      disabledCommands: [],
-      lastCalibratedQualityRate: null,
-    });
-
-    const config = makeQaConfig([
-      { name: 'lint', cmd: 'npm run lint' },
-      { name: 'test', cmd: 'npm test' },
-    ]);
-
-    const result = autoTuneQaConfig(tmpDir, config);
-    expect(result.config.commands).toHaveLength(2);
-    expect(result.disabled).toHaveLength(0);
-  });
-
-  it('disables commands with consecutive timeouts', () => {
-    writeStatsRaw({
-      commands: {
-        test: makeStats({
-          name: 'test',
-          totalRuns: 5,
-          consecutiveTimeouts: 3,
-        }),
-      },
-      lastUpdated: 0,
-      disabledCommands: [],
-      lastCalibratedQualityRate: null,
-    });
-
-    const config = makeQaConfig([{ name: 'test', cmd: 'npm test' }]);
-    const result = autoTuneQaConfig(tmpDir, config);
-
-    expect(result.config.commands).toHaveLength(0);
-    expect(result.disabled).toHaveLength(1);
-    expect(result.disabled[0].reason).toContain('consecutive timeouts');
-  });
-
-  it('increases timeout when avg duration approaches limit', () => {
-    writeStatsRaw({
-      commands: {
-        test: makeStats({
-          name: 'test',
-          totalRuns: 10,
-          avgDurationMs: 100_000, // 100s, > 80% of 120s default
-        }),
-      },
-      lastUpdated: 0,
-      disabledCommands: [],
-      lastCalibratedQualityRate: null,
-    });
-
-    const config = makeQaConfig([{ name: 'test', cmd: 'npm test' }]);
-    const result = autoTuneQaConfig(tmpDir, config);
-
-    expect(result.config.commands).toHaveLength(1);
-    expect(result.config.commands[0].timeoutMs).toBe(180_000); // 120k * 1.5
-  });
-
-  it('keeps all commands even with baseline failures', () => {
-    writeStatsRaw({
-      commands: {
-        lint: makeStats({
-          name: 'lint',
-          recentBaselineResults: [false, false, false, false, false],
-        }),
-        test: makeStats({
-          name: 'test',
-          recentBaselineResults: [true, true, true],
-        }),
-      },
-      lastUpdated: 0,
-      disabledCommands: [],
-      lastCalibratedQualityRate: null,
-    });
-
-    const config = makeQaConfig([
-      { name: 'lint', cmd: 'npm run lint' },
-      { name: 'test', cmd: 'npm test' },
-    ]);
-    const result = autoTuneQaConfig(tmpDir, config);
-
-    expect(result.config.commands).toHaveLength(2);
-    expect(result.disabled).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // calibrateConfidence
 // ---------------------------------------------------------------------------
 
@@ -465,7 +305,6 @@ describe('resetQaStatsForSession', () => {
           failures: 5,
           consecutiveFailures: 3,
           consecutiveTimeouts: 2,
-          recentBaselineResults: [true, false, true],
         }),
       },
       lastUpdated: 100,
@@ -482,7 +321,6 @@ describe('resetQaStatsForSession', () => {
     expect(store.commands.lint.totalRuns).toBe(20);
     expect(store.commands.lint.successes).toBe(15);
     expect(store.commands.lint.failures).toBe(5);
-    expect(store.commands.lint.recentBaselineResults).toEqual([true, false, true]);
   });
 
   it('resets all commands when multiple exist', () => {

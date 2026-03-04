@@ -290,7 +290,7 @@ describe('detectCredentialInContent', () => {
 describe('detectCredentialPattern', () => {
   it('detects .env files', () => {
     expect(detectCredentialPattern('.env')).toBe(true);
-    expect(detectCredentialPattern('config/.env.local')).toBe(false); // .env.local doesn't end with .env
+    expect(detectCredentialPattern('config/.env.local')).toBe(true); // .env.local is a credential file
   });
 
   it('detects .pem files', () => {

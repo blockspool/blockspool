@@ -6,7 +6,6 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { createGitService } from '../lib/git.js';
 import { runAutoMode, runAutoWorkMode } from '../lib/solo-auto.js';
-import { handleCiMode } from './auto-ci-mode.js';
 import { resolveBackends } from './auto-auth.js';
 import { warnDeprecatedFlags } from '../lib/deprecation.js';
 
@@ -27,8 +26,6 @@ Examples:
   promptwheel --no-drill         # Spin without auto-trajectory generation
   promptwheel --plan             # Scout all, approve roadmap, execute
   promptwheel --pr               # Create PRs instead of direct commits
-  promptwheel --formula deep     # Architectural review
-  promptwheel ci                 # Fix CI failures
 `)
     // Primary options (visible in help)
     .option('--plan', 'Planning mode — scout, present roadmap, approve, execute')
@@ -36,7 +33,7 @@ Examples:
     .option('--hours <n>', 'Run for N hours (accepts decimals: 0.5 = 30min)')
     .option('--pr', 'Create pull requests instead of direct commits')
     .option('--scope <path>', 'Directory to focus on')
-    .option('--formula <name>', 'Formula: deep, security-audit, test-coverage')
+    .addOption(new Option('--formula <name>').hideHelp())
     .option('--dry-run', 'Preview without making changes')
     .option('--output <format>', 'Output format: json (writes structured JSON report)')
     .option('-v, --verbose', 'Detailed output')
@@ -44,24 +41,18 @@ Examples:
     .option('--repos <dirs>', 'Comma-separated repo directories for multi-repo sessions')
     .option('--no-tui', 'Disable live terminal UI (use spinner output instead)')
     // Backend and execution options
-    .option('--provider <name>', 'Backend provider: codex, claude, kimi, local')
+    .option('--provider <name>', 'Backend provider: codex, claude')
     .addOption(new Option('--codex', 'Use Codex (OpenAI) backend').hideHelp())
-    .option('--kimi', 'Use Kimi backend')
-    .option('--local', 'Use local LLM server (Ollama, vLLM, etc.)')
-    .addOption(new Option('--local-model <model>', 'Local model name').implies({ local: true }))
-    .addOption(new Option('--local-url <url>', 'Local server URL (default: http://localhost:11434)').implies({ local: true }))
     .option('--batch-size <n>', 'Merge N tickets into one milestone PR')
     .option('--safe', 'Safe categories only (no tests, no risky changes)')
     .option('--allow <categories>', 'Only allow these categories (comma-separated)')
     .option('--block <categories>', 'Block these categories (comma-separated)')
     .option('--tests', 'Include test-writing proposals')
-    .option('--deep', 'Architectural review mode')
     .option('--claude', 'Use Claude (Anthropic) backend — requires ANTHROPIC_API_KEY')
     .option('--batch', 'Use Anthropic Batch API for scouts (50% cost, async processing)')
     // Power-user options (hidden)
     .addOption(new Option('--yes', 'Skip prompts').hideHelp())
     .addOption(new Option('--parallel <n>', 'Parallel tickets').default('3').hideHelp())
-    .addOption(new Option('--eco', 'Faster model').hideHelp())
     // Legacy/deprecated (kept for backwards compat)
     .addOption(new Option('--minutes <n>').hideHelp())
     .addOption(new Option('--cycles <n>').hideHelp())
@@ -72,7 +63,6 @@ Examples:
     .addOption(new Option('--scout-backend <name>').hideHelp())
     .addOption(new Option('--execute-backend <name>').hideHelp())
     .addOption(new Option('--codex-model <model>').hideHelp())
-    .addOption(new Option('--kimi-model <model>').hideHelp())
     .addOption(new Option('--codex-unsafe-full-access').hideHelp())
     .addOption(new Option('--include-claude-md').hideHelp())
     .addOption(new Option('--batch-token-budget <n>').hideHelp())
@@ -80,7 +70,6 @@ Examples:
     .addOption(new Option('--max-scout-files <n>').hideHelp())
     .addOption(new Option('--scout-concurrency <n>').hideHelp())
     .addOption(new Option('--codex-mcp').hideHelp())
-    .addOption(new Option('--local-max-iterations <n>').hideHelp())
     .addOption(new Option('--no-docs-audit').hideHelp())
     .addOption(new Option('--docs-audit-interval <n>').hideHelp())
     .addOption(new Option('--auto-merge').hideHelp())
@@ -107,18 +96,13 @@ Examples:
       verbose?: boolean;
       branch?: string;
       parallel?: string;
-      formula?: string;
-      deep?: boolean;
-      eco?: boolean;
       batchSize?: string;
       provider?: string;
       codex?: boolean;
       claude?: boolean;
-      kimi?: boolean;
       scoutBackend?: string;
       executeBackend?: string;
       codexModel?: string;
-      kimiModel?: string;
       codexUnsafeFullAccess?: boolean;
       includeClaudeMd?: boolean;
       batchTokenBudget?: string;
@@ -128,10 +112,6 @@ Examples:
       docsAuditInterval?: string;
       scoutConcurrency?: string;
       codexMcp?: boolean;
-      local?: boolean;
-      localUrl?: string;
-      localModel?: string;
-      localMaxIterations?: string;
       pr?: boolean;
       autoMerge?: boolean;
       directBranch?: string;
@@ -144,10 +124,6 @@ Examples:
       repos?: string;
       batch?: boolean;
     }) => {
-      if (options.deep && !options.formula) {
-        options.formula = 'deep';
-      }
-
       // Warn about deprecated flags before any work begins
       warnDeprecatedFlags(options as Record<string, unknown>);
 
@@ -170,9 +146,9 @@ Examples:
 
       const effectiveMode = mode || 'auto';
 
-      if (effectiveMode !== 'ci' && effectiveMode !== 'work' && effectiveMode !== 'auto') {
+      if (effectiveMode !== 'work' && effectiveMode !== 'auto') {
         console.error(chalk.red(`✗ Unknown auto mode: ${effectiveMode}`));
-        console.error(chalk.gray('  Available modes: (default), ci, work'));
+        console.error(chalk.gray('  Available modes: (default), work'));
         process.exit(1);
       }
 
@@ -181,7 +157,6 @@ Examples:
           ...options,
           plan: options.plan,
           pr: options.pr,
-          formula: options.formula,
           tui: options.tui,
           scoutBackend: scoutBackendName,
           executeBackend: executeBackendName,
@@ -199,10 +174,6 @@ Examples:
           verbose: options.verbose,
           parallel: options.parallel,
         });
-        return;
       }
-
-      // CI mode
-      await handleCiMode(options);
     });
 }

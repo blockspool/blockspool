@@ -17,7 +17,6 @@ import type { EventType, SessionConfig } from '../types.js';
 import { getRegistry, setCustomToolsEnabledOverride } from '../tool-registry.js';
 import { deriveScopePolicy, isFileAllowed, serializeScopePolicy } from '../scope-policy.js';
 import { repos } from '@promptwheel/core';
-import { loadFormula, applyFormula, listFormulas } from '../formulas.js';
 
 export function registerSessionTools(server: McpServer, getState: () => SessionManager) {
   server.tool(
@@ -25,9 +24,6 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
     'Initialize an improvement session. Creates a run folder with state.json and event log. Call this first.',
     {
       hours: z.number().optional().describe('Session duration in hours. Omit for unlimited.'),
-      formula: z.string().optional().describe('Formula name (e.g., security-audit, test-coverage).'),
-      deep: z.boolean().optional().describe('Enable deep architectural review mode.'),
-      continuous: z.boolean().optional().describe('Run until manually stopped.'),
       scope: z.string().optional().describe('Glob pattern for files to scan (default: ** i.e. entire project).'),
       categories: z.array(z.string()).optional().describe('Trust ladder categories.'),
       min_confidence: z.number().optional().describe('Minimum confidence threshold (default: 70).'),
@@ -39,25 +35,19 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
       draft_prs: z.boolean().optional().describe('Deprecated: use create_prs + draft instead.'),
       create_prs: z.boolean().optional().describe('Create PRs for completed tickets (default: false). Without this, commits directly.'),
       draft: z.boolean().optional().describe('When creating PRs, make them drafts (default: false).'),
-      eco: z.boolean().optional().describe('Eco mode: allow subagent delegation during scout for lower cost (default: false).'),
       parallel: z.number().optional().describe('Number of tickets to execute in parallel (default: 2, max: 5). Set to 1 for sequential mode.'),
-      min_impact_score: z.number().optional().describe('Minimum impact score (1-10) for proposals to be accepted (default: 3). Filters out low-value lint/cleanup.'),
+      min_impact_score: z.number().optional().describe('Minimum impact score (1-10) for proposals to be accepted (default: 5). Filters out low-value lint/cleanup.'),
       learnings: z.boolean().optional().describe('Enable cross-run learnings (default: true). Set false to disable.'),
       learnings_budget: z.number().optional().describe('Max chars for learnings injected into prompts (default: 2000).'),
       learnings_decay_rate: z.number().optional().describe('Weight decay per session load (default: 3).'),
       direct: z.boolean().optional().describe('Direct mode: edit in place without worktrees/branches (default: true for simple solo use). Auto-disabled when create_prs=true or parallel>1.'),
-      cross_verify: z.boolean().optional().describe('Cross-verify: use a separate verifier agent for QA instead of self-verification (default: false).'),
-      skip_review: z.boolean().optional().describe('Skip adversarial review: create tickets directly from scout proposals without a second review pass (default: false).'),
-      dry_run: z.boolean().optional().describe('Dry-run mode: scout only, no ticket creation or execution (default: false).'),
       qa_commands: z.array(z.string()).optional().describe('QA commands to always run after every ticket (e.g. ["pytest", "cargo test"]).'),
       enable_custom_tools: z.boolean().optional().describe('Explicitly enable repository custom tools from .promptwheel/tools/*.json (default: false, unless PROMPTWHEEL_ENABLE_CUSTOM_TOOLS is set).'),
-      conflict_sensitivity: z.enum(['strict', 'normal', 'relaxed']).optional().describe('Conflict detection sensitivity for parallel deconfliction (default: normal).'),
       safe: z.boolean().optional().describe('Safe mode: restrict to low-risk categories only (refactor, docs, types, perf). Blocks security, fix, cleanup, deps, auth, config, migration.'),
     },
     async (params) => {
       const state = getState();
 
-      // Load and apply formula if specified
       // Safe mode: restrict to low-risk categories
       const safeCategories = params.safe
         ? ['refactor', 'docs', 'types', 'perf']
@@ -65,9 +55,6 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
 
       let config: SessionConfig = {
         hours: params.hours,
-        formula: params.formula,
-        deep: params.deep,
-        continuous: params.continuous,
         scope: params.scope,
         categories: safeCategories,
         min_confidence: params.min_confidence,
@@ -79,29 +66,15 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
         draft_prs: params.draft_prs,
         create_prs: params.create_prs,
         draft: params.draft,
-        eco: params.eco,
         parallel: params.parallel,
         min_impact_score: params.min_impact_score,
         learnings: params.learnings,
         learnings_budget: params.learnings_budget,
         learnings_decay_rate: params.learnings_decay_rate,
         direct: params.direct,
-        cross_verify: params.cross_verify,
-        skip_review: params.skip_review,
-        dry_run: params.dry_run,
         qa_commands: params.qa_commands,
         enable_custom_tools: params.enable_custom_tools,
-        conflict_sensitivity: params.conflict_sensitivity,
       };
-
-      let formulaInfo: { name: string; description: string } | undefined;
-      if (params.formula) {
-        const formula = loadFormula(params.formula, state.projectPath);
-        if (formula) {
-          config = applyFormula(formula, config);
-          formulaInfo = { name: formula.name, description: formula.description };
-        }
-      }
 
       // Pre-start validation: detect environment and adjust config
       const warnings: string[] = [];
@@ -230,7 +203,6 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
             step_budget: runState.step_budget,
             expires_at: runState.expires_at,
             run_dir: state.run.dir,
-            formula: formulaInfo,
             custom_tool_report: customToolReport,
             warnings: warnings.length > 0 ? warnings : undefined,
             detected: {
@@ -435,7 +407,6 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
               ...status,
               digest,
               scope: s.scope !== '**' ? s.scope : undefined,
-              formula: s.formula ?? undefined,
               categories: s.categories.length > 0 ? s.categories : undefined,
               trajectory,
               codebase_index: indexStats,
@@ -740,30 +711,6 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
     },
   );
 
-  server.tool(
-    'promptwheel_list_formulas',
-    'List all available formulas (built-in + custom from .promptwheel/formulas/).',
-    {},
-    async () => {
-      const state = getState();
-      const formulas = listFormulas(state.projectPath);
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            formulas: formulas.map(f => ({
-              name: f.name,
-              version: f.version,
-              description: f.description,
-              categories: f.categories,
-              risk_tolerance: f.risk_tolerance,
-              tags: f.tags,
-            })),
-          }, null, 2),
-        }],
-      };
-    },
-  );
 }
 
 // ── Worktree cleanup ──────────────────────────────────────────────────────────

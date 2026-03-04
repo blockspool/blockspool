@@ -24,6 +24,7 @@ import { checkSpindle } from './spindle.js';
 import { detectProjectMetadata } from './project-metadata.js';
 import { buildCodebaseIndex } from './codebase-index.js';
 import { loadLearnings } from './learnings.js';
+import { truncateUtf8 } from './utf8-utils.js';
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -31,28 +32,11 @@ import { loadLearnings } from './learnings.js';
 
 // All defaults imported from @promptwheel/core — see config/defaults.ts
 
+// Event payload truncation: payloads larger than MAX_PERSISTED_EVENT_PAYLOAD_BYTES
+// are replaced with a truncated preview. The preview may cut mid-line or mid-JSON
+// (it's a byte-limited prefix, not line-aligned). Consumers must handle partial content.
 const MAX_PERSISTED_EVENT_PAYLOAD_BYTES = 128 * 1024;
 const MAX_PERSISTED_EVENT_PREVIEW_BYTES = 8192;
-
-function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
-  const safeMaxBytes = Math.max(0, maxBytes);
-  if (Buffer.byteLength(value, 'utf8') <= safeMaxBytes) {
-    return { value, truncated: false };
-  }
-
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    const candidate = value.slice(0, mid);
-    if (Buffer.byteLength(candidate, 'utf8') <= safeMaxBytes) {
-      low = mid;
-    } else {
-      high = mid - 1;
-    }
-  }
-  return { value: value.slice(0, low), truncated: true };
-}
 
 function capEventPayloadForPersistence(payload: Record<string, unknown>): Record<string, unknown> {
   let serialized = '';
@@ -148,19 +132,37 @@ export class RunManager {
     if (!process.env.VITEST && !process.env.NODE_ENV?.includes('test')) {
       const lockPath = path.join(this.bsDir, 'session.lock');
       try {
-        if (fs.existsSync(lockPath)) {
-          const lockContent = fs.readFileSync(lockPath, 'utf8').trim();
-          const lockPid = parseInt(lockContent, 10);
-          // Check if the process is still alive
-          if (lockPid && !isNaN(lockPid)) {
-            try { process.kill(lockPid, 0); throw new Error(`Another PromptWheel session is active (PID ${lockPid}). End it first or delete .promptwheel/session.lock.`); }
-            catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; /* Process dead — stale lock, overwrite */ }
+        // Atomic lock acquisition via O_CREAT | O_EXCL — avoids TOCTOU race
+        const fd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+        fs.writeSync(fd, `${process.pid}\n${new Date().toISOString()}`);
+        fs.closeSync(fd);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+          // Lock file exists — check if holder is still alive
+          let lockPid = NaN;
+          try { lockPid = parseInt(fs.readFileSync(lockPath, 'utf8').trim(), 10); } catch { /* ignore read failure */ }
+          if (!isNaN(lockPid)) {
+            try {
+              process.kill(lockPid, 0); // throws ESRCH if dead
+              throw new Error(`Another PromptWheel session is active (PID ${lockPid}). End it first or delete .promptwheel/session.lock.`);
+            } catch (e) {
+              if (e instanceof Error && e.message.includes('Another PromptWheel session')) throw e;
+              // Process dead — stale lock, overwrite atomically
+              try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
+              try { fs.writeFileSync(lockPath, `${process.pid}\n${new Date().toISOString()}`, { flag: 'wx' }); } catch {
+                console.warn('[promptwheel] Failed to acquire session lock after stale lock removal — another session may have started concurrently');
+              }
+            }
+          } else {
+            // Unreadable/corrupt lock file (empty, non-numeric) — treat as stale
+            console.warn('[promptwheel] Session lock file contains unreadable PID, treating as stale');
+            try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
+            try { fs.writeFileSync(lockPath, `${process.pid}\n${new Date().toISOString()}`, { flag: 'wx' }); } catch {
+              console.warn('[promptwheel] Failed to acquire session lock after corrupt lock removal');
+            }
           }
         }
-        fs.writeFileSync(lockPath, String(process.pid), 'utf8');
-      } catch (err) {
-        if (err instanceof Error && err.message.includes('Another PromptWheel session')) throw err;
-        // Ignore lock write failures — non-fatal
+        // Ignore other lock write failures — non-fatal advisory lock
       }
     }
 
@@ -216,6 +218,7 @@ export class RunManager {
       plan_rejections: 0,
       qa_retries: 0,
       scout_retries: 0,
+      consecutive_barren_cycles: 0,
       last_qa_failure: null,
       last_plan_rejection_reason: null,
 
@@ -224,14 +227,12 @@ export class RunManager {
 
       scope: config.scope ?? SCOUT_DEFAULTS.SCOPE,
       config_scope: config.scope ?? SCOUT_DEFAULTS.SCOPE,
-      formula: config.formula ?? null,
       categories: config.categories ?? [...SCOUT_DEFAULTS.CATEGORIES],
       min_confidence: config.min_confidence ?? SCOUT_DEFAULTS.MIN_CONFIDENCE,
       max_proposals_per_scout: config.max_proposals ?? SCOUT_DEFAULTS.MAX_PROPOSALS_PER_SCOUT,
       min_impact_score: config.min_impact_score ?? SCOUT_DEFAULTS.MIN_IMPACT_SCORE,
       create_prs: createPrs,
       draft,
-      eco: config.eco ?? false,
       hints: [],
       scout_exclude_dirs: config.scout_exclude_dirs ?? [...SCOUT_DEFAULTS.EXCLUDE_DIRS],
 
@@ -253,7 +254,6 @@ export class RunManager {
       codebase_index_dirty: false,
 
       pending_proposals: null,
-      skip_review: config.skip_review ?? false,
       scout_exploration_log: [],
 
       learnings_enabled: config.learnings !== false,
@@ -266,20 +266,15 @@ export class RunManager {
       // Auto-disabled when creating PRs or using parallel > 1 (needs isolation).
       direct: config.direct ?? (!createPrs && (config.parallel ?? 2) <= 1),
 
-      // Cross-verify: use separate verifier agent for QA (opt-in)
-      cross_verify: config.cross_verify ?? false,
-
       // Trajectory planning
       active_trajectory: null,
       trajectory_step_id: null,
       trajectory_step_title: null,
 
-      // Dry-run + QA commands
-      dry_run: config.dry_run ?? false,
       qa_commands: config.qa_commands ?? [],
 
-      // Conflict detection sensitivity for parallel deconfliction
-      conflict_sensitivity: config.conflict_sensitivity ?? 'normal',
+      // Acceptance criteria verification (default: true)
+      criteria_verification: config.criteria_verification !== false,
     };
 
     // Detect project metadata (test runner, framework, etc.)
@@ -371,6 +366,28 @@ export class RunManager {
     });
 
     return this.state;
+  }
+
+  /** Load a previous run from disk (crash recovery). Returns null if not found or corrupt. */
+  load(runId: string): RunState | null {
+    if (this.state) {
+      throw new Error('Run already active. End it first.');
+    }
+    const runsDir = path.join(this.bsDir, 'runs');
+    const runDir = path.join(runsDir, runId);
+    const statePath = path.join(runDir, 'state.json');
+    try {
+      const raw = fs.readFileSync(statePath, 'utf8');
+      const loaded = JSON.parse(raw) as RunState;
+      if (!loaded.run_id || !loaded.session_id) return null;
+      this.state = loaded;
+      this.runDir = runDir;
+      this.eventsPath = path.join(runDir, 'events.ndjson');
+      this.appendEvent('SESSION_RECOVERED', { run_id: runId });
+      return this.state;
+    } catch {
+      return null;
+    }
   }
 
   /** Get current state or throw */
@@ -559,7 +576,14 @@ export class RunManager {
     this.persistState();
   }
 
-  /** Complete a ticket worker — increment counters and remove from workers */
+  /**
+   * Complete a ticket worker — increment counters and remove from workers.
+   *
+   * INVARIANT: worker.step_count tracks steps taken by the ticket worker
+   * (via advanceTicketWorker), NOT via incrementStep(). The session-level
+   * incrementStep() only counts orchestrator steps (from advance()).
+   * Adding worker.step_count here merges the two without double-counting.
+   */
   completeTicketWorker(ticketId: string): void {
     const s = this.require();
     const worker = s.ticket_workers[ticketId];
@@ -641,7 +665,6 @@ export class RunManager {
     if (s.ticket_step_count >= s.ticket_step_budget) {
       return { exhausted: true, which: 'ticket_step_budget' };
     }
-    // PR limit only applies when creating PRs
     // PR limit only applies when creating PRs
     if (s.create_prs && s.prs_created >= s.max_prs) {
       return { exhausted: true, which: 'max_prs' };
@@ -730,6 +753,8 @@ export class RunManager {
   private persistState(): void {
     if (!this.runDir || !this.state) return;
     const statePath = path.join(this.runDir, 'state.json');
-    fs.writeFileSync(statePath, JSON.stringify(this.state, null, 2) + '\n', 'utf8');
+    const tmpPath = statePath + '.tmp';
+    fs.writeFileSync(tmpPath, JSON.stringify(this.state, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmpPath, statePath);
   }
 }

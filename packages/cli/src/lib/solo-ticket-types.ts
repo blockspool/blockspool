@@ -141,6 +141,8 @@ export interface RunTicketOptions {
   retryContext?: { attempt: number; previousError: string; failureReason: string };
   /** Override the model used for execution (from model routing) */
   model?: string;
+  /** Opt-out flag for acceptance criteria verification. Defaults to true (enabled). */
+  criteriaVerification?: boolean;
 }
 
 /**

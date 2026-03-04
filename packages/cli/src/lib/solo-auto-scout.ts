@@ -18,30 +18,21 @@ import { formatGuidelinesForPrompt } from './guidelines.js';
 import { selectRelevant, formatLearningsForPrompt, extractTags, addLearning } from './learnings.js';
 import { formatIndexForPrompt, formatAnalysisForPrompt } from './codebase-index.js';
 import { formatDedupForPrompt } from './dedup-memory.js';
-import { buildScoutEscalation } from './wave-scheduling.js';
 import { ScoutPromptBuilder } from './scout-prompt-builder.js';
-import {
-  recordScanResult, saveSectors, computeCoverage, buildSectorSummary,
-  getSectorDifficulty, getSectorCategoryAffinity, formatSectorDependencyContext,
-} from './sectors.js';
 import { getDeduplicationContext } from './dedup.js';
 import { buildCycleContextBlock } from './cycle-context.js';
-import { formatTasteForPrompt } from './taste-profile.js';
 import { formatGoalContext } from './goals.js';
 import { sleep } from './dedup.js';
 import { buildBaselineHealthBlock } from './qa-stats.js';
 import { formatTrajectoryForPrompt } from '@promptwheel/core/trajectory/shared';
 import { appendErrorLedger, analyzeErrorLedger } from './error-ledger.js';
-import { recordLensScan, recordZeroYield } from './lens-rotation.js';
 import { loadPortfolio, formatPortfolioForPrompt } from './portfolio.js';
-import { listFormulas, type Formula } from './formulas.js';
-import { getParallelFormulas } from './solo-cycle-formula.js';
 
 export interface ScoutResult {
   proposals: TicketProposal[];
   scoutResult: Awaited<ReturnType<typeof scoutRepo>>;
   scope: string;
-  cycleFormula: import('./formulas.js').Formula | null;
+  cycleFormula: null;
   isDeepCycle: boolean;
   isDocsAuditCycle: boolean;
   shouldRetry: boolean;
@@ -50,41 +41,9 @@ export interface ScoutResult {
 }
 
 export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: string): Promise<ScoutResult> {
-  // Trajectory step scope overrides sector-based scope
+  // Trajectory step scope overrides user/default scope
   const trajectoryScope = state.currentTrajectoryStep?.scope;
-  const scope = trajectoryScope ?? preSelectedScope ?? getNextScope(state);
-
-  // Map trajectory scope to a sector so stats stay current
-  if (trajectoryScope && state.sectorState && !state.currentSectorId) {
-    const normalizedScope = trajectoryScope.replace(/\/\*\*$/, '').replace(/\/$/, '');
-    const matchedSector = state.sectorState.sectors.find(s =>
-      normalizedScope.startsWith(s.path) || s.path.startsWith(normalizedScope),
-    );
-    if (matchedSector) {
-      state.currentSectorId = matchedSector.path;
-    }
-  }
-
-  // No sectors need scanning — all covered and no changes detected
-  if (scope === null) {
-    if (state.lensRotationsCompleted > 0) {
-      state.displayAdapter.log(chalk.gray(`  All sectors scanned across ${state.lensRotation.length} lens(es). Waiting for new code...`));
-    } else {
-      state.displayAdapter.log(chalk.gray('  All sectors scanned, no changes detected. Waiting for new code...'));
-    }
-    // Sleep before retrying so we don't spin
-    await new Promise(r => setTimeout(r, 30_000));
-    return {
-      proposals: [],
-      scoutResult: { proposals: [], project: state.project, scannedFiles: 0, errors: [], durationMs: 0, success: true, run: {} as never, tickets: [] },
-      scope: '**',
-      cycleFormula: null,
-      isDeepCycle: false,
-      isDocsAuditCycle: false,
-      shouldRetry: false,
-      shouldBreak: false,
-    };
-  }
+  const scope = trajectoryScope ?? preSelectedScope ?? getNextScope(state) ?? '**';
 
   // Cycle header
   if (state.cycleCount > 1) {
@@ -108,16 +67,10 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     state.displayAdapter.log('');
   }
 
-  // Show active lens when not default
-  if (state.currentLens !== 'default') {
-    state.displayAdapter.log(chalk.cyan(`  Lens: ${state.currentLens}`));
-  }
-
   await getDeduplicationContext(state.adapter, state.project.id, state.repoRoot);
 
-  const cycleFormula = state.getCycleFormula(state.cycleCount);
-  state.currentFormulaName = cycleFormula?.name ?? 'default';
-  const { allow: allowCategories, block: blockCategories } = state.getCycleCategories(cycleFormula);
+  const cycleFormula = null;
+  const { allow: allowCategories, block: blockCategories } = state.getCycleCategories(null);
 
   // Trajectory step overrides: narrow scope and categories to current step
   if (state.currentTrajectoryStep) {
@@ -139,10 +92,10 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     }
   }
 
-  const isDeepCycle = cycleFormula?.name === 'deep' && cycleFormula !== state.activeFormula;
-  const isDocsAuditCycle = cycleFormula?.name === 'docs-audit' && cycleFormula !== state.activeFormula;
+  const isDeepCycle = false;
+  const isDocsAuditCycle = false;
 
-  const cycleSuffix = isDeepCycle ? ' 🔬 deep' : isDocsAuditCycle ? ' 📄 docs-audit' : '';
+  const cycleSuffix = '';
   const cycleLabel = state.maxCycles > 1 || state.runMode === 'spin'
     ? `[Cycle ${state.cycleCount}]${cycleSuffix} `
     : 'Step 1: ';
@@ -170,7 +123,6 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   const portfolio = loadPortfolio(state.repoRoot);
   if (portfolio) promptBuilder.addPortfolio(formatPortfolioForPrompt(portfolio));
   if (state.metadataBlock) promptBuilder.addMetadata(state.metadataBlock);
-  if (state.tasteProfile) promptBuilder.addTasteProfile(formatTasteForPrompt(state.tasteProfile));
   if (state.activeGoal && state.activeGoalMeasurement) {
     promptBuilder.addGoalContext(formatGoalContext(state.activeGoal, state.activeGoalMeasurement));
   }
@@ -181,19 +133,8 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   }
   if (state.codebaseIndex) promptBuilder.addCodebaseIndex(formatIndexForPrompt(state.codebaseIndex, state.cycleCount));
   if (state.codebaseIndex) {
-    const analysisBlock = formatAnalysisForPrompt(state.codebaseIndex, state.cycleCount, state.currentSectorId ?? undefined);
+    const analysisBlock = formatAnalysisForPrompt(state.codebaseIndex, state.cycleCount);
     if (analysisBlock) promptBuilder.addAnalysis(analysisBlock);
-  }
-  // Per-sector structural context (dependents, fan-in, instability)
-  if (state.currentSectorId && state.codebaseIndex) {
-    const sector = state.sectorState?.sectors.find(s => s.path === state.currentSectorId);
-    const sectorCtx = formatSectorDependencyContext(
-      state.currentSectorId,
-      state.codebaseIndex.reverse_edges,
-      state.codebaseIndex.dependency_edges,
-      sector,
-    );
-    if (sectorCtx) promptBuilder.addSectorGraph(sectorCtx);
   }
   const dedupPrefix = formatDedupForPrompt(state.dedupMemory);
   if (dedupPrefix) promptBuilder.addDedupMemory(dedupPrefix);
@@ -208,11 +149,8 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     const failed = state.allTicketOutcomes.filter(t => t.status === 'failed').length;
     const noChanges = state.allTicketOutcomes.filter(t => t.status === 'no_changes').length;
     if (state.cycleCount > 1) {
-      const lensInfo = state.lensRotation.length > 1
-        ? `\nActive lens: ${state.currentLens} (${state.lensIndex + 1}/${state.lensRotation.length})`
-        : '';
       promptBuilder.addSessionSummary(
-        `<session-summary>\nSession: cycle ${state.cycleCount}, ${completed} succeeded, ${failed} failed, ${noChanges} no-changes${lensInfo}\nSession phase: ${state.sessionPhase}\n</session-summary>`,
+        `<session-summary>\nSession: cycle ${state.cycleCount}, ${completed} succeeded, ${failed} failed, ${noChanges} no-changes\nSession phase: ${state.sessionPhase}\n</session-summary>`,
       );
     }
   }
@@ -220,9 +158,6 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   const baselineHealthBlock = buildBaselineHealthBlock(state.repoRoot, scope);
   if (baselineHealthBlock) promptBuilder.addBaselineHealth(baselineHealthBlock);
 
-  if (state.scoutRetries > 0) {
-    promptBuilder.addEscalation(buildScoutEscalation(state.scoutRetries, state.scoutedDirs, state.codebaseIndex, state.sectorState ?? undefined));
-  }
   // Error pattern awareness — avoid proposing work in areas that consistently fail
   try {
     const errorPatterns = analyzeErrorLedger(state.repoRoot, state.startTime);
@@ -245,31 +180,9 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
       }
     }
   }
-  if (cycleFormula?.prompt) promptBuilder.addFormulaPrompt(cycleFormula.prompt);
   if (hintBlock) promptBuilder.addHints(hintBlock);
 
   const effectivePrompt = promptBuilder.build();
-
-  // Coverage context
-  const coverageCtx = state.sectorState && state.currentSectorId
-    ? (() => {
-        const cov = computeCoverage(state.sectorState!);
-        const sec = state.sectorState!.sectors.find(s => s.path === state.currentSectorId);
-        return {
-          sectorPath: state.currentSectorId!,
-          scannedSectors: cov.scannedSectors,
-          totalSectors: cov.totalSectors,
-          percent: cov.percent,
-          sectorPercent: cov.sectorPercent,
-          classificationConfidence: sec?.classificationConfidence ?? 'low',
-          scanCount: sec?.scanCount ?? 0,
-          proposalYield: sec?.proposalYield ?? 0,
-          sectorSummary: buildSectorSummary(state.sectorState!, state.currentSectorId!),
-          sectorDifficulty: sec ? getSectorDifficulty(sec) : undefined,
-          sectorCategoryAffinity: sec ? getSectorCategoryAffinity(sec) : undefined,
-        };
-      })()
-    : undefined;
 
   // Incremental scanning: compute changed files since last scout
   const changedFiles = await computeIncrementalFiles(state, scoutPath);
@@ -277,70 +190,19 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   let scoutResult;
   const scoutStart = Date.now();
 
-  // Parallel multi-formula scout: opt-in via config, disabled during trajectory steps
-  const useParallelScout = state.autoConf.parallelScout?.enabled === true
-    && !state.currentTrajectoryStep;
-
-  if (useParallelScout) {
-    const parallelConf = state.autoConf.parallelScout!;
-    const allFormulas = listFormulas(state.repoRoot);
-    const formulas = getParallelFormulas(state, allFormulas, parallelConf.maxFormulas);
-
-    // Only use parallel path when we have 2+ formulas; otherwise fall through to standard
-    if (formulas.length >= 2) {
-      try {
-        const parallelProposals = await scoutMultiFormula(
-          state,
-          formulas,
-          scope,
-          parallelConf.dedupeThreshold ?? 0.7,
-        );
-        // Wrap into the same shape as scoutRepo's return value so downstream bookkeeping works
-        scoutResult = {
-          proposals: parallelProposals,
-          project: state.project,
-          scannedFiles: parallelProposals.length > 0 ? 1 : 0, // non-zero so "no files" path is skipped
-          errors: [] as string[],
-          durationMs: Date.now() - scoutStart,
-          success: true,
-          run: {} as never,
-          tickets: [],
-          sectorReclassification: undefined,
-        };
-      } catch (scoutErr) {
-        state.displayAdapter.scoutFailed('Parallel scout failed');
-        try {
-          const errMsg = scoutErr instanceof Error ? scoutErr.message : String(scoutErr);
-          appendErrorLedger(state.repoRoot, {
-            ts: Date.now(),
-            ticketId: '',
-            ticketTitle: '',
-            failureType: 'unknown',
-            failedCommand: 'scoutMultiFormula',
-            errorPattern: errMsg.slice(0, 100),
-            errorMessage: errMsg.slice(0, 500),
-            phase: 'scout',
-            sessionCycle: state.cycleCount,
-            formula: state.currentFormulaName,
-          });
-        } catch { /* non-fatal */ }
-        throw scoutErr;
-      }
-    }
-  }
-
-  // Standard single-formula scout (default path, or fallback when parallel selected < 2 formulas)
+  // Standard scout
   if (!scoutResult) {
     try {
       scoutResult = await scoutRepo(state.deps, {
         path: scoutPath,
         scope,
+        exclude: state.excludePatterns.length > 0 ? state.excludePatterns : undefined,
         changedFiles,
         types: allowCategories.length <= 4 ? allowCategories as ProposalCategory[] : undefined,
         excludeTypes: allowCategories.length > 4 ? blockCategories as ProposalCategory[] : undefined,
         maxProposals: 20,
         minConfidence: state.effectiveMinConfidence,
-        model: state.options.scoutBackend === 'codex' ? undefined : (state.options.eco ? 'sonnet' : ((cycleFormula?.model as 'opus' | 'haiku' | 'sonnet') ?? 'opus')),
+        model: state.options.scoutBackend === 'codex' ? undefined : 'opus',
         customPrompt: effectivePrompt,
         autoApprove: false,
         backend: state.scoutBackend,
@@ -349,7 +211,6 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
         timeoutMs: state.endTime ? 0 : state.scoutTimeoutMs,
         maxFiles: state.maxScoutFiles,
         scoutConcurrency: state.scoutConcurrency,
-        coverageContext: coverageCtx,
         moduleGroups: state.codebaseIndex?.modules.map(m => ({
           path: m.path,
           dependencies: state.codebaseIndex!.dependency_edges[m.path],
@@ -387,7 +248,6 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
           errorMessage: errMsg.slice(0, 500),
           phase: 'scout',
           sessionCycle: state.cycleCount,
-          formula: state.currentFormulaName,
         });
       } catch { /* non-fatal */ }
       throw scoutErr;
@@ -397,34 +257,7 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   // Always update last scan commit after a successful scan (even if zero proposals)
   updateLastScanCommit(state, scoutPath);
 
-  // Record scan
-  if (state.sectorState && state.currentSectorId) {
-    recordScanResult(state.sectorState, state.currentSectorId, state.currentSectorCycle, scoutResult.proposals.length, scoutResult.sectorReclassification);
-    saveSectors(state.repoRoot, state.sectorState);
-    const cov = computeCoverage(state.sectorState);
-    if (state.options.verbose) {
-      state.displayAdapter.log(chalk.gray(`  Sector: ${state.currentSectorId} (${cov.scannedSectors}/${cov.totalSectors} scanned, ${cov.percent}% coverage)`));
-      if (cov.sectorPercent >= 100) {
-        state.displayAdapter.log(chalk.gray(`  Full coverage — sector fully scanned`));
-      }
-    }
-  }
-
-  // Record lens scan and zero-yield tracking
-  recordLensScan(state);
-
-  // Mark sectors with no scannable files so they're never re-selected
-  if (scoutResult.scannedFiles === 0 && state.sectorState && state.currentSectorId) {
-    const sector = state.sectorState.sectors.find(s => s.path === state.currentSectorId);
-    if (sector) {
-      sector.fileCount = 0;
-      sector.productionFileCount = 0;
-      saveSectors(state.repoRoot, state.sectorState);
-    }
-  }
-
   const proposals = scoutResult.proposals;
-  recordZeroYield(state, proposals.length);
 
   if (proposals.length === 0) {
     if (scoutResult.errors.length > 0) {
@@ -501,10 +334,7 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     if (state.runMode === 'spin') {
       await sleep(2000);
     }
-    const covMsg = state.sectorState
-      ? (() => { const c = computeCoverage(state.sectorState!); return ` (${c.scannedSectors}/${c.totalSectors} sectors scanned, ${c.percent}% coverage)`; })()
-      : '';
-    state.displayAdapter.log(chalk.green(`✓ No improvements found in this sector${covMsg}`));
+    state.displayAdapter.log(chalk.green(`✓ No improvements found in scope "${scope}"`));
     // Let shouldContinue() decide whether to loop or stop
     return { proposals: [], scoutResult, scope, cycleFormula, isDeepCycle, isDocsAuditCycle, shouldRetry: true, shouldBreak: false };
   }
@@ -635,183 +465,3 @@ function updateLastScanCommit(state: AutoSessionState, scoutPath: string): void 
   }
 }
 
-// ── Parallel multi-formula scouting ───────────────────────────────────────
-
-/**
- * Run scouts for multiple formulas in parallel and merge results.
- * Deduplicates proposals across formulas by file overlap.
- *
- * This is a lightweight wrapper that runs scoutRepo concurrently for each
- * formula, sharing the same session context (scope, prompt context, etc.)
- * but varying the formula-specific prompt and category filters.
- */
-export async function scoutMultiFormula(
-  state: AutoSessionState,
-  formulas: Formula[],
-  scope: string,
-  dedupeThreshold: number = 0.7,
-): Promise<TicketProposal[]> {
-  if (formulas.length === 0) return [];
-  if (formulas.length === 1) {
-    // Single formula — delegate to the standard path (no parallel overhead)
-    return [];
-  }
-
-  const scoutPath = (state.milestoneMode && state.milestoneWorktreePath) ? state.milestoneWorktreePath : state.repoRoot;
-  const changedFiles = await computeIncrementalFiles(state, scoutPath);
-
-  // Build the shared context prompt (everything except formula-specific parts)
-  const sharedBuilder = new ScoutPromptBuilder();
-  if (state.guidelines) sharedBuilder.addGuidelines(formatGuidelinesForPrompt(state.guidelines));
-  if (state.metadataBlock) sharedBuilder.addMetadata(state.metadataBlock);
-  if (state.tasteProfile) sharedBuilder.addTasteProfile(formatTasteForPrompt(state.tasteProfile));
-  if (state.codebaseIndex) sharedBuilder.addCodebaseIndex(formatIndexForPrompt(state.codebaseIndex, state.cycleCount));
-  if (state.codebaseIndex) {
-    const analysisBlock = formatAnalysisForPrompt(state.codebaseIndex, state.cycleCount, state.currentSectorId ?? undefined);
-    if (analysisBlock) sharedBuilder.addAnalysis(analysisBlock);
-  }
-  const dedupPrefix = formatDedupForPrompt(state.dedupMemory);
-  if (dedupPrefix) sharedBuilder.addDedupMemory(dedupPrefix);
-  if (state.autoConf.learningsEnabled) {
-    const relevant = selectRelevant(state.allLearnings, { paths: [scope] });
-    const learningsText = formatLearningsForPrompt(relevant, state.autoConf.learningsBudget);
-    if (learningsText) sharedBuilder.addLearnings(learningsText);
-  }
-
-  state.displayAdapter.log(chalk.cyan(`  Parallel scout: ${formulas.map(f => f.name).join(', ')}`));
-
-  // Run each formula's scout concurrently
-  const results = await Promise.allSettled(
-    formulas.map(async (formula) => {
-      // Build a per-formula prompt by cloning shared context and adding formula prompt
-      const formulaBuilder = new ScoutPromptBuilder();
-      // Re-add shared sections (ScoutPromptBuilder is append-only)
-      if (state.guidelines) formulaBuilder.addGuidelines(formatGuidelinesForPrompt(state.guidelines));
-      if (state.metadataBlock) formulaBuilder.addMetadata(state.metadataBlock);
-      if (state.tasteProfile) formulaBuilder.addTasteProfile(formatTasteForPrompt(state.tasteProfile));
-      if (state.codebaseIndex) formulaBuilder.addCodebaseIndex(formatIndexForPrompt(state.codebaseIndex, state.cycleCount));
-      const dp = formatDedupForPrompt(state.dedupMemory);
-      if (dp) formulaBuilder.addDedupMemory(dp);
-      if (state.autoConf.learningsEnabled) {
-        const rel = selectRelevant(state.allLearnings, { paths: [scope] });
-        const lt = formatLearningsForPrompt(rel, state.autoConf.learningsBudget);
-        if (lt) formulaBuilder.addLearnings(lt);
-      }
-      if (formula.prompt) formulaBuilder.addFormulaPrompt(formula.prompt);
-      const effectivePrompt = formulaBuilder.build();
-
-      // Resolve categories for this formula
-      const formulaCategories = formula.categories ?? [];
-      const allowCategories: ProposalCategory[] = formulaCategories.length > 0
-        ? formulaCategories as ProposalCategory[]
-        : [];
-      const blockCategories: ProposalCategory[] = [];
-
-      const result = await scoutRepo(state.deps, {
-        path: scoutPath,
-        scope,
-        changedFiles,
-        types: allowCategories.length > 0 && allowCategories.length <= 4 ? allowCategories : undefined,
-        excludeTypes: allowCategories.length > 4 ? blockCategories : undefined,
-        maxProposals: 10, // lower per-formula since we merge
-        minConfidence: state.effectiveMinConfidence,
-        model: state.options.scoutBackend === 'codex' ? undefined : (state.options.eco ? 'sonnet' : ((formula.model as 'opus' | 'haiku' | 'sonnet') ?? 'opus')),
-        customPrompt: effectivePrompt,
-        autoApprove: false,
-        backend: state.scoutBackend,
-        protectedFiles: ['.promptwheel/**', ...(state.options.includeClaudeMd ? [] : ['CLAUDE.md', '.claude/**'])],
-        batchTokenBudget: state.batchTokenBudget,
-        timeoutMs: state.endTime ? 0 : state.scoutTimeoutMs,
-        maxFiles: state.maxScoutFiles,
-        scoutConcurrency: Math.max(1, Math.floor((state.scoutConcurrency ?? 3) / formulas.length)),
-      });
-
-      return { formula: formula.name, proposals: result.proposals };
-    }),
-  );
-
-  // Collect all proposals
-  const allProposals: TicketProposal[] = [];
-  for (const result of results) {
-    if (result.status === 'fulfilled' && result.value) {
-      const { formula: formulaName, proposals } = result.value;
-      if (state.options.verbose) {
-        state.displayAdapter.log(chalk.gray(`  [${formulaName}] ${proposals.length} proposals`));
-      }
-      allProposals.push(...proposals);
-    } else if (result.status === 'rejected') {
-      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
-      state.displayAdapter.log(chalk.yellow(`  Parallel scout failed for one formula: ${reason.slice(0, 100)}`));
-    }
-  }
-
-  // Deduplicate by file overlap
-  const deduped = deduplicateProposals(allProposals, dedupeThreshold);
-
-  if (state.options.verbose && allProposals.length !== deduped.length) {
-    state.displayAdapter.log(chalk.gray(`  Dedup: ${allProposals.length} -> ${deduped.length} proposals`));
-  }
-
-  return deduped;
-}
-
-/**
- * Deduplicate proposals across formulas by file overlap.
- * When two proposals share > threshold fraction of files (Jaccard), keep the higher-impact one.
- */
-export function deduplicateProposals(proposals: TicketProposal[], threshold: number): TicketProposal[] {
-  if (proposals.length <= 1) return proposals;
-
-  const kept: TicketProposal[] = [];
-  const dropped = new Set<number>();
-
-  for (let i = 0; i < proposals.length; i++) {
-    if (dropped.has(i)) continue;
-
-    const a = proposals[i];
-    const aFiles = new Set([...(a.files ?? []), ...(a.allowed_paths ?? [])]);
-
-    for (let j = i + 1; j < proposals.length; j++) {
-      if (dropped.has(j)) continue;
-
-      const b = proposals[j];
-      const bFiles = new Set([...(b.files ?? []), ...(b.allowed_paths ?? [])]);
-
-      // Skip overlap check if both have empty file lists
-      if (aFiles.size === 0 && bFiles.size === 0) continue;
-
-      // Compute Jaccard overlap
-      let intersectionCount = 0;
-      for (const f of aFiles) {
-        if (bFiles.has(f)) intersectionCount++;
-      }
-      const unionSize = new Set([...aFiles, ...bFiles]).size;
-      const overlap = unionSize > 0 ? intersectionCount / unionSize : 0;
-
-      if (overlap > threshold) {
-        // Keep the higher-impact one
-        const aScore = (a.impact_score ?? 0) * (a.confidence ?? 0);
-        const bScore = (b.impact_score ?? 0) * (b.confidence ?? 0);
-        if (bScore > aScore) {
-          dropped.add(i);
-          break;
-        } else {
-          dropped.add(j);
-        }
-      }
-    }
-
-    if (!dropped.has(i)) {
-      kept.push(a);
-    }
-  }
-
-  // Sort by impact * confidence descending
-  kept.sort((a, b) => {
-    const aScore = (a.impact_score ?? 0) * (a.confidence ?? 0);
-    const bScore = (b.impact_score ?? 0) * (b.confidence ?? 0);
-    return bScore - aScore;
-  });
-
-  return kept;
-}

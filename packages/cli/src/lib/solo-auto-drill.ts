@@ -23,7 +23,6 @@ import {
   preVerifyAndAdvanceSteps as preVerifyAndAdvanceStepsFn,
 } from '@promptwheel/core/trajectory/shared';
 import { runMeasurement } from './goals.js';
-import { formatTasteForPrompt } from './taste-profile.js';
 import { formatLearningsForPrompt, selectRelevant } from './learnings.js';
 import { formatDedupForPrompt, type DedupEntry } from './dedup-memory.js';
 import { matchAgainstMemory } from '@promptwheel/core/dedup/shared';
@@ -111,8 +110,11 @@ export function getDrillCooldown(state: AutoSessionState): number {
       }
     }
 
-    // ±1 jitter prevents lockstep patterns in long sessions
-    const jitter = Math.round(Math.random() * 2) - 1; // -1, 0, or +1
+    // ±N jitter prevents lockstep patterns in long sessions (configurable, default ±1)
+    const jitterRange = drillConf?.cooldownJitter ?? 1;
+    const jitter = jitterRange > 0
+      ? Math.round(Math.random() * jitterRange * 2) - jitterRange
+      : 0;
     return Math.max(0, baseCooldown + adjustment + freshnessAdj + jitter);
   }
 
@@ -305,32 +307,6 @@ function formatDiversityHint(state: AutoSessionState): string {
   }
 
   return parts.join('\n\n');
-}
-
-// ── Sector context ───────────────────────────────────────────────────────────
-
-/** Build a sector summary for the generation prompt. Capped to top 30 sectors by file count. */
-export function formatSectorContextForPrompt(state: AutoSessionState): string {
-  if (!state.sectorState) return '';
-
-  const MAX_SECTORS_IN_PROMPT = 30;
-  const production = state.sectorState.sectors.filter(s => s.production && s.fileCount > 0);
-  // Sort by file count descending to prioritize significant sectors
-  const sorted = [...production].sort((a, b) => b.fileCount - a.fileCount);
-  const capped = sorted.slice(0, MAX_SECTORS_IN_PROMPT);
-
-  const sectors = capped.map(s => {
-    const scanLabel = s.scanCount > 0
-      ? `scanned ${s.scanCount}x, yield ${s.proposalYield}`
-      : 'unscanned';
-    return `- ${s.path} (${s.fileCount} files, ${scanLabel})`;
-  });
-
-  if (sectors.length === 0) return '';
-  if (production.length > MAX_SECTORS_IN_PROMPT) {
-    sectors.push(`(${production.length - MAX_SECTORS_IN_PROMPT} smaller sectors omitted)`);
-  }
-  return sectors.join('\n');
 }
 
 // ── Drill history persistence ────────────────────────────────────────────────
@@ -1150,7 +1126,7 @@ export function buildEscalationProposals(
       confidence,
       impact_score: 8, // high impact — these are persistent issues worth solving
       acceptance_criteria: [],
-      verification_commands: ['npm test'],
+      verification_commands: state.config?.qa?.commands?.map(c => typeof c === 'string' ? c : c.cmd) ?? ['npm test'],
       rationale: `Repeatedly failed as single ticket (${entry.hit_count}x, reason: ${entry.failureReason}). Needs decomposition.`,
       estimated_complexity: complexity as 'trivial' | 'simple' | 'moderate' | 'complex',
     });
@@ -1373,10 +1349,7 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
   // Build context for trajectory generation
   const historyBlock = formatDrillHistoryForPrompt(state);
   const diversityHint = formatDiversityHint(state);
-  const sectorContext = formatSectorContextForPrompt(state);
-
-  // Integrate project learnings, taste profile, and dedup memory
-  const tasteContext = state.tasteProfile ? formatTasteForPrompt(state.tasteProfile) : undefined;
+  // Integrate project learnings and dedup memory
   const learningsContext = state.autoConf.learningsEnabled
     ? formatLearningsForPrompt(selectRelevant(state.allLearnings, {}), state.autoConf.learningsBudget ?? 500) || undefined
     : undefined;
@@ -1598,31 +1571,7 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
     convergenceHint = hints[state.lastConvergenceAction];
   }
 
-  // Filter proposals referencing empty sectors (0 files on disk).
-  // These produce trajectory steps that always fail with "no files found".
-  const emptySectorPaths = new Set(
-    (state.sectorState?.sectors ?? [])
-      .filter(s => s.fileCount === 0)
-      .map(s => s.path),
-  );
-  let preFiltered = proposals;
-  if (emptySectorPaths.size > 0) {
-    const before = preFiltered.length;
-    preFiltered = preFiltered.filter(p => {
-      if (p.files.length === 0) return true;
-      // Drop if ALL files fall under an empty sector
-      const allEmpty = p.files.every(f => {
-        for (const sp of emptySectorPaths) {
-          if (f === sp || f.startsWith(sp + '/')) return true;
-        }
-        return false;
-      });
-      return !allEmpty;
-    });
-    if (preFiltered.length < before) {
-      state.displayAdapter.log(chalk.gray(`  Drill: dropped ${before - preFiltered.length} proposal(s) targeting empty sectors`));
-    }
-  }
+  const preFiltered = proposals;
 
   // Filter test-only files from proposals before trajectory generation.
   // The scout excludes test files by default, so trajectory steps scoped to
@@ -1689,8 +1638,7 @@ export async function maybeDrillGenerateTrajectory(state: AutoSessionState): Pro
       repoRoot: state.repoRoot,
       previousTrajectories: historyBlock || undefined,
       diversityHint: diversityHint || undefined,
-      sectorContext: sectorContext || undefined,
-      tasteContext,
+      sectorContext: undefined,
       learningsContext,
       dedupContext,
       goalContext,

@@ -18,6 +18,7 @@ import { buildTicketPrompt } from '../solo-prompt-builder.js';
 import { isTestFailure, extractTestFilesFromQaOutput } from '../solo-qa-retry.js';
 import { recordQaCommandResult } from '../qa-stats.js';
 import { recordQualitySignal } from '../run-state.js';
+import { verifyCriteria } from '../criteria-verifier.js';
 import type { FailureReason } from '../solo-ticket-types.js';
 import type { TicketContext, StepResult } from './types.js';
 
@@ -307,6 +308,92 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
     }
   }
 
+  // --- Criteria verification (after commands pass, before marking success) ---
+  const acceptanceCriteria = extractAcceptanceCriteria(ctx.opts);
+  const criteriaVerificationEnabled = ctx.opts.criteriaVerification !== false;
+  if (criteriaVerificationEnabled && acceptanceCriteria.length > 0) {
+    try {
+      const diff = (await gitExec('git diff HEAD~1', { cwd: worktreePath })).trim();
+      if (diff.length > 0) {
+        onProgress('QA: verifying acceptance criteria against diff...');
+        const criteriaResult = await verifyCriteria(
+          diff,
+          acceptanceCriteria,
+          ticket.title,
+          worktreePath,
+        );
+
+        if (!criteriaResult.allPassed) {
+          const failedCriteria = criteriaResult.results.filter(r => !r.passed);
+          const failMsg = failedCriteria
+            .map(r => `  - "${r.criterion}": ${r.evidence}`)
+            .join('\n');
+
+          onProgress(`QA: ${failedCriteria.length} acceptance criterion/criteria not met`);
+
+          await ctx.markStep('qa', 'failed', {
+            errorMessage: `Acceptance criteria not met:\n${failMsg}`,
+            metadata: {
+              qaRunId: qaResult.runId,
+              criteria_results: criteriaResult.results,
+            },
+          });
+          recordQualitySignal(repoRoot, 'qa_fail');
+          await ctx.skipRemaining(7, 'Criteria verification failed');
+
+          const result = {
+            success: false,
+            branchName,
+            durationMs: Date.now() - startTime,
+            error: `QA commands passed but acceptance criteria not met:\n${failMsg}`,
+            failureReason: 'qa_failed' as FailureReason,
+          };
+          await ctx.saveRunSummary(result);
+          return { continue: false, result };
+        }
+
+        // Store criteria results in metadata for learnings
+        await ctx.markStep('qa', 'success', {
+          metadata: {
+            qaRunId: qaResult.runId,
+            criteria_results: criteriaResult.results,
+            ...(skippedCommands.length > 0 ? { skippedPreExisting: skippedCommands } : {}),
+          },
+        });
+        recordQualitySignal(repoRoot, 'qa_pass');
+
+        // Record per-command QA stats
+        try {
+          const qaStatsDetails = await getQaRunDetails(adapter, qaResult.runId);
+          if (qaStatsDetails) {
+            for (const step of qaStatsDetails.steps) {
+              recordQaCommandResult(repoRoot, step.name, {
+                passed: step.status === 'success',
+                durationMs: step.durationMs ?? 0,
+                timedOut: (step.signal === 'SIGTERM') || false,
+                skippedPreExisting: false,
+              });
+            }
+          }
+          for (const name of skippedCommands) {
+            recordQaCommandResult(repoRoot, name, {
+              passed: false,
+              durationMs: 0,
+              timedOut: false,
+              skippedPreExisting: true,
+            });
+          }
+        } catch {
+          // Non-fatal
+        }
+
+        return { continue: true };
+      }
+    } catch {
+      // Non-fatal: if criteria verification fails, fall through to normal success
+    }
+  }
+
   await ctx.markStep('qa', 'success', {
     metadata: {
       qaRunId: qaResult.runId,
@@ -341,4 +428,22 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
   }
 
   return { continue: true };
+}
+
+/**
+ * Extract acceptance criteria from RunTicketOptions.
+ * Criteria can come from opts.acceptanceCriteria (passed from proposal)
+ * or from ticket metadata (stored during ticket creation).
+ */
+function extractAcceptanceCriteria(opts: TicketContext['opts']): string[] {
+  // Direct from proposal (solo mode)
+  if (opts.acceptanceCriteria?.length) {
+    return opts.acceptanceCriteria;
+  }
+  // From ticket metadata (MCP mode)
+  const meta = opts.ticket?.metadata as Record<string, unknown> | null | undefined;
+  if (meta && Array.isArray(meta['acceptance_criteria'])) {
+    return (meta['acceptance_criteria'] as unknown[]).filter((c): c is string => typeof c === 'string');
+  }
+  return [];
 }

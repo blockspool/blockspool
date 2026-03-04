@@ -1,7 +1,7 @@
 ---
 name: run
 description: Run PromptWheel — autonomous agent orchestration with human review. Default is spin+drill. Use `plan` for human-in-the-loop mode.
-argument-hint: "[plan] [hours=N] [formula=name] [cycles=N] [deep] [parallel=N] [no-drill] [safe]"
+argument-hint: "[plan] [hours=N] [cycles=N] [parallel=N] [no-drill] [safe]"
 ---
 
 Start a PromptWheel session. Default mode is **spin+drill**: scout, fix, repeat with auto-generated trajectories and parallel subagents.
@@ -13,10 +13,8 @@ Parse from `$ARGUMENTS` (all optional, key=value format):
 
 **Common:**
 - **plan** — Enable planning mode (human approval, sequential execution)
-- **formula** — Formula to use (e.g. `security-audit`, `test-coverage`, `cleanup`)
 - **hours** — Time budget for multi-cycle runs (e.g. `hours=4`)
 - **scope** — Directory to scan (auto-detected)
-- **deep** — Enable deep architectural review mode
 - **no-drill** — Disable drill mode (auto-trajectory generation in spin)
 - **safe** — Safe mode: restrict to low-risk categories only (refactor, docs, types, perf)
 
@@ -24,7 +22,7 @@ Parse from `$ARGUMENTS` (all optional, key=value format):
 - **cycles** — Number of scout→execute cycles (default: 1)
 - **parallel** — Concurrent tickets in spin mode (default 2, max 5). Ignored in planning mode.
 - **batch_size** — Milestone batching (merge N tickets into one PR)
-- **min_impact_score** — Filter proposals (1-10, default 3)
+- **min_impact_score** — Filter proposals (1-10, default 5)
 - **direct** — Edit in place without worktrees (default: true). Auto-disabled when using PRs or parallel>1.
 
 ## Mode Detection

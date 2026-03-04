@@ -12,7 +12,6 @@ import type { TicketProposal, ProposalCategory } from '@promptwheel/core/scout';
 import { createGitService } from './git.js';
 import { createLogger } from './logger.js';
 import type { SpindleConfig } from './spindle/index.js';
-import type { DaemonConfig } from './daemon.js';
 import { detectProjectMetadata } from './project-metadata/index.js';
 import { LINTER_COMMANDS, TYPE_CHECKER_COMMANDS } from './tool-command-map.js';
 
@@ -119,15 +118,6 @@ export interface AutoConfig {
   /** Per-backend overrides */
   claude?: { scoutConcurrency?: number; batchTokenBudget?: number; timeoutMultiplier?: number };
   codex?: { scoutConcurrency?: number; batchTokenBudget?: number; timeoutMultiplier?: number };
-  kimi?: { scoutConcurrency?: number; batchTokenBudget?: number; scoutTimeoutMs?: number; timeoutMultiplier?: number };
-  local?: { scoutConcurrency?: number; batchTokenBudget?: number; scoutTimeoutMs?: number; maxIterations?: number; timeoutMultiplier?: number };
-  /**
-   * Wave scheduling conflict sensitivity for parallel execution (default: 'normal'):
-   * - 'strict': Any shared directory or package = conflict (safest, most sequential)
-   * - 'normal': Sibling files + conflict-prone patterns + same category (balanced)
-   * - 'relaxed': Only direct file overlap + glob overlap (most parallel, riskier)
-   */
-  conflictSensitivity?: 'strict' | 'normal' | 'relaxed';
   /** Model routing: automatically select cheaper models for simpler steps */
   modelRouting?: {
     simple?: string;   // default 'haiku'
@@ -135,6 +125,8 @@ export interface AutoConfig {
     complex?: string;  // default 'opus'
     enabled?: boolean; // default true
   };
+  /** Minimum impact score (1-10) for proposals to pass the filter (default: 5). Lower scores are rejected early. */
+  minImpactScore?: number;
   /** Max consecutive idle cycles (no completed tickets) before spin stops (default: 15) */
   maxIdleCycles?: number;
   /**
@@ -153,21 +145,14 @@ export interface AutoConfig {
       timeout?: number;
     }>;
   };
+  /** Opt-out: disable LLM-based acceptance criteria verification in QA. Default: true (enabled). */
+  criteriaVerification?: boolean;
   /** Lens rotation settings */
   lensRotation?: {
     /** Enable multi-lens rotation in spin mode (default: true) */
     enabled?: boolean;
     /** Override the default lens list. Names must match built-in or custom formula names. */
     lenses?: string[];
-  };
-  /** Parallel multi-formula scouting — run multiple formula scouts simultaneously */
-  parallelScout?: {
-    /** Enable parallel scouting (default: false, opt-in) */
-    enabled?: boolean;
-    /** Maximum formulas to scout in parallel (default: 2, max: 3) */
-    maxFormulas?: number;
-    /** Jaccard overlap threshold for deduplicating proposals across formulas (default: 0.7) */
-    dedupeThreshold?: number;
   };
   /**
    * Drill mode settings — auto-trajectory generation in spin mode.
@@ -292,7 +277,6 @@ export const DEFAULT_AUTO_CONFIG: AutoConfig = {
   learningsEnabled: true,
   learningsBudget: 2000,
   learningsDecayRate: 3,
-  conflictSensitivity: 'relaxed',
   maxIdleCycles: 15,
   drill: {
     enabled: true,
@@ -337,8 +321,6 @@ export interface SoloConfig {
   retention?: Partial<RetentionConfig>;
   /** Max parallel tickets for plugin mode (default: 2, max: 5) */
   pluginParallel?: number;
-  /** Daemon mode configuration */
-  daemon?: Partial<DaemonConfig>;
   /** Saved Codex model choice (persisted across runs) */
   codexModel?: string;
   /**

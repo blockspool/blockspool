@@ -23,7 +23,7 @@ import {
   runSelfUpdate,
 } from '../lib/update-check.js';
 
-const CURRENT_VERSION = '0.7.34';
+const CURRENT_VERSION = '0.7.35';
 
 const program = new Command();
 program.exitOverride();

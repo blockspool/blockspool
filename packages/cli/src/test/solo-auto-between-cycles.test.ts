@@ -20,18 +20,6 @@ vi.mock('../lib/solo-git.js', () => ({
   fetchPrReviewComments: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../lib/sectors.js', () => ({
-  saveSectors: vi.fn(),
-  refreshSectors: vi.fn(),
-  recordMergeOutcome: vi.fn(),
-  computeCoverage: vi.fn().mockReturnValue(0),
-  suggestScopeAdjustment: vi.fn().mockReturnValue('continue'),
-  getSectorCategoryAffinity: vi.fn().mockReturnValue([]),
-  getSectorMinConfidence: vi.fn().mockReturnValue(20),
-  loadOrBuildSectors: vi.fn(),
-  pickNextSector: vi.fn(),
-}));
-
 vi.mock('../lib/codebase-index.js', () => ({
   refreshCodebaseIndex: vi.fn(),
   hasStructuralChanges: vi.fn().mockReturnValue(false),
@@ -55,14 +43,6 @@ vi.mock('../lib/guidelines.js', () => ({
   loadGuidelines: vi.fn().mockReturnValue(null),
 }));
 
-vi.mock('../lib/file-cooldown.js', () => ({
-  removePrEntries: vi.fn(),
-}));
-
-vi.mock('../lib/taste-profile.js', () => ({
-  buildTasteProfile: vi.fn().mockReturnValue({ preferredCategories: [], avoidCategories: [], preferredScopes: [] }),
-  saveTasteProfile: vi.fn(),
-}));
 
 // ---------------------------------------------------------------------------
 // SUT imports (after mocks)
@@ -74,7 +54,6 @@ import {
 } from '../lib/solo-auto-between-cycles.js';
 import { readRunState, writeRunState, recordCycle } from '../lib/run-state.js';
 import { calibrateConfidence, loadQaStats, saveQaStats } from '../lib/qa-stats.js';
-import { extractMetaLearnings } from '../lib/meta-learnings.js';
 import { addLearning, loadLearnings, consolidateLearnings } from '../lib/learnings.js';
 
 // ---------------------------------------------------------------------------
@@ -95,7 +74,6 @@ function writeRunStateRaw(overrides: Record<string, any> = {}): void {
     lastDocsAuditCycle: 0,
     lastRunAt: 0,
     deferredProposals: [],
-    formulaStats: {},
     recentCycles: [],
     recentDiffs: [],
     ...overrides,
@@ -148,9 +126,6 @@ function makeState(overrides: Partial<any> = {}): any {
     pendingPrUrls: [],
     maxPrs: 10,
     deliveryMode: 'pr',
-    sectorState: null,
-    currentSectorId: null,
-    currentSectorCycle: 0,
     sessionPhase: 'deep',
     startTime: Date.now(),
     totalMinutes: undefined,
@@ -158,6 +133,7 @@ function makeState(overrides: Partial<any> = {}): any {
     allLearnings: [],
     codebaseIndex: null,
     excludeDirs: [],
+    excludePatterns: [],
     dedupMemory: [],
     displayAdapter: { log: vi.fn(), progressUpdate: vi.fn(), drillStateChanged: vi.fn(), destroy: vi.fn() },
     shutdownRequested: false,
@@ -401,98 +377,6 @@ describe('runPostCycleMaintenance', () => {
 
     const rs = readRunStateRaw();
     expect(rs.totalCycles).toBe(6);
-  });
-
-  // -----------------------------------------------------------------------
-  // 7. extractMetaLearnings called when cycleCount >= 3 and learnings enabled
-  // -----------------------------------------------------------------------
-  it('calls extractMetaLearnings when cycleCount >= 3 and learnings enabled', async () => {
-    writeRunStateRaw({ totalCycles: 2 });
-
-    // Build enough outcomes to make extractMetaLearnings potentially produce results
-    const outcomes = Array.from({ length: 10 }, (_, i) => ({
-      id: `tkt-${i}`,
-      title: `Ticket ${i}`,
-      category: 'refactor',
-      status: i < 7 ? 'failed' : 'completed',
-    }));
-
-    const state = makeState({
-      cycleCount: 3,
-      allTicketOutcomes: outcomes,
-      cycleOutcomes: outcomes.slice(0, 3),
-      autoConf: {
-        learningsEnabled: true,
-        minConfidence: 20,
-        learningsDecayRate: 3,
-      },
-    });
-
-    await runPostCycleMaintenance(state, '**', false);
-
-    // After extractMetaLearnings with high failure rate (70%), learnings should be added
-    const learningsFile = path.join(tmpDir, '.promptwheel', 'learnings.json');
-    if (fs.existsSync(learningsFile)) {
-      const learnings = JSON.parse(fs.readFileSync(learningsFile, 'utf8'));
-      // High failure rate insight should be written
-      const hasProcessInsight = learnings.some(
-        (l: any) => l.source?.type === 'process_insight',
-      );
-      expect(hasProcessInsight).toBe(true);
-    }
-  });
-
-  it('skips extractMetaLearnings when cycleCount < 3', async () => {
-    writeRunStateRaw({ totalCycles: 0 });
-
-    const state = makeState({
-      cycleCount: 2,
-      cycleOutcomes: [],
-      allTicketOutcomes: Array.from({ length: 10 }, () => ({
-        id: '', title: 'T', category: 'refactor', status: 'failed',
-      })),
-    });
-
-    await runPostCycleMaintenance(state, '**', false);
-
-    // No learnings file should be created by meta-learnings (only by cycle summary logic)
-    const learningsFile = path.join(tmpDir, '.promptwheel', 'learnings.json');
-    if (fs.existsSync(learningsFile)) {
-      const learnings = JSON.parse(fs.readFileSync(learningsFile, 'utf8'));
-      const hasProcessInsight = learnings.some(
-        (l: any) => l.source?.type === 'process_insight',
-      );
-      expect(hasProcessInsight).toBe(false);
-    }
-  });
-
-  it('skips extractMetaLearnings when learnings disabled', async () => {
-    writeRunStateRaw({ totalCycles: 2 });
-
-    const state = makeState({
-      cycleCount: 5,
-      cycleOutcomes: [],
-      allTicketOutcomes: Array.from({ length: 10 }, () => ({
-        id: '', title: 'T', category: 'refactor', status: 'failed',
-      })),
-      autoConf: {
-        learningsEnabled: false,
-        minConfidence: 20,
-        learningsDecayRate: 3,
-      },
-    });
-
-    await runPostCycleMaintenance(state, '**', false);
-
-    // No process_insight learnings should be created
-    const learningsFile = path.join(tmpDir, '.promptwheel', 'learnings.json');
-    if (fs.existsSync(learningsFile)) {
-      const learnings = JSON.parse(fs.readFileSync(learningsFile, 'utf8'));
-      const hasProcessInsight = learnings.some(
-        (l: any) => l.source?.type === 'process_insight',
-      );
-      expect(hasProcessInsight).toBe(false);
-    }
   });
 
   // -----------------------------------------------------------------------

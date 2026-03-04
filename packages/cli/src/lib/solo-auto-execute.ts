@@ -17,25 +17,19 @@ import { classifyFailure } from './failure-classifier.js';
 import { analyzeFailure } from './recovery-analyzer.js';
 import { normalizeQaConfig } from './solo-utils.js';
 import { computeTicketTimeout } from './solo-auto-utils.js';
-import { recordPrFiles } from './file-cooldown.js';
 import { recordDedupEntry, resolveBlockingModules } from './dedup-memory.js';
 import { recordOutcome as recordLearningOutcome } from './learnings.js';
-import { recordFormulaTicketOutcome, pushRecentDiff, recordQualitySignal, recordCategoryOutcome, deferProposal } from './run-state.js';
-import { recordTicketOutcome, propagateStaleness } from './sectors.js';
+import { pushRecentDiff, recordQualitySignal, recordCategoryOutcome, deferProposal } from './run-state.js';
 import { appendErrorLedger } from './error-ledger.js';
-import { appendPrOutcome } from './pr-outcomes.js';
 import {
   mergeTicketToMilestone,
   deleteTicketBranch,
   autoMergePr,
 } from './solo-git.js';
 import { getAdaptiveParallelCount, sleep } from './dedup.js';
-import { partitionIntoWaves, enrichWithSymbols, type ConflictSensitivity, type SymbolMap } from './wave-scheduling.js';
-import { orderMergeSequence } from '@promptwheel/core/waves/shared';
-import { loadAstCache } from '@promptwheel/core/codebase-index';
+import { partitionIntoWaves } from './wave-scheduling.js';
 import { getModelForStep } from '@promptwheel/core/proposals/step-classifier';
 import type { TicketOutcome } from './run-history.js';
-import { computeCoverage } from './sectors.js';
 import type { ProgressSnapshot } from './display-adapter.js';
 
 export interface ExecuteResult {
@@ -168,6 +162,7 @@ export async function processOneProposal(
         learningsContext: ticketLearningsBlock || undefined,
         metadataContext: state.metadataBlock || undefined,
         qaRetryWithTestFix: ['refactor', 'perf', 'types'].includes(proposal.category),
+        criteriaVerification: state.autoConf.criteriaVerification,
         confidence: proposal.confidence,
         complexity: proposal.estimated_complexity,
         rationale: proposal.rationale,
@@ -180,7 +175,7 @@ export async function processOneProposal(
           failureReason: lastFailureReason ?? 'unknown',
         } : undefined,
         qaBaseline: cycleQaBaseline ?? undefined,
-        formulaHint: state.currentFormulaName !== 'default' ? state.currentFormulaName : undefined,
+        formulaHint: undefined,
         model: routedModel,
         ...(state.milestoneMode && state.milestoneBranch ? {
           baseBranch: state.milestoneBranch,
@@ -339,7 +334,6 @@ export async function processOneProposal(
         }
         if (result.prUrl) {
           state.displayAdapter.log(chalk.cyan(`    ${result.prUrl}`));
-          recordPrFiles(state.repoRoot, result.prUrl, proposal.files ?? proposal.allowed_paths ?? []);
         }
         if (result.traceAnalysis) state.allTraceAnalyses.push(result.traceAnalysis);
         return { success: true, prUrl: result.prUrl, wasRetried, costUsd: traceCost, inputTokens: traceInput, outputTokens: traceOutput, phaseTiming, injectedLearningIds, actualChangedFiles: result.changedFiles, modelUsed: routedModel, ...(recoveryAttempted ? { recoveryAttempted, recoveryAction, recoverySucceeded: true } : {}) };
@@ -408,7 +402,27 @@ export async function processOneProposal(
             continue;
           }
 
-          // recovery.action === 'skip' — fall through to normal failure handling
+          // recovery.action === 'skip' — check if it looks like a parse/format error
+          // and retry with a hint instead of giving up immediately
+          if (recovery.action === 'skip' && result.failureReason === 'agent_error' &&
+              result.error && /parse|json|syntax|format|unexpected token/i.test(result.error)) {
+            recoveryAction = 'retry_with_hint';
+            retryCount++;
+            wasRetried = true;
+            lastError = result.error;
+            lastFailureReason = 'parse_error';
+            recoveryHint = 'The previous attempt failed due to a parse/format error. Double-check JSON output format and ensure all output is valid.';
+            state.displayAdapter.ticketProgress(currentTicket.id, `Recovery: retrying parse failure with hint (${retryCount}/${maxScopeRetries})...`);
+            await runs.markFailure(state.adapter, currentRun.id, `Recovery retry: parse_error`);
+            currentRun = await runs.create(state.adapter, {
+              projectId: state.project.id,
+              type: 'worker',
+              ticketId: currentTicket.id,
+              metadata: { auto: true, recoveryRetry: retryCount, recoveryAction: 'retry_parse_error' },
+            });
+            continue;
+          }
+          // fall through to normal failure handling
         }
 
         await runs.markFailure(state.adapter, currentRun.id, result.error || result.failureReason || 'unknown');
@@ -451,6 +465,18 @@ export async function processOneProposal(
             ],
             structured,
           });
+          // Targeted criteria-failure learning: more specific than generic QA failure
+          if (result.failureReason === 'qa_failed' && result.error?.includes('acceptance criteria not met')) {
+            addLearning(state.repoRoot, {
+              text: `Ticket '${currentTicket.title}' passed verification commands but failed acceptance criteria. ${result.error.slice(0, 150)}`.slice(0, 200),
+              category: 'gotcha',
+              source: { type: 'qa_failure' as const, detail: 'criteria_verification' },
+              tags: [
+                ...extractTags(currentTicket.allowedPaths, currentTicket.verificationCommands),
+                'failureType:criteria_not_met',
+              ],
+            });
+          }
           // Error ledger
           try {
             const phase = result.failureReason === 'qa_failed' ? 'qa' as const
@@ -468,7 +494,6 @@ export async function processOneProposal(
               category: proposal.category,
               phase,
               sessionCycle: state.cycleCount,
-              formula: state.currentFormulaName,
             });
           } catch { /* non-fatal */ }
         }
@@ -495,7 +520,6 @@ export async function processOneProposal(
           category: proposal.category,
           phase: 'execute',
           sessionCycle: state.cycleCount,
-          formula: state.currentFormulaName,
         });
       } catch { /* non-fatal */ }
       state.displayAdapter.ticketDone(currentTicket.id, false, `Error: ${errorMsg}`);
@@ -540,7 +564,7 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
   let cycleQaBaseline: ReadonlyMap<string, boolean> | null = state.qaBaseline;
   if (!cycleQaBaseline && state.config?.qa?.commands?.length && !state.config.qa.disableBaseline) {
     if (state.options.verbose) state.displayAdapter.log(chalk.gray('  Capturing QA baseline for this cycle...'));
-    const fullBaseline = await captureQaBaseline(state.repoRoot, state.config, (msg) => state.displayAdapter.log(chalk.gray(msg)), state.repoRoot);
+    const fullBaseline = await captureQaBaseline(state.repoRoot, state.config, (msg) => state.displayAdapter.log(chalk.gray(msg)));
     cycleQaBaseline = baselineToPassFail(fullBaseline);
     const preExisting = [...cycleQaBaseline.entries()].filter(([, passed]) => !passed);
     if (state.options.verbose && preExisting.length > 0) {
@@ -612,9 +636,6 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       ticketsActive: 0,
       elapsedMs: Date.now() - state.startTime,
       timeBudgetMs: state.totalMinutes ? state.totalMinutes * 60_000 : undefined,
-      sectorCoverage: state.sectorState
-        ? (() => { const c = computeCoverage(state.sectorState); return { scanned: c.scannedSectors, total: c.totalSectors, percent: c.percent }; })()
-        : undefined,
       cycleProgress: state._cycleProgress,
     };
     state.displayAdapter.progressUpdate(snapshot);
@@ -647,30 +668,8 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       if (result.prUrl) state.pendingPrUrls.push(result.prUrl);
       const verifiedFiles = result.actualChangedFiles ?? proposal.files ?? proposal.allowed_paths ?? [];
       recordDedupEntry(state.repoRoot, proposal.title, true, undefined, otherTitles, verifiedFiles);
-      if (state.sectorState && state.currentSectorId) {
-        recordTicketOutcome(state.sectorState, state.currentSectorId, true, proposal.category);
-        propagateStaleness(state.sectorState, state.currentSectorId, state.codebaseIndex?.reverse_edges);
-      }
-      recordFormulaTicketOutcome(state.repoRoot, state.currentFormulaName, true);
       recordCategoryOutcome(state.repoRoot, proposal.category, true);
       pushRecentDiff(state.repoRoot, { title: proposal.title, summary: `${verifiedFiles.length} files`, files: verifiedFiles, cycle: state.cycleCount });
-      if (result.prUrl && state.currentSectorId) {
-        state.prMetaMap.set(result.prUrl, { sectorId: state.currentSectorId, formula: state.currentFormulaName });
-      }
-      // PR outcomes tracking
-      if (result.prUrl) {
-        try {
-          appendPrOutcome(state.repoRoot, {
-            ts: Date.now(),
-            prUrl: result.prUrl,
-            createdAt: Date.now(),
-            outcome: 'open',
-            formula: state.currentFormulaName,
-            category: proposal.category,
-            ticketTitle: proposal.title,
-          });
-        } catch { /* non-fatal */ }
-      }
       recordQualitySignal(state.repoRoot, result.wasRetried ? 'retried' : 'first_pass');
       if (state.autoConf.learningsEnabled) {
         // Prefer actual git-verified changed files over proposal's planned files
@@ -708,8 +707,6 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
         ? resolveBlockingModules(failFiles, state.codebaseIndex.dependency_edges)
         : undefined;
       recordDedupEntry(state.repoRoot, proposal.title, false, (result.failureReason as any) ?? 'agent_error', undefined, failFiles, blockedBy);
-      if (state.sectorState && state.currentSectorId) recordTicketOutcome(state.sectorState, state.currentSectorId, false, proposal.category);
-      recordFormulaTicketOutcome(state.repoRoot, state.currentFormulaName, false);
       recordCategoryOutcome(state.repoRoot, proposal.category, false);
       // Record learning outcome — learnings injected into this ticket failed
       if (result.injectedLearningIds?.length) {
@@ -750,27 +747,9 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
     // - 'strict': Any shared directory = conflict (safest, more sequential)
     // - 'normal': Sibling files + conflict-prone patterns (balanced)
     // - 'relaxed': Only direct file overlap (most parallel, riskier)
-    const sensitivity: ConflictSensitivity = state.autoConf.conflictSensitivity ?? 'normal';
-
-    // Auto-enrich proposals with target_symbols from AST cache (non-fatal)
-    try {
-      const astCache = loadAstCache(state.repoRoot);
-      const symbolMap: SymbolMap = {};
-      for (const [filePath, entry] of Object.entries(astCache)) {
-        if (entry.symbols?.length) {
-          symbolMap[filePath] = entry.symbols;
-        }
-      }
-      if (Object.keys(symbolMap).length > 0) {
-        enrichWithSymbols(toProcess, symbolMap);
-      }
-    } catch {
-      // Non-fatal — fall back to path-based conflict detection
-    }
-
-    const waves: Array<typeof toProcess> = partitionIntoWaves(toProcess, { sensitivity, edges: state.codebaseIndex?.dependency_edges });
+    const waves: Array<typeof toProcess> = partitionIntoWaves(toProcess, { sensitivity: 'normal' });
     if (state.options.verbose && waves.length > 1) {
-      state.displayAdapter.log(chalk.gray(`  Conflict-aware scheduling: ${waves.length} waves (sensitivity: ${sensitivity})`));
+      state.displayAdapter.log(chalk.gray(`  Conflict-aware scheduling: ${waves.length} waves`));
     }
 
     let ticketCounter = state.totalPrsCreated;
@@ -823,32 +802,6 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
           }
         }
         // Build symbol map once — used for merge ordering and structural resolution
-        let mergeSymbolMap: Record<string, import('@promptwheel/core/codebase-index/shared').SymbolRange[]> | undefined;
-        try {
-          const astCache = loadAstCache(state.repoRoot);
-          const sMap: SymbolMap = {};
-          const sMapForMerge: Record<string, import('@promptwheel/core/codebase-index/shared').SymbolRange[]> = {};
-          for (const [fp, entry] of Object.entries(astCache)) {
-            if (entry.symbols?.length) {
-              sMap[fp] = entry.symbols;
-              sMapForMerge[fp] = entry.symbols;
-            }
-          }
-          if (Object.keys(sMapForMerge).length > 0) mergeSymbolMap = sMapForMerge;
-
-          // Reorder conflicted tickets: merge "safe" ones first (disjoint symbols)
-          if (conflicted.length > 1 && Object.keys(sMap).length > 0) {
-            const candidates = conflicted.map(c => ({
-              files: c.proposal.files,
-              targetSymbols: Object.fromEntries(c.proposal.files.map(f => [f, c.proposal.target_symbols ?? []])),
-            }));
-            const order = orderMergeSequence(candidates, sMap);
-            const reordered = order.map(i => conflicted[i]);
-            conflicted.length = 0;
-            conflicted.push(...reordered);
-          }
-        } catch { /* non-fatal — keep original order */ }
-
         if (conflicted.length > 0) {
           if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Retrying ${conflicted.length} merge-conflicted ticket(s)...`));
           for (const { proposal, branch } of conflicted) {
@@ -857,7 +810,6 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
               state.repoRoot,
               branch,
               state.milestoneWorktreePath,
-              mergeSymbolMap,
             );
             if (retryResult.success) {
               state.milestoneTicketCount++;

@@ -5,7 +5,6 @@
 import chalk from 'chalk';
 import type { AutoSessionState } from './solo-auto-state.js';
 import { addLearning, getLearningEffectiveness } from './learnings.js';
-import { recordFormulaMergeOutcome } from './run-state.js';
 import {
   checkPrStatuses,
   fetchPrReviewComments,
@@ -17,11 +16,8 @@ import {
   deleteRemoteBranch,
   gitExecFile,
 } from './solo-git.js';
-import { recordMergeOutcome, saveSectors } from './sectors.js';
-import { updatePrOutcome } from './pr-outcomes.js';
-import { displayConvergenceSummary, displayWheelHealth, recordSessionHistory, displayFinalSummary, type SessionSummaryContext } from './solo-session-summary.js';
+import { displayWheelHealth, recordSessionHistory, displayFinalSummary, type SessionSummaryContext } from './solo-session-summary.js';
 import { generateSessionReport, generateSessionJson, writeSessionReport, writeSessionJsonReport } from './session-report.js';
-import { writeDaemonWakeMetrics, type DaemonWakeMetrics } from './daemon.js';
 import { computeDrillMetrics } from './solo-auto-drill.js';
 
 export async function finalizeSession(state: AutoSessionState): Promise<number> {
@@ -105,12 +101,6 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
       for (const pr of finalStatuses) {
         if (pr.state === 'merged') {
           state.totalMergedPrs++;
-          const prMeta = state.prMetaMap.get(pr.url);
-          if (prMeta) {
-            if (state.sectorState) recordMergeOutcome(state.sectorState, prMeta.sectorId, true);
-            recordFormulaMergeOutcome(state.repoRoot, prMeta.formula, true);
-          }
-          try { updatePrOutcome(state.repoRoot, pr.url, 'merged', Date.now()); } catch { /* non-fatal */ }
           if (state.autoConf.learningsEnabled) {
             addLearning(state.repoRoot, {
               text: `PR merged: ${pr.url}`.slice(0, 200),
@@ -126,12 +116,6 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
           }
         } else if (pr.state === 'closed') {
           state.totalClosedPrs++;
-          const prMeta = state.prMetaMap.get(pr.url);
-          if (prMeta) {
-            if (state.sectorState) recordMergeOutcome(state.sectorState, prMeta.sectorId, false);
-            recordFormulaMergeOutcome(state.repoRoot, prMeta.formula, false);
-          }
-          try { updatePrOutcome(state.repoRoot, pr.url, 'closed', Date.now()); } catch { /* non-fatal */ }
           if (state.autoConf.learningsEnabled) {
             addLearning(state.repoRoot, {
               text: `PR closed/rejected: ${pr.url}`.slice(0, 200),
@@ -156,9 +140,6 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
       console.error(chalk.gray(`  PR status poll failed: ${err instanceof Error ? err.message : String(err)}`));
     }
   }
-
-  // Save final sector state
-  if (state.sectorState) saveSectors(state.repoRoot, state.sectorState);
 
   // Build drill stats from history (needed by both report and summary)
   let drillStats: SessionSummaryContext['drillStats'];
@@ -215,10 +196,9 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
       maxPrs: state.maxPrs,
       endTime: state.endTime,
       totalMinutes: state.totalMinutes,
-      sectorState: state.sectorState,
       allLearningsCount: state.allLearnings.length,
       allTicketOutcomes: state.allTicketOutcomes,
-      activeFormula: state.activeFormula,
+      activeFormula: null,
       userScope: state.userScope,
       parallelExplicit: state.parallelExplicit,
       parallelOption: state.options.parallel,
@@ -261,10 +241,9 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
     maxPrs: state.maxPrs,
     endTime: state.endTime,
     totalMinutes: state.totalMinutes,
-    sectorState: state.sectorState,
     allLearningsCount: state.allLearnings.length,
     allTicketOutcomes: state.allTicketOutcomes,
-    activeFormula: state.activeFormula,
+    activeFormula: null,
     userScope: state.userScope,
     parallelExplicit: state.parallelExplicit,
     parallelOption: state.options.parallel,
@@ -275,7 +254,6 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
     learningStats,
     drillStats,
   };
-  displayConvergenceSummary(summaryCtx);
   displayWheelHealth(summaryCtx);
   await recordSessionHistory(summaryCtx);
 
@@ -297,21 +275,6 @@ async function finalizeSafe(state: AutoSessionState): Promise<number> {
     console.log(chalk.gray(`  Report: ${reportPath}`));
   }
 
-  // Persist wake metrics for daemon notification consumption
-  if (state.options.daemon) {
-    try {
-      const metrics: DaemonWakeMetrics = {
-        cyclesCompleted: state.cycleCount,
-        ticketsCompleted: state.completedDirectTickets.length + state.totalPrsCreated,
-        ticketsFailed: state.totalFailed,
-        prUrls: [...state.allPrUrls],
-        reportPath,
-      };
-      writeDaemonWakeMetrics(state.repoRoot, metrics);
-    } catch (err) {
-      console.debug(`Daemon wake metrics write failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
 
   return state.totalFailed > 0 && state.allPrUrls.length === 0 ? 1 : 0;
 }

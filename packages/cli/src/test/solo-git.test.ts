@@ -80,9 +80,8 @@ describe('withGitMutex', () => {
 describe('cleanupWorktree', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Mock exec to call its callback with (null, { stdout: '', stderr: '' })
-    // This is how the real child_process.exec works
-    mockExec.mockImplementation((cmd: string, opts: unknown, callback: Function) => {
+    // cleanupWorktree uses gitExecFile (child_process.execFile)
+    mockExecFile.mockImplementation((cmd: string, args: string[], opts: unknown, callback: Function) => {
       callback(null, { stdout: '', stderr: '' });
     });
   });
@@ -93,8 +92,9 @@ describe('cleanupWorktree', () => {
     await cleanupWorktree('/repo', '/repo/.promptwheel/worktrees/test');
 
     expect(fs.existsSync).toHaveBeenCalledWith('/repo/.promptwheel/worktrees/test');
-    expect(mockExec).toHaveBeenCalledWith(
-      expect.stringContaining('git worktree remove'),
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['worktree', 'remove']),
       expect.objectContaining({ cwd: '/repo' }),
       expect.any(Function)
     );
@@ -107,12 +107,12 @@ describe('cleanupWorktree', () => {
       cleanupWorktree('/repo', '/repo/.promptwheel/worktrees/test')
     ).resolves.toBeUndefined();
 
-    expect(mockExec).not.toHaveBeenCalled();
+    expect(mockExecFile).not.toHaveBeenCalled();
   });
 
   it('ignores errors from git command', async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
-    mockExec.mockImplementation((cmd: string, opts: unknown, callback: Function) => {
+    mockExecFile.mockImplementation((cmd: string, args: string[], opts: unknown, callback: Function) => {
       callback(new Error('git failed'));
     });
 
@@ -125,7 +125,8 @@ describe('cleanupWorktree', () => {
 describe('createMilestoneBranch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockExec.mockImplementation((cmd: string, opts: unknown, callback: Function) => {
+    // createMilestoneBranch uses gitExecFile (child_process.execFile)
+    mockExecFile.mockImplementation((cmd: string, args: string[], opts: unknown, callback: Function) => {
       callback(null, { stdout: '', stderr: '' });
     });
     vi.mocked(fs.existsSync).mockReturnValue(false);
@@ -160,8 +161,9 @@ describe('createMilestoneBranch', () => {
   it('fetches origin', async () => {
     await createMilestoneBranch('/repo', 'main');
 
-    expect(mockExec).toHaveBeenCalledWith(
-      expect.stringContaining('git fetch origin main'),
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['fetch', 'origin', 'main'],
       expect.objectContaining({ cwd: '/repo' }),
       expect.any(Function)
     );
@@ -171,15 +173,17 @@ describe('createMilestoneBranch', () => {
     await createMilestoneBranch('/repo', 'main');
 
     // Should create branch from origin/main
-    expect(mockExec).toHaveBeenCalledWith(
-      expect.stringMatching(/git branch "promptwheel\/milestone-.*" "origin\/main"/),
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['branch']),
       expect.objectContaining({ cwd: '/repo' }),
       expect.any(Function)
     );
 
     // Should add worktree
-    expect(mockExec).toHaveBeenCalledWith(
-      expect.stringContaining('git worktree add'),
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['worktree', 'add']),
       expect.objectContaining({ cwd: '/repo' }),
       expect.any(Function)
     );
@@ -207,33 +211,26 @@ describe('mergeTicketToMilestone', () => {
   });
 
   it('returns conflicted when merge fails and rebase fails', async () => {
-    // gitExecFile calls: merge (fail), rebase (fail)
-    // gitExec calls: merge --abort, rev-parse, rebase --abort, merge --abort
+    // All operations use gitExecFile (execFile). Call sequence:
+    // 1. merge --no-ff (fail)
+    // 2. merge --abort (success)
+    // 3. rev-parse --abbrev-ref HEAD (returns branch name)
+    // 4. rebase (fail)
+    // 5-8. abort/cleanup commands (succeed)
     let execFileCallCount = 0;
     mockExecFile.mockImplementation((cmd: string, args: string[], opts: unknown, callback: Function) => {
       execFileCallCount++;
       if (execFileCallCount === 1) {
         // First merge fails
         callback(new Error('merge conflict'));
-      } else if (execFileCallCount === 2) {
+      } else if (execFileCallCount === 3) {
+        // rev-parse returns branch name
+        callback(null, { stdout: 'promptwheel/milestone-abc\n', stderr: '' });
+      } else if (execFileCallCount === 4) {
         // rebase fails
         callback(new Error('rebase conflict'));
       } else {
-        callback(null, { stdout: '', stderr: '' });
-      }
-    });
-
-    let execCallCount = 0;
-    mockExec.mockImplementation((cmd: string, opts: unknown, callback: Function) => {
-      execCallCount++;
-      if (execCallCount === 1) {
-        // merge --abort succeeds
-        callback(null, { stdout: '', stderr: '' });
-      } else if (execCallCount === 2) {
-        // rev-parse returns branch name
-        callback(null, { stdout: 'promptwheel/milestone-abc\n', stderr: '' });
-      } else {
-        // abort commands succeed
+        // abort/cleanup commands succeed
         callback(null, { stdout: '', stderr: '' });
       }
     });
@@ -248,30 +245,24 @@ describe('mergeTicketToMilestone', () => {
   });
 
   it('retries with rebase on first failure then succeeds', async () => {
-    // gitExecFile calls: merge (fail), rebase (success), second merge (success)
-    // gitExec calls: merge --abort, rev-parse
+    // All operations use gitExecFile (execFile). Call sequence:
+    // 1. merge --no-ff (fail)
+    // 2. merge --abort (success)
+    // 3. rev-parse --abbrev-ref HEAD (returns branch name)
+    // 4. rebase (success)
+    // 5. checkout (success)
+    // 6. merge --no-ff (success)
     let execFileCallCount = 0;
     mockExecFile.mockImplementation((cmd: string, args: string[], opts: unknown, callback: Function) => {
       execFileCallCount++;
       if (execFileCallCount === 1) {
         // First merge fails
         callback(new Error('merge conflict'));
-      } else {
-        // rebase and second merge succeed
-        callback(null, { stdout: '', stderr: '' });
-      }
-    });
-
-    let execCallCount = 0;
-    mockExec.mockImplementation((cmd: string, opts: unknown, callback: Function) => {
-      execCallCount++;
-      if (execCallCount === 1) {
-        // merge --abort succeeds
-        callback(null, { stdout: '', stderr: '' });
-      } else if (execCallCount === 2) {
+      } else if (execFileCallCount === 3) {
         // rev-parse returns branch name
         callback(null, { stdout: 'promptwheel/milestone-abc\n', stderr: '' });
       } else {
+        // merge --abort, rebase, checkout, second merge succeed
         callback(null, { stdout: '', stderr: '' });
       }
     });

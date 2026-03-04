@@ -59,13 +59,11 @@ vi.mock('@promptwheel/core/repos', () => ({
 
 vi.mock('../lib/run-state.js', () => ({
   recordQualitySignal: vi.fn(),
-  recordFormulaTicketOutcome: vi.fn(),
   recordCategoryOutcome: vi.fn(),
   pushRecentDiff: vi.fn(),
   deferProposal: vi.fn(),
   readRunState: vi.fn().mockReturnValue({
     totalCycles: 1,
-    formulaStats: {},
     deferredProposals: [],
     recentDiffs: [],
     lensZeroYieldPairs: [],
@@ -153,7 +151,7 @@ let tmpDir: string;
 function ensurePromptwheelDir(): void {
   fs.mkdirSync(path.join(tmpDir, '.promptwheel'), { recursive: true });
   fs.writeFileSync(path.join(tmpDir, '.promptwheel', 'run-state.json'), JSON.stringify({
-    totalCycles: 0, formulaStats: {}, deferredProposals: [], recentDiffs: [], lensZeroYieldPairs: [],
+    totalCycles: 0, deferredProposals: [], recentDiffs: [], lensZeroYieldPairs: [],
   }));
 }
 
@@ -218,12 +216,12 @@ function makeState(overrides: Partial<Record<string, unknown>> = {}): Record<str
     allLearnings: [],
     codebaseIndex: null,
     excludeDirs: [],
+    excludePatterns: [],
     dedupMemory: [],
     completedDirectTickets: [] as Array<{ title: string; category: string; files: string[] }>,
     allTraceAnalyses: [],
     prMetaMap: new Map(),
     currentFormulaName: 'default',
-    activeFormula: null,
     tasteProfile: { preferredCategories: [], avoidCategories: [], preferredScopes: [] },
     guidelines: null,
     metadataBlock: null,

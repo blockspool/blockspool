@@ -29,68 +29,18 @@ export async function scoutAllSectors(state: AutoSessionState): Promise<ScoutAll
   const allProposals: TicketProposal[] = [];
   let sectorsScanned = 0;
 
-  const totalSectors = state.sectorState?.sectors.filter(s => s.production).length ?? 1;
+  const scope = getNextScope(state) ?? '**';
+  state.displayAdapter.log(chalk.bold(`Scouting scope: ${scope}...`));
+  state.cycleCount++;
 
-  // If --scope is set, scout only that scope
-  if (state.userScope) {
-    state.displayAdapter.log(chalk.bold(`Scouting scope: ${state.userScope}...`));
-    state.cycleCount++;
-
-    const scoutResult = await runScoutPhase(state, state.userScope);
-    if (!scoutResult.shouldBreak && scoutResult.proposals.length > 0) {
-      const filterResult = await filterProposals(state, scoutResult.proposals, scoutResult.scope, scoutResult.cycleFormula);
-      if (filterResult.toProcess.length > 0) {
-        allProposals.push(...filterResult.toProcess);
-      }
+  const scoutResult = await runScoutPhase(state, scope);
+  if (!scoutResult.shouldBreak && scoutResult.proposals.length > 0) {
+    const filterResult = await filterProposals(state, scoutResult.proposals, scoutResult.scope);
+    if (filterResult.toProcess.length > 0) {
+      allProposals.push(...filterResult.toProcess);
     }
-    sectorsScanned = 1;
-    return { proposals: rankWithGraph(state, allProposals), sectorsScanned };
   }
-
-  // Scout all sectors
-  state.displayAdapter.log(chalk.bold(`Scouting ${totalSectors} sector(s)...`));
-  state.displayAdapter.log('');
-
-  // Keep scouting until getNextScope returns null (all sectors covered)
-  // or we hit a shutdown signal
-  const maxIterations = totalSectors + 5; // safety bound
-  let iterations = 0;
-
-  while (!state.shutdownRequested && iterations < maxIterations) {
-    iterations++;
-    const scope = getNextScope(state);
-    if (scope === null) break; // all sectors scanned
-
-    state.cycleCount++;
-    sectorsScanned++;
-
-    state.displayAdapter.log(chalk.gray(`  [${sectorsScanned}/${totalSectors}] ${scope}`));
-
-    // Update progress bar during multi-sector survey
-    state._cycleProgress = { done: sectorsScanned - 1, total: totalSectors, label: 'sectors' };
-    state.displayAdapter.progressUpdate({
-      phase: 'scouting',
-      cycleCount: state.cycleCount,
-      ticketsDone: 0, ticketsFailed: 0, ticketsDeferred: 0, ticketsActive: 0,
-      elapsedMs: Date.now() - state.startTime,
-      cycleProgress: state._cycleProgress,
-    });
-
-    const scoutResult = await runScoutPhase(state, scope);
-    if (scoutResult.shouldBreak) break;
-
-    if (scoutResult.proposals.length > 0) {
-      const filterResult = await filterProposals(state, scoutResult.proposals, scoutResult.scope, scoutResult.cycleFormula);
-      if (filterResult.toProcess.length > 0) {
-        allProposals.push(...filterResult.toProcess);
-      }
-    }
-
-    // Reset scout retries between sectors in planning mode
-    state.scoutRetries = 0;
-    state.scoutedDirs = [];
-  }
-
+  sectorsScanned = 1;
   return { proposals: rankWithGraph(state, allProposals), sectorsScanned };
 }
 

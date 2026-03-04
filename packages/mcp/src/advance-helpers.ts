@@ -8,27 +8,10 @@ import {
   recordAccess,
 } from './learnings.js';
 import type { AdaptiveRiskAssessment } from '@promptwheel/core/learnings/shared';
-import type { SectorState } from '@promptwheel/core/sectors/shared';
 
 export { loadTrajectoryData } from '@promptwheel/core/trajectory/io';
 
 export const DEFAULT_LEARNINGS_BUDGET = 2000;
-
-/** Load sectors.json from project root — returns null if missing/invalid. */
-export function loadSectorsState(rootPath: string): SectorState | null {
-  try {
-    const filePath = path.join(rootPath, '.promptwheel', 'sectors.json');
-    if (!fs.existsSync(filePath)) return null;
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (data?.version !== 2 || !Array.isArray(data.sectors)) return null;
-    return data as SectorState;
-  } catch (err) {
-    if (err instanceof Error && !('code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT')) {
-      console.warn(`[promptwheel] Failed to load sectors.json: ${err.message}`);
-    }
-    return null;
-  }
-}
 
 /**
  * Build a learnings block for prompt injection. Tracks injected IDs in state.

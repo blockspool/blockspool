@@ -34,7 +34,6 @@ describe('ScoutPromptBuilder', () => {
     // Insert in reverse of expected order
     const result = new ScoutPromptBuilder()
       .addHints('hints')
-      .addFormulaPrompt('formula')
       .addLearnings('learnings')
       .addEscalation('escalation')
       .addBaselineHealth('baseline')
@@ -43,7 +42,6 @@ describe('ScoutPromptBuilder', () => {
       .addCodebaseIndex('index')
       .addTrajectoryContext('trajectory')
       .addGoalContext('goal')
-      .addTasteProfile('taste')
       .addMetadata('metadata')
       .addGuidelines('guidelines')
       .build();
@@ -52,7 +50,6 @@ describe('ScoutPromptBuilder', () => {
     expect(blocks).toEqual([
       'guidelines',
       'metadata',
-      'taste',
       'goal',
       'trajectory',
       'index',
@@ -61,7 +58,6 @@ describe('ScoutPromptBuilder', () => {
       'baseline',
       'escalation',
       'learnings',
-      'formula',
       'hints',
     ]);
   });
@@ -110,7 +106,6 @@ describe('ScoutPromptBuilder', () => {
     const builder = new ScoutPromptBuilder();
     expect(builder.addGuidelines('a')).toBe(builder);
     expect(builder.addMetadata('b')).toBe(builder);
-    expect(builder.addTasteProfile('c')).toBe(builder);
     expect(builder.addGoalContext('d')).toBe(builder);
     expect(builder.addTrajectoryContext('e')).toBe(builder);
     expect(builder.addCodebaseIndex('f')).toBe(builder);
@@ -119,7 +114,6 @@ describe('ScoutPromptBuilder', () => {
     expect(builder.addBaselineHealth('i')).toBe(builder);
     expect(builder.addEscalation('j')).toBe(builder);
     expect(builder.addLearnings('k')).toBe(builder);
-    expect(builder.addFormulaPrompt('l')).toBe(builder);
     expect(builder.addHints('m')).toBe(builder);
   });
 
@@ -135,11 +129,6 @@ describe('ScoutPromptBuilder', () => {
   it('addMetadata sets the metadata block', () => {
     const result = new ScoutPromptBuilder().addMetadata('MD').build();
     expect(result).toBe('MD');
-  });
-
-  it('addTasteProfile sets the taste block', () => {
-    const result = new ScoutPromptBuilder().addTasteProfile('TP').build();
-    expect(result).toBe('TP');
   });
 
   it('addGoalContext sets the goal block', () => {
@@ -180,11 +169,6 @@ describe('ScoutPromptBuilder', () => {
   it('addLearnings sets the learnings block', () => {
     const result = new ScoutPromptBuilder().addLearnings('LR').build();
     expect(result).toBe('LR');
-  });
-
-  it('addFormulaPrompt sets the formula block', () => {
-    const result = new ScoutPromptBuilder().addFormulaPrompt('FP').build();
-    expect(result).toBe('FP');
   });
 
   it('addHints sets the hints block', () => {

@@ -57,9 +57,10 @@ export function withLearningsLock<T>(filePath: string, fn: () => T): T {
         continue;
       }
 
-      // Lock held by active process — wait and retry
+      // Lock held by active process — wait with jitter and retry
       if (attempt < LOCK_MAX_ATTEMPTS - 1) {
-        sleepSync(LOCK_RETRY_MS);
+        const jitter = Math.floor(Math.random() * LOCK_RETRY_MS);
+        sleepSync(LOCK_RETRY_MS + jitter);
       }
     }
   }
@@ -67,6 +68,7 @@ export function withLearningsLock<T>(filePath: string, fn: () => T): T {
   if (fd === null) {
     // Could not acquire lock after all attempts — run unprotected rather than failing.
     // This is an advisory lock; data loss from a race is better than crashing the session.
+    console.warn(`[learnings] Could not acquire lock on ${lockPath} after ${LOCK_MAX_ATTEMPTS} attempts — proceeding unprotected`);
     return fn();
   }
 

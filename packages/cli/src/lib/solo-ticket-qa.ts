@@ -7,7 +7,6 @@ import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import type { SoloConfig } from './solo-config.js';
 import { normalizeQaConfig } from './solo-utils.js';
-import { recordBaselineResult } from './qa-stats.js';
 
 export interface BaselineResult {
   passed: boolean;
@@ -33,7 +32,6 @@ export async function captureQaBaseline(
   cwd: string,
   config: SoloConfig,
   onProgress?: (msg: string) => void,
-  projectRoot?: string,
 ): Promise<Map<string, BaselineResult>> {
   const baseline = new Map<string, BaselineResult>();
   const qaConfig = normalizeQaConfig(config);
@@ -54,7 +52,6 @@ export async function captureQaBaseline(
       });
       baseline.set(cmd.name, { passed: true });
       onProgress?.(`  baseline: ${cmd.name} ✓`);
-      if (projectRoot) recordBaselineResult(projectRoot, cmd.name, true);
     } catch (err) {
       // Capture error output for the fix prompt
       let output = '';
@@ -73,7 +70,6 @@ export async function captureQaBaseline(
       }
       baseline.set(cmd.name, { passed: false, output });
       onProgress?.(`  baseline: ${cmd.name} ✗ (pre-existing failure)`);
-      if (projectRoot) recordBaselineResult(projectRoot, cmd.name, false);
     }
   }
 

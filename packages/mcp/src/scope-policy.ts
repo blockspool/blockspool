@@ -59,7 +59,7 @@ function matchesAllowedPath(candidate: string, allowedPath: string): boolean {
   const normalizedAllowed = normalizePathForMatch(allowedPath);
   if (candidate === normalizedAllowed) return true;
   // Directory match: "cloud/app/foo" allows "cloud/app/foo/bar.ts"
-  if (allowedPath.endsWith('/') && candidate.startsWith(normalizedAllowed + '/')) return true;
+  if (candidate.startsWith(normalizedAllowed + '/')) return true;
   return false;
 }
 
@@ -114,6 +114,15 @@ function isCanonicalPathWithinRoot(canonicalPath: string, canonicalRoot: string)
   return canonicalPath === normalizedRoot || canonicalPath.startsWith(normalizedRoot + '/');
 }
 
+/** Cached canonical cwd — process.cwd() never changes during a session. */
+let _cachedCanonicalCwd: string | null | undefined;
+function getCachedCanonicalCwd(): string | null {
+  if (_cachedCanonicalCwd === undefined) {
+    _cachedCanonicalCwd = canonicalizePathForCheck(process.cwd());
+  }
+  return _cachedCanonicalCwd;
+}
+
 function buildPathMatchCandidates(filePath: string, worktreeRoot?: string): string[] {
   const candidates = new Set<string>();
   const addCandidate = (candidate: string) => {
@@ -129,7 +138,7 @@ function buildPathMatchCandidates(filePath: string, worktreeRoot?: string): stri
   if (canonicalFile) {
     addCandidate(canonicalFile);
 
-    const canonicalCwd = canonicalizePathForCheck(process.cwd());
+    const canonicalCwd = getCachedCanonicalCwd();
     if (canonicalCwd && isCanonicalPathWithinRoot(canonicalFile, canonicalCwd)) {
       addCandidate(nodePath.relative(canonicalCwd, canonicalFile));
     }
@@ -354,79 +363,6 @@ export function isFileAllowed(filePath: string, policy: ScopePolicy): boolean {
 }
 
 // containsCredentials is re-exported from core above
-
-// ---------------------------------------------------------------------------
-// Category Tool Policies — per-category auto-approve restrictions
-// ---------------------------------------------------------------------------
-
-export interface CategoryToolPolicy {
-  auto_approve_patterns: string[];
-  constraint_note?: string;
-}
-
-/**
- * Per-category tool restrictions. Categories not listed here use defaults.
- * - docs: can only edit markdown/text files
- * - test: can only edit test files
- * - security: full edit access but no npm install / arbitrary bash
- *
- * @deprecated Use ToolRegistry from @promptwheel/mcp/tool-registry instead.
- * Kept for backward compatibility during migration.
- */
-export const CATEGORY_TOOL_POLICIES: Record<string, CategoryToolPolicy> = {
-  docs: {
-    auto_approve_patterns: [
-      'Read(*)', 'Glob(*)', 'Grep(*)',
-      'Edit(*.md)', 'Edit(*.mdx)', 'Edit(*.txt)', 'Edit(*.rst)',
-      'Write(*.md)', 'Write(*.mdx)', 'Write(*.txt)', 'Write(*.rst)',
-      'Bash(git diff*)', 'Bash(git status*)',
-    ],
-    constraint_note: 'This is a **docs** ticket. You may ONLY edit markdown and text files (*.md, *.mdx, *.txt, *.rst). Do NOT modify source code, config files, or any other file types.',
-  },
-  test: {
-    auto_approve_patterns: [
-      'Read(*)', 'Glob(*)', 'Grep(*)',
-      'Edit(*.test.*)', 'Edit(*.spec.*)', 'Edit(*__tests__*)',
-      'Edit(test_*)', 'Edit(*_test.go)', 'Edit(*_test.py)', 'Edit(*Test.java)',
-      'Write(*.test.*)', 'Write(*.spec.*)', 'Write(*__tests__*)',
-      'Write(test_*)', 'Write(*_test.go)', 'Write(*_test.py)', 'Write(*Test.java)',
-      'Bash(npm test*)', 'Bash(npx vitest*)', 'Bash(npx jest*)', 'Bash(npx tsc*)',
-      'Bash(pytest*)', 'Bash(cargo test*)', 'Bash(go test*)', 'Bash(mvn test*)',
-      'Bash(./gradlew test*)', 'Bash(bundle exec rspec*)', 'Bash(mix test*)',
-      'Bash(dotnet test*)', 'Bash(swift test*)', 'Bash(make test*)',
-      'Bash(dart test*)', 'Bash(flutter test*)', 'Bash(sbt test*)',
-      'Bash(stack test*)', 'Bash(cabal test*)', 'Bash(zig build test*)',
-      'Bash(ctest*)', 'Bash(phpunit*)',
-      'Bash(git diff*)', 'Bash(git status*)',
-    ],
-    constraint_note: 'This is a **test** ticket. You may ONLY edit test files (*.test.*, *.spec.*, __tests__/**, test_*.py, *_test.go, *Test.java, etc.). Do NOT modify production source code.',
-  },
-  security: {
-    auto_approve_patterns: [
-      'Read(*)', 'Glob(*)', 'Grep(*)', 'Edit(*)', 'Write(*)',
-      'Bash(npm test*)', 'Bash(npx vitest*)', 'Bash(npx tsc*)',
-      'Bash(pytest*)', 'Bash(cargo test*)', 'Bash(go test*)', 'Bash(mvn test*)',
-      'Bash(./gradlew test*)', 'Bash(make test*)',
-      'Bash(dart test*)', 'Bash(flutter test*)', 'Bash(sbt test*)',
-      'Bash(stack test*)', 'Bash(cabal test*)', 'Bash(zig build test*)',
-      'Bash(ctest*)', 'Bash(dotnet test*)', 'Bash(swift test*)',
-      'Bash(mix test*)', 'Bash(bundle exec rspec*)', 'Bash(phpunit*)',
-      'Bash(git diff*)', 'Bash(git status*)',
-    ],
-    constraint_note: 'This is a **security** ticket. You have full read/edit access but MUST NOT install new dependencies (`npm install`, `pip install`, `cargo add`, `go get`, `bundle add`, `composer require`, etc.). Do NOT run arbitrary shell commands beyond testing and type-checking.',
-  },
-};
-
-/**
- * Get the tool policy for a given category.
- * Returns null if the category has no specific policy (use defaults).
- *
- * @deprecated Use ToolRegistry.getConstraintNote() instead.
- */
-export function getCategoryToolPolicy(category: string | null): CategoryToolPolicy | null {
-  if (!category) return null;
-  return CATEGORY_TOOL_POLICIES[category] ?? null;
-}
 
 // ---------------------------------------------------------------------------
 // Enforce category file-type restrictions

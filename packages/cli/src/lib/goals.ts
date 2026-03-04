@@ -9,10 +9,23 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
-  type Formula,
   parseSimpleYaml,
   parseStringList,
-} from '@promptwheel/core/formulas/shared';
+} from '@promptwheel/core/yaml-utils';
+
+export interface Goal {
+  name: string;
+  description: string;
+  scope?: string;
+  categories?: string[];
+  prompt?: string;
+  measure?: {
+    cmd: string;
+    target: number;
+    direction: 'up' | 'down';
+  };
+  exclude?: string[];
+}
 
 // ---------------------------------------------------------------------------
 // Shared state-store persistence
@@ -168,12 +181,12 @@ interface GoalMeasurementEntry {
 /**
  * Load goal files from `.promptwheel/goals/*.yaml`, return formulas with measure fields.
  */
-export function loadGoals(repoRoot: string): Formula[] {
+export function loadGoals(repoRoot: string): Goal[] {
   const goalsDir = path.join(repoRoot, '.promptwheel', 'goals');
   if (!fs.existsSync(goalsDir)) return [];
 
   const files = fs.readdirSync(goalsDir).filter(f => f.endsWith('.yaml') || f.endsWith('.yml'));
-  const goals: Formula[] = [];
+  const goals: Goal[] = [];
 
   for (const file of files) {
     try {
@@ -190,13 +203,11 @@ export function loadGoals(repoRoot: string): Formula[] {
         continue; // skip goals missing required measure fields
       }
 
-      const formula: Formula = {
+      const goal: Goal = {
         name,
         description: parsed.description || `Goal: ${name}`,
         categories: parsed.categories ? parseStringList(parsed.categories) : undefined,
         prompt: parsed.prompt,
-        minConfidence: parsed.min_confidence ? parseInt(parsed.min_confidence, 10) : undefined,
-        min_confidence: parsed.min_confidence ? parseInt(parsed.min_confidence, 10) : undefined,
         measure: {
           cmd: measureCmd,
           target: measureTarget,
@@ -204,7 +215,7 @@ export function loadGoals(repoRoot: string): Formula[] {
         },
       };
 
-      goals.push(formula);
+      goals.push(goal);
     } catch {
       // Skip malformed goal files
     }
@@ -253,7 +264,7 @@ export function runMeasurement(cmd: string, repoRoot: string): { value: number |
 /**
  * Measure all goals, compute gaps.
  */
-export function measureGoals(goals: Formula[], repoRoot: string): GoalMeasurement[] {
+export function measureGoals(goals: Goal[], repoRoot: string): GoalMeasurement[] {
   const measurements: GoalMeasurement[] = [];
 
   for (const goal of goals) {
@@ -328,7 +339,7 @@ export function pickGoalByGap(measurements: GoalMeasurement[]): GoalMeasurement 
 /**
  * Format goal context for injection into the scout prompt.
  */
-export function formatGoalContext(goal: Formula, measurement: GoalMeasurement): string {
+export function formatGoalContext(goal: Goal, measurement: GoalMeasurement): string {
   const arrow = measurement.direction === 'up' ? '↑' : '↓';
   const unit = measurement.direction === 'up' ? 'higher is better' : 'lower is better';
   return [

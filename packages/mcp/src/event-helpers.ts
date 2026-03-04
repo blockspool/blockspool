@@ -6,11 +6,7 @@ import { repos } from '@promptwheel/core';
 import { RunManager } from './run-manager.js';
 import type { EventType } from './types.js';
 import { recordDedupEntry } from './dedup-memory.js';
-import {
-  recordTicketOutcome as recordTicketOutcomeCore,
-  propagateStaleness,
-} from '@promptwheel/core/sectors/shared';
-import type { SectorState } from '@promptwheel/core/sectors/shared';
+import { truncateUtf8 } from './utf8-utils.js';
 
 // ---------------------------------------------------------------------------
 // EventContext — shared context for all handlers
@@ -139,34 +135,7 @@ function toJsonBytes(value: unknown): number {
   }
 }
 
-export function truncateUtf8String(value: string, maxBytes: number): {
-  value: string;
-  truncated: boolean;
-  originalBytes: number;
-} {
-  const safeMaxBytes = Math.max(0, maxBytes);
-  const originalBytes = Buffer.byteLength(value, 'utf8');
-  if (originalBytes <= safeMaxBytes) {
-    return { value, truncated: false, originalBytes };
-  }
-
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    const candidate = value.slice(0, mid);
-    if (Buffer.byteLength(candidate, 'utf8') <= safeMaxBytes) {
-      low = mid;
-    } else {
-      high = mid - 1;
-    }
-  }
-  return {
-    value: value.slice(0, low),
-    truncated: true,
-    originalBytes,
-  };
-}
+// truncateUtf8 imported from ./utf8-utils.js (shared with run-manager)
 
 export function truncateArtifactText(
   text: string,
@@ -177,7 +146,7 @@ export function truncateArtifactText(
   originalBytes: number;
   maxBytes: number;
 } {
-  const limited = truncateUtf8String(text, maxBytes);
+  const limited = truncateUtf8(text, maxBytes);
   return {
     text: limited.value,
     truncated: limited.truncated,
@@ -205,7 +174,7 @@ export function stringifyBoundedArtifactJson(
   if (bytes <= maxBytes) return serialized;
 
   const previewBudget = Math.max(0, maxBytes - 1536);
-  const preview = truncateUtf8String(serialized, previewBudget).value;
+  const preview = truncateUtf8(serialized, previewBudget).value;
   return JSON.stringify({
     ...fallback,
     _artifact_truncated: true,
@@ -256,7 +225,7 @@ function validateStringField(
   if (typeof value !== 'string') {
     return invalid(type, `\`${field}\` must be a string`);
   }
-  const limited = truncateUtf8String(value, maxBytes);
+  const limited = truncateUtf8(value, maxBytes);
   if (!limited.truncated) return { ok: true, value };
   if (mode === 'reject') {
     return invalid(type, `\`${field}\` exceeds ${maxBytes} bytes`);
@@ -296,7 +265,7 @@ function validateStringArrayField(
     if (typeof item !== 'string') {
       return invalid(type, `\`${field}\` must be an array of strings`);
     }
-    const limited = truncateUtf8String(item, maxItemBytes);
+    const limited = truncateUtf8(item, maxItemBytes);
     if (limited.truncated) {
       if (itemMode === 'reject') {
         return invalid(type, `\`${field}[${i}]\` exceeds ${maxItemBytes} bytes`);
@@ -429,26 +398,6 @@ export function validateAndSanitizeEventPayload(
         sanitized['exploration_summary'] = summary.value;
       }
 
-      if ('sector_reclassification' in payload) {
-        const raw = payload['sector_reclassification'];
-        if (raw !== undefined) {
-          if (!isRecord(raw)) return invalid(type, '`sector_reclassification` must be an object');
-          const reclass: Record<string, unknown> = { ...raw };
-          if ('production' in raw) {
-            const production = toBooleanOrUndefined(raw['production']);
-            if (production === undefined) return invalid(type, '`sector_reclassification.production` must be boolean');
-            reclass['production'] = production;
-          }
-          if ('confidence' in raw) {
-            const confidence = toStringOrUndefined(raw['confidence']);
-            if (!confidence || !RISK_LEVELS.has(confidence)) {
-              return invalid(type, '`sector_reclassification.confidence` must be low, medium, or high');
-            }
-            reclass['confidence'] = confidence;
-          }
-          sanitized['sector_reclassification'] = reclass;
-        }
-      }
       return { ok: true, payload: attachTruncationMetadata(sanitized, truncations) };
     }
 
@@ -891,7 +840,7 @@ export function validateAndSanitizeEventPayload(
 }
 
 // ---------------------------------------------------------------------------
-// Helpers — shared sector & dedup recording
+// Helpers — shared utilities
 // ---------------------------------------------------------------------------
 
 /** Atomic write: write to .tmp then rename, preventing corruption on crash */
@@ -899,41 +848,6 @@ export function atomicWriteJsonSync(filePath: string, data: unknown): void {
   const tmpPath = filePath + '.tmp';
   fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
   fs.renameSync(tmpPath, filePath);
-}
-
-/** Load sectors.json, return null if missing/invalid. */
-export function loadSectorsState(rootPath: string): { state: SectorState; filePath: string } | null {
-  try {
-    const filePath = path.join(rootPath, '.promptwheel', 'sectors.json');
-    if (!fs.existsSync(filePath)) return null;
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (data?.version !== 2 || !Array.isArray(data.sectors)) return null;
-    return { state: data as SectorState, filePath };
-  } catch (err) {
-    console.warn(`[promptwheel] loadSectorsState: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-}
-
-export function recordSectorOutcome(
-  rootPath: string,
-  sectorPath: string | undefined,
-  outcome: 'success' | 'failure',
-  reverseEdges?: Record<string, string[]>,
-): void {
-  if (!sectorPath) return;
-  try {
-    const loaded = loadSectorsState(rootPath);
-    if (!loaded) return;
-    recordTicketOutcomeCore(loaded.state, sectorPath, outcome === 'success');
-    // Propagate staleness to dependent sectors on success
-    if (outcome === 'success') {
-      propagateStaleness(loaded.state, sectorPath, reverseEdges);
-    }
-    atomicWriteJsonSync(loaded.filePath, loaded.state);
-  } catch (err) {
-    console.warn(`[promptwheel] recordSectorOutcome: ${err instanceof Error ? err.message : String(err)}`);
-  }
 }
 
 export async function recordTicketDedup(
@@ -965,8 +879,7 @@ export function extractErrorSignature(errorOutput: string): string | undefined {
   if (!errorOutput) return undefined;
   // Match common error patterns
   const patterns = [
-    /(?:TypeError|ReferenceError|SyntaxError|RangeError|Error):\s*[^\n]{1,100}/,
-    /AssertionError:\s*[^\n]{1,100}/i,
+    /(?:AssertionError|TypeError|ReferenceError|SyntaxError|RangeError|Error):\s*[^\n]{1,100}/,
     /FAIL(?:ED)?[:\s]+[^\n]{1,80}/i,
     /error\[E\d+\]:\s*[^\n]{1,80}/i,  // Rust errors
     /panic:\s*[^\n]{1,80}/,             // Go panics

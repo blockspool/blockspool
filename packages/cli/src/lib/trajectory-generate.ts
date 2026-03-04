@@ -51,8 +51,6 @@ export interface GenerateFromProposalsOptions {
   diversityHint?: string;
   /** Sector layout of the codebase for spatial organization */
   sectorContext?: string;
-  /** Project taste profile — preferred/avoided categories and complexity */
-  tasteContext?: string;
   /** Cross-run learnings relevant to trajectory planning */
   learningsContext?: string;
   /** Recently completed/attempted proposals to avoid re-proposing */
@@ -197,7 +195,6 @@ export async function generateTrajectoryFromProposals(opts: GenerateFromProposal
     previousTrajectories: opts.previousTrajectories,
     diversityHint: opts.diversityHint,
     sectorContext: opts.sectorContext,
-    tasteContext: opts.tasteContext,
     learningsContext: opts.learningsContext,
     dedupContext: opts.dedupContext,
     goalContext: opts.goalContext,
@@ -488,7 +485,6 @@ export function buildGenerateFromProposalsPrompt(
     previousTrajectories?: string;
     diversityHint?: string;
     sectorContext?: string;
-    tasteContext?: string;
     learningsContext?: string;
     dedupContext?: string;
     goalContext?: string;
@@ -541,14 +537,6 @@ ${context.previousTrajectories}`);
 ${context.diversityHint}
 
 Prefer under-explored categories and scopes. Avoid creating another trajectory in areas that have already been drilled multiple times.`);
-  }
-
-  if (context?.tasteContext) {
-    sections.push(`## Project Taste Profile
-
-This project has learned preferences from past outcomes. Respect these when choosing trajectory themes:
-
-${context.tasteContext}`);
   }
 
   if (context?.learningsContext) {

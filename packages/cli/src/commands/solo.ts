@@ -12,8 +12,6 @@ import { registerExecCommands } from './solo-exec.js';
 import { registerQaCommands } from './solo-qa.js';
 import { registerAutoCommands } from './solo-auto.js';
 import { registerNudgeCommands } from './solo-nudge.js';
-import { registerAnalyticsCommands } from './solo-analytics.js';
-import { registerDaemonCommands } from './solo-daemon.js';
 import { registerTrajectoryCommands } from './solo-trajectory.js';
 import { registerExportMetricsCommand } from './solo-export-metrics.js';
 import { registerPortfolioCommands } from './solo-portfolio.js';
@@ -32,8 +30,6 @@ Examples:
   promptwheel solo --plan          Planning mode (scout → approve → execute)
   promptwheel --claude             Use Claude backend (needs ANTHROPIC_API_KEY)
   promptwheel solo init            Initialize local state in current repo
-  promptwheel solo doctor          Check prerequisites and environment health
-  promptwheel solo ci              Fix CI failures automatically
   promptwheel solo scout .         Scan for improvement opportunities
   promptwheel solo approve 1-3     Convert proposals 1-3 to tickets
   promptwheel solo run tkt_abc123  Execute a ticket using Claude
@@ -43,9 +39,6 @@ Examples:
   promptwheel solo nudge "..."     Steer a running auto session with a hint
   promptwheel solo nudge --drill-pause   Pause drill during a running session
   promptwheel solo nudge --drill-resume  Resume paused drill
-  promptwheel solo daemon start    Start background daemon for continuous improvement
-  promptwheel solo daemon stop     Stop the running daemon
-  promptwheel solo daemon status   Show daemon status and stats
   promptwheel solo trajectory list     List all trajectories and status
   promptwheel solo trajectory show <n> Show trajectory details
   promptwheel solo trajectory generate "goal" Generate a trajectory from a goal
@@ -62,8 +55,6 @@ registerExecCommands(soloCommand);
 registerQaCommands(soloCommand);
 registerAutoCommands(soloCommand);
 registerNudgeCommands(soloCommand);
-registerAnalyticsCommands(soloCommand);
-registerDaemonCommands(soloCommand);
 registerTrajectoryCommands(soloCommand);
 registerPortfolioCommands(soloCommand);
 registerExportMetricsCommand(soloCommand);

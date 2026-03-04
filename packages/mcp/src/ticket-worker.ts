@@ -88,8 +88,8 @@ export async function advanceTicketWorker(
     };
   }
 
-  // Spindle check (EXECUTE/QA/CROSS_QA phases)
-  if (worker.phase === 'EXECUTE' || worker.phase === 'QA' || worker.phase === 'CROSS_QA') {
+  // Spindle check (EXECUTE/QA phases)
+  if (worker.phase === 'EXECUTE' || worker.phase === 'QA') {
     const spindleResult = checkSpindle(worker.spindle);
     if (spindleResult.shouldAbort) {
       await repos.tickets.updateStatus(db, ticketId, 'blocked');
@@ -148,7 +148,7 @@ export async function advanceTicketWorker(
     required_commands: ticket.verificationCommands ?? [],
     plan_required: policy.plan_required,
     auto_approve_patterns: getRegistry(ctx.project.rootPath).getAutoApprovePatterns({
-      phase: worker.phase === 'QA' || worker.phase === 'CROSS_QA' ? 'QA' : worker.phase as 'PLAN' | 'EXECUTE' | 'PR',
+      phase: worker.phase === 'QA' ? 'QA' : worker.phase as 'PLAN' | 'EXECUTE' | 'PR',
       category: ticket.category ?? null,
     }),
   };
@@ -239,7 +239,13 @@ export async function advanceTicketWorker(
         };
       }
 
-      const prompt = buildTicketQaPrompt(ticket, worktreePath);
+      // Merge session-level qa_commands with ticket verification commands
+      const sessionQaCommands = s.qa_commands ?? [];
+      const qaTicket = sessionQaCommands.length > 0
+        ? { ...ticket, verificationCommands: [...new Set([...(ticket.verificationCommands ?? []), ...sessionQaCommands])] }
+        : ticket;
+
+      const prompt = buildTicketQaPrompt(qaTicket, worktreePath);
       return {
         action: 'PROMPT',
         phase: 'QA',
@@ -247,31 +253,6 @@ export async function advanceTicketWorker(
         constraints,
         ticket_id: ticketId,
         reason: `Running QA for: ${ticket.title} (attempt ${worker.qa_retries + 1}/${MAX_QA_RETRIES})`,
-      };
-    }
-
-    case 'CROSS_QA': {
-      if (worker.qa_retries >= MAX_QA_RETRIES) {
-        await repos.tickets.updateStatus(db, ticketId, 'blocked');
-        run.failTicketWorker(ticketId, `Cross-verify QA failed ${MAX_QA_RETRIES} times`);
-        return {
-          action: 'FAILED',
-          phase: 'FAILED',
-          prompt: null,
-          constraints: null,
-          ticket_id: ticketId,
-          reason: `Cross-verify QA failed ${MAX_QA_RETRIES} times`,
-        };
-      }
-
-      const prompt = buildCrossQaPrompt(ticket, worktreePath);
-      return {
-        action: 'PROMPT',
-        phase: 'CROSS_QA',
-        prompt,
-        constraints,
-        ticket_id: ticketId,
-        reason: `Cross-verifying: ${ticket.title} (attempt ${worker.qa_retries + 1}/${MAX_QA_RETRIES})`,
       };
     }
 
@@ -417,9 +398,8 @@ export async function ingestTicketEvent(
         const diff = (payload['diff'] ?? null) as string | null;
         const changedFiles = validation.changedFiles;
         recordDiff(worker.spindle, diff ?? (changedFiles.length > 0 ? changedFiles.join('\n') : null));
-        const nextPhase = run.require().cross_verify ? 'CROSS_QA' : 'QA';
-        run.updateTicketWorker(ticketId, { phase: nextPhase, spindle: worker.spindle });
-        return { processed: true, message: run.require().cross_verify ? 'Moving to CROSS_QA (independent verification)' : 'Moving to QA' };
+        run.updateTicketWorker(ticketId, { phase: 'QA', spindle: worker.spindle });
+        return { processed: true, message: 'Moving to QA' };
       }
       if (validation.isFailure) {
         await repos.tickets.updateStatus(db, ticketId, 'blocked');
@@ -439,9 +419,10 @@ export async function ingestTicketEvent(
     }
 
     case 'QA_PASSED': {
-      if (worker.phase !== 'QA' && worker.phase !== 'CROSS_QA') {
-        return { processed: true, message: 'QA passed outside QA/CROSS_QA phase' };
+      if (worker.phase !== 'QA') {
+        return { processed: true, message: 'QA passed outside QA phase' };
       }
+
       await repos.tickets.updateStatus(db, ticketId, 'done');
 
       // Skip PR phase when not creating PRs
@@ -455,15 +436,26 @@ export async function ingestTicketEvent(
     }
 
     case 'QA_FAILED': {
-      if (worker.phase !== 'QA' && worker.phase !== 'CROSS_QA') {
-        return { processed: true, message: 'QA failed outside QA/CROSS_QA phase' };
+      if (worker.phase !== 'QA') {
+        return { processed: true, message: 'QA failed outside QA phase' };
       }
       recordDiff(worker.spindle, null);
       worker.qa_retries++;
       // Store failure context for critic block injection on retry
       {
         const failedCmds = (payload['failed_commands'] ?? payload['command'] ?? '') as string | string[];
-        const errorOutput = (payload['error'] ?? payload['output'] ?? '') as string;
+        let errorOutput = (payload['error'] ?? payload['output'] ?? '') as string;
+        // Include failed criteria in error context for targeted retry
+        const failedCriteria = Array.isArray(payload['criteria_results'])
+          ? (payload['criteria_results'] as Array<{ criterion?: string; passed?: boolean; evidence?: string }>)
+              .filter(r => r.passed === false)
+          : [];
+        if (failedCriteria.length > 0) {
+          const criteriaMsg = failedCriteria
+            .map(r => `Criterion not met: "${r.criterion ?? '?'}" — ${r.evidence ?? 'no evidence'}`)
+            .join('; ');
+          errorOutput = errorOutput ? `${errorOutput}\n${criteriaMsg}` : criteriaMsg;
+        }
         worker.last_qa_failure = {
           failed_commands: Array.isArray(failedCmds) ? failedCmds : failedCmds ? [failedCmds] : [],
           error_output: errorOutput.slice(0, 500),
@@ -474,13 +466,17 @@ export async function ingestTicketEvent(
         run.failTicketWorker(ticketId, `QA failed ${worker.qa_retries} times`);
         return { processed: true, message: `QA failed ${worker.qa_retries} times, giving up` };
       }
-      // On CROSS_QA failure, send back to EXECUTE (implementer re-tries), not CROSS_QA
       run.updateTicketWorker(ticketId, { phase: 'EXECUTE', qa_retries: worker.qa_retries, spindle: worker.spindle });
       return { processed: true, message: `QA failed (attempt ${worker.qa_retries}/${MAX_QA_RETRIES}), retrying from EXECUTE` };
     }
 
     case 'PR_CREATED': {
       if (worker.phase !== 'PR') {
+        // If worker is already DONE (e.g. TICKET_RESULT with inline contract already
+        // completed it and counted the PR), skip to avoid double-counting prs_created.
+        if (worker.phase === 'DONE') {
+          return { processed: true, message: 'PR_CREATED for already-completed ticket, skipping (PR already counted)' };
+        }
         const inline = validateInlineCompletionContract(payload, ticketId, 'PR_CREATED');
         if (!inline.valid) {
           return { processed: true, message: 'PR created outside PR phase (missing/invalid inline_completion contract)' };
@@ -516,7 +512,7 @@ function validateInlineCompletionContract(
   }
 
   const contract = raw as Record<string, unknown>;
-  if (contract['contract_version'] !== 1) {
+  if (Number(contract['contract_version']) !== 1) {
     return { valid: false, reason: 'invalid contract_version' };
   }
   if (contract['mode'] !== 'full') {
@@ -544,7 +540,9 @@ function writeScopePolicy(
   const dir = path.join(projectRoot, '.promptwheel', 'scope-policies');
   fs.mkdirSync(dir, { recursive: true });
   const policyPath = path.join(dir, `${ticketId}.json`);
-  fs.writeFileSync(policyPath, JSON.stringify(serializeScopePolicy(policy), null, 2), 'utf8');
+  const tmpPath = policyPath + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(serializeScopePolicy(policy), null, 2), 'utf8');
+  fs.renameSync(tmpPath, policyPath);
 }
 
 // ---------------------------------------------------------------------------
@@ -635,10 +633,11 @@ function buildTicketExecutePrompt(
 }
 
 function buildTicketQaPrompt(
-  ticket: { title: string; verificationCommands: string[] },
+  ticket: { title: string; verificationCommands: string[]; metadata?: Record<string, unknown> | null },
   worktreePath: string,
 ): string {
-  return [
+  const criteria = extractTicketCriteria(ticket.metadata);
+  const parts = [
     `# QA: ${ticket.title}`,
     '',
     `**Working directory:** \`${worktreePath}\``,
@@ -651,42 +650,37 @@ function buildTicketQaPrompt(
     'For each command, call `promptwheel_ticket_event` with type `QA_COMMAND_RESULT` and:',
     '`{ "command": "...", "success": true/false, "output": "stdout+stderr" }`',
     '',
+  ];
+
+  if (criteria.length > 0) {
+    parts.push(
+      '## Criteria Verification',
+      '',
+      'After all commands pass, verify each acceptance criterion against `git diff HEAD~1`:',
+      '',
+      ...criteria.map((c, i) => `${i + 1}. ${c}`),
+      '',
+      'Include `criteria_results` in your QA_PASSED/QA_FAILED payload:',
+      '`[{ "criterion": "...", "passed": true/false, "evidence": "..." }]`',
+      '',
+      'If any criterion fails, report QA_FAILED even if all commands passed.',
+      '',
+    );
+  }
+
+  parts.push(
     'After all commands, call `promptwheel_ticket_event` with type `QA_PASSED` if all pass, or `QA_FAILED` with failure details.',
-  ].join('\n');
+  );
+
+  return parts.join('\n');
 }
 
-function buildCrossQaPrompt(
-  ticket: { title: string; verificationCommands: string[] },
-  worktreePath: string,
-): string {
-  return [
-    `# Independent Cross-Verification: ${ticket.title}`,
-    '',
-    '## IMPORTANT — You are an INDEPENDENT VERIFIER',
-    '',
-    'You are verifying work done by a DIFFERENT agent. Do NOT trust any claims of success.',
-    'You must run ALL verification commands yourself and report results honestly.',
-    'If something is broken, report it — even if the implementing agent claimed it works.',
-    '',
-    `**Working directory:** \`${worktreePath}\``,
-    'Run all commands from within the worktree.',
-    '',
-    '## Verification Commands',
-    '',
-    ...ticket.verificationCommands.map(c => `\`\`\`bash\ncd ${worktreePath} && ${c}\n\`\`\``),
-    '',
-    '## Steps',
-    '',
-    '1. Read the changed files to understand what was modified',
-    '2. Run ALL verification commands listed above',
-    '3. Check for any obvious issues the implementer may have missed',
-    '4. Report results honestly',
-    '',
-    'For each command, call `promptwheel_ticket_event` with type `QA_COMMAND_RESULT` and:',
-    '`{ "command": "...", "success": true/false, "output": "stdout+stderr" }`',
-    '',
-    'After all commands, call `promptwheel_ticket_event` with type `QA_PASSED` if all pass, or `QA_FAILED` with failure details.',
-  ].join('\n');
+/** Extract acceptance_criteria from ticket metadata */
+function extractTicketCriteria(metadata: Record<string, unknown> | null | undefined): string[] {
+  if (!metadata) return [];
+  const raw = metadata['acceptance_criteria'];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((c): c is string => typeof c === 'string');
 }
 
 function buildTicketPrPrompt(

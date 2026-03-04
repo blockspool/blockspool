@@ -259,9 +259,9 @@ describe('filterAndCreateTickets — cap and scoring', () => {
 
   it('ranks by impact_score × confidence', async () => {
     const proposals = [
-      makeProposal({ title: 'Low score', confidence: 70, impact_score: 3 }), // 210
+      makeProposal({ title: 'Low score', confidence: 70, impact_score: 5 }), // 350
       makeProposal({ title: 'High score', confidence: 90, impact_score: 9 }), // 810
-      makeProposal({ title: 'Mid score', confidence: 80, impact_score: 5 }), // 400
+      makeProposal({ title: 'Mid score', confidence: 80, impact_score: 7 }), // 560
     ];
 
     const result = await filterAndCreateTickets(run, db, proposals);
@@ -375,23 +375,6 @@ describe('processEvent SCOUT_OUTPUT', () => {
     expect(result.phase_changed).toBe(false);
     expect(s.scout_retries).toBe(0);
     expect(s.phase).toBe('SCOUT');
-    expect(result.message).toContain('Moving to next cycle');
-  });
-
-  it('skips retries for polished sectors', async () => {
-    const s = run.require();
-    s.phase = 'SCOUT';
-    s.scout_retries = 0;
-    s.selected_sector_polished = true;
-    s.max_cycles = 10;
-    s.scout_cycles = 1;
-
-    const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
-      proposals: [],
-    });
-
-    expect(result.phase_changed).toBe(false);
-    expect(s.scout_retries).toBe(0); // no retry happened
     expect(result.message).toContain('Moving to next cycle');
   });
 

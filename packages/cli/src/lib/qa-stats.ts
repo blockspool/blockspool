@@ -3,7 +3,6 @@
  *
  * Persists to `.promptwheel/qa-stats.json` and provides:
  * - Per-command success/failure/timeout tracking
- * - Baseline result ring buffer for health monitoring
  * - Auto-tuning of QA config (timeout adjustment)
  * - Confidence calibration from quality signals
  *
@@ -33,8 +32,6 @@ export interface QaCommandStats {
   lastRunAt: number;
   consecutiveFailures: number;
   consecutiveTimeouts: number;
-  /** Ring buffer of recent baseline results (max 10) */
-  recentBaselineResults: boolean[];
 }
 
 export interface QaStatsStore {
@@ -46,24 +43,11 @@ export interface QaStatsStore {
   lastCalibratedQualityRate: number | null;
 }
 
-/** Normalized QA config shape (matches normalizeQaConfig output) */
-interface QaConfig {
-  commands: Array<{
-    name: string;
-    cmd: string;
-    cwd?: string;
-    timeoutMs?: number;
-  }>;
-  artifacts: { dir: string; maxLogBytes: number; tailBytes: number };
-  retry: { enabled: boolean; maxAttempts: number };
-}
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const QA_STATS_FILE = 'qa-stats.json';
-const MAX_BASELINE_RING = 10;
 
 // ---------------------------------------------------------------------------
 // Async mutex (same pattern as run-state.ts)
@@ -157,7 +141,6 @@ function ensureCommand(store: QaStatsStore, name: string): QaCommandStats {
       lastRunAt: 0,
       consecutiveFailures: 0,
       consecutiveTimeouts: 0,
-      recentBaselineResults: [],
     };
   }
   return store.commands[name];
@@ -211,89 +194,6 @@ export function recordQaCommandResult(
 
     saveQaStats(projectRoot, store);
   });
-}
-
-/**
- * Record a baseline check result (push to ring buffer).
- */
-export function recordBaselineResult(
-  projectRoot: string,
-  name: string,
-  passed: boolean,
-): Promise<void> {
-  return withWriteLock(() => {
-    const store = loadQaStats(projectRoot);
-    const stats = ensureCommand(store, name);
-
-    stats.recentBaselineResults.push(passed);
-    if (stats.recentBaselineResults.length > MAX_BASELINE_RING) {
-      stats.recentBaselineResults.shift();
-    }
-
-    saveQaStats(projectRoot, store);
-  });
-}
-
-/**
- * Get the success rate for a command (0-1).
- */
-export function getCommandSuccessRate(stats: QaCommandStats): number {
-  if (stats.totalRuns === 0) return -1;
-  return stats.successes / stats.totalRuns;
-}
-
-// ---------------------------------------------------------------------------
-// Auto-Tune from Stats (timeout adjustment only)
-// ---------------------------------------------------------------------------
-
-/**
- * Auto-tune QA config based on accumulated per-command stats.
- *
- * Only adjusts timeouts for slow commands and demotes commands that
- * consistently time out (config issue, not healable by code changes).
- *
- * Baseline-failing commands are NEVER disabled — they're skipped during
- * QA verification via the pass/fail map and surfaced to the scout as
- * high-priority healing targets through the baseline health block.
- */
-export function autoTuneQaConfig(
-  projectRoot: string,
-  qaConfig: QaConfig,
-): { config: QaConfig; disabled: Array<{ name: string; reason: string }> } {
-  const store = loadQaStats(projectRoot);
-  const disabled: Array<{ name: string; reason: string }> = [];
-  const keptCommands: QaConfig['commands'] = [];
-
-  for (const cmd of qaConfig.commands) {
-    const stats = store.commands[cmd.name];
-    if (!stats) {
-      keptCommands.push(cmd);
-      continue;
-    }
-
-    // Consecutive timeout demotion (config issue — wrong command, missing deps)
-    if (stats.consecutiveTimeouts >= 3 && stats.totalRuns >= 5) {
-      const reason = `${stats.consecutiveTimeouts} consecutive timeouts (${stats.totalRuns} total runs)`;
-      disabled.push({ name: cmd.name, reason });
-      continue;
-    }
-
-    // Timeout adjustment for slow commands
-    const currentTimeout = cmd.timeoutMs ?? 120_000;
-    if (stats.avgDurationMs > currentTimeout * 0.8 && stats.totalRuns >= 5) {
-      const newTimeout = Math.round(currentTimeout * 1.5);
-      keptCommands.push({ ...cmd, timeoutMs: newTimeout });
-    } else {
-      keptCommands.push(cmd);
-    }
-  }
-
-  saveQaStats(projectRoot, store);
-
-  return {
-    config: { ...qaConfig, commands: keptCommands },
-    disabled,
-  };
 }
 
 /** Hysteresis band: only adjust if quality rate moved >15% from last calibration */

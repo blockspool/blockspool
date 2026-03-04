@@ -65,6 +65,9 @@ export async function filterAndCreateTickets(
   const s = run.require();
   const rejected: FilterResult['rejected'] = [];
 
+  // Work on a copy to avoid mutating the caller's array
+  const proposals = [...rawProposals];
+
   // Step 0: Re-promote deferred proposals that now match the current scope
   const currentScope = s.scope || '';
   const currentIsCatchAll = !currentScope || currentScope === '**' || currentScope === '*';
@@ -75,7 +78,7 @@ export async function filterAndCreateTickets(
       minimatch(f, currentScope, { dot: true })
     );
     if (nowInScope) {
-      rawProposals.push({
+      proposals.push({
         category: dp.category,
         title: dp.title,
         description: dp.description,
@@ -99,7 +102,7 @@ export async function filterAndCreateTickets(
 
   // Step 1: Schema validation
   const valid: ValidatedProposal[] = [];
-  for (const raw of rawProposals) {
+  for (const raw of proposals) {
     const missing = validateProposalSchema(raw);
     if (missing) {
       rejected.push({ proposal: raw, reason: `Missing fields: ${missing}` });
@@ -252,6 +255,7 @@ export async function filterAndCreateTickets(
     metadata: {
       scoutConfidence: p.confidence,
       estimatedComplexity: p.estimated_complexity,
+      ...(p.acceptance_criteria?.length ? { acceptance_criteria: p.acceptance_criteria } : {}),
       ...(p.target_symbols?.length ? { targetSymbols: p.target_symbols } : {}),
       ...(s.active_trajectory ? { trajectory_name: s.active_trajectory } : {}),
       ...(s.trajectory_step_id ? { trajectory_step_id: s.trajectory_step_id } : {}),
@@ -271,11 +275,12 @@ export async function filterAndCreateTickets(
   }
 
   run.appendEvent('PROPOSALS_FILTERED', {
-    submitted: rawProposals.length,
+    submitted: proposals.length,
     valid: valid.length,
     after_confidence: afterConfidence.length,
     after_impact: afterImpact.length,
     after_category: afterCategory.length,
+    after_scope: afterScope.length,
     after_dedup: uniqueByTitle.length,
     accepted: accepted.length,
     rejected_count: rejected.length,

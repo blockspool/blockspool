@@ -96,6 +96,8 @@ export interface RunState {
   prs_created: number;
   scout_cycles: number;
   max_cycles: number;
+  /** Original max_cycles from config, before sector rotation adjustments */
+  config_max_cycles?: number;
   max_prs: number;
 
   // Current work
@@ -105,6 +107,8 @@ export interface RunState {
   plan_rejections: number;
   qa_retries: number;
   scout_retries: number;
+  /** Consecutive scout cycles that produced zero accepted tickets */
+  consecutive_barren_cycles: number;
 
   // Critic: last failure context for retry guidance
   last_qa_failure: { failed_commands: string[]; error_output: string } | null;
@@ -118,14 +122,12 @@ export interface RunState {
   scope: string;
   /** Original user-provided scope — preserved across sector rotations */
   config_scope: string;
-  formula: string | null;
   categories: string[];
   min_confidence: number;
   max_proposals_per_scout: number;
   min_impact_score: number;
   create_prs: boolean;
   draft: boolean;
-  eco: boolean;
   hints: string[];
   scout_exclude_dirs: string[];
 
@@ -135,9 +137,6 @@ export interface RunState {
 
   // Direct mode: edit in place without worktrees/branches
   direct: boolean;
-
-  // Cross-verify: use separate verifier agent for QA
-  cross_verify: boolean;
 
   // Coverage
   sectors_scanned: number;
@@ -167,9 +166,6 @@ export interface RunState {
   // Pending proposals awaiting adversarial review before ticket creation
   pending_proposals: import('./proposals.js').RawProposal[] | null;
 
-  // Skip adversarial review: create tickets directly from scout proposals
-  skip_review: boolean;
-
   // Exploration log for better escalation context across scout retries
   scout_exploration_log: string[];
 
@@ -194,14 +190,11 @@ export interface RunState {
   trajectory_step_id: string | null;
   trajectory_step_title: string | null;
 
-  // Dry-run mode — scout only, no execution
-  dry_run: boolean;
-
   // User-specified QA commands (always run in addition to ticket verification commands)
   qa_commands: string[];
 
-  // Conflict detection sensitivity for parallel deconfliction
-  conflict_sensitivity: 'strict' | 'normal' | 'relaxed';
+  // Acceptance criteria verification (opt-out, default true)
+  criteria_verification: boolean;
 }
 
 export interface ProjectMetadataSnapshot {
@@ -221,7 +214,7 @@ export interface ProjectMetadataSnapshot {
 // ---------------------------------------------------------------------------
 
 export interface TicketWorkerState {
-  phase: 'PLAN' | 'EXECUTE' | 'QA' | 'CROSS_QA' | 'PR' | 'DONE' | 'FAILED';
+  phase: 'PLAN' | 'EXECUTE' | 'QA' | 'PR' | 'DONE' | 'FAILED';
   plan: CommitPlan | null;
   plan_approved: boolean;
   plan_rejections: number;
@@ -363,7 +356,9 @@ export type EventType =
   /** Sector rotation failed. Payload: { error } */
   | 'SECTOR_ROTATION_FAILED'
   /** Cross-run learnings failed to load. Payload: { error } */
-  | 'LEARNINGS_LOAD_FAILED';
+  | 'LEARNINGS_LOAD_FAILED'
+  /** Session recovered from disk after crash. Payload: { run_id } */
+  | 'SESSION_RECOVERED';
 
 // ---------------------------------------------------------------------------
 // Event Payload Map — maps each EventType to its expected payload shape.
@@ -483,9 +478,6 @@ export interface AdvanceResponse {
 
 export interface SessionConfig {
   hours?: number;
-  formula?: string;
-  deep?: boolean;
-  continuous?: boolean;
   scope?: string;
   categories?: string[];
   min_confidence?: number;
@@ -498,7 +490,6 @@ export interface SessionConfig {
   draft_prs?: boolean;
   create_prs?: boolean;
   draft?: boolean;
-  eco?: boolean;
   parallel?: number;
   min_impact_score?: number;
   scout_exclude_dirs?: string[];
@@ -507,16 +498,10 @@ export interface SessionConfig {
   learnings_decay_rate?: number;
   /** Direct mode: edit in place without worktrees/branches. Default: true (simpler for solo use). */
   direct?: boolean;
-  /** Cross-verify: use a separate verifier agent for QA instead of self-verification. Default: false. */
-  cross_verify?: boolean;
-  /** Skip adversarial review: create tickets directly from scout proposals without a second review pass. Default: false. */
-  skip_review?: boolean;
-  /** Dry-run mode: scout only, no ticket creation or execution. Default: false. */
-  dry_run?: boolean;
   /** User-specified QA commands to run after every ticket (in addition to scout-proposed verification commands). */
   qa_commands?: string[];
-  /** Conflict detection sensitivity for parallel deconfliction. Default: 'normal'. */
-  conflict_sensitivity?: 'strict' | 'normal' | 'relaxed';
+  /** Opt-out: disable LLM-based acceptance criteria verification in QA. Default: true (enabled). */
+  criteria_verification?: boolean;
   /**
    * Explicitly enable loading repository custom tools from `.promptwheel/tools/*.json`.
    * Defaults to false unless enabled by env flag.

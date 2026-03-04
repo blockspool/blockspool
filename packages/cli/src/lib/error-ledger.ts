@@ -20,7 +20,6 @@ export interface ErrorLedgerEntry {
   category?: string;
   phase: 'scout' | 'execute' | 'qa' | 'git' | 'pr';
   sessionCycle: number;
-  formula?: string;
 }
 
 export interface ErrorPatternSummary {

@@ -33,7 +33,6 @@ interface SpinJsonSummary {
   processInsights: number;
   qaCommands: Record<string, { successRate: number; avgDurationMs: number; totalRuns: number }>;
   categoryStats: unknown | null;
-  learningSnapshots: unknown | null;
   errorPatterns: unknown;
   prOutcomes: unknown;
   spindleIncidents: unknown;
@@ -310,7 +309,6 @@ async function loadSpinJsonSummary(repoRoot: string): Promise<SpinJsonSummary | 
     const { loadQaStats } = await import('./qa-stats.js');
     const { loadLearnings } = await import('./learnings.js');
     const { analyzeErrorLedger } = await import('./error-ledger.js');
-    const { analyzePrOutcomes } = await import('./pr-outcomes.js');
     const { analyzeSpindleIncidents } = await import('./spindle-incidents.js');
 
     const runState = readRunState(repoRoot);
@@ -361,9 +359,8 @@ async function loadSpinJsonSummary(repoRoot: string): Promise<SpinJsonSummary | 
         }]),
       ),
       categoryStats: runState.categoryStats ?? null,
-      learningSnapshots: runState.learningSnapshots ?? null,
       errorPatterns: analyzeErrorLedger(repoRoot),
-      prOutcomes: analyzePrOutcomes(repoRoot),
+      prOutcomes: null,
       spindleIncidents: analyzeSpindleIncidents(repoRoot),
       ...(drillJson && { drill: drillJson }),
     };

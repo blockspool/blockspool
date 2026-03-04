@@ -1,6 +1,5 @@
 import { getRegistry } from './tool-registry.js';
 import type { AdvanceConstraints } from './types.js';
-import type { Formula } from './formulas.js';
 import type { CodebaseIndex } from './codebase-index.js';
 
 export function buildScoutEscalation(
@@ -53,20 +52,18 @@ export function buildScoutPrompt(
   minConfidence: number,
   maxProposals: number,
   dedupContext: string[],
-  formula: Formula | null,
   hints: string[],
-  eco: boolean,
   minImpactScore: number = 3,
   scoutedDirs: string[] = [],
   excludeDirs: string[] = [],
-  coverageContext?: { scannedSectors: number; totalSectors: number; percent: number; sectorPercent?: number; sectorSummary?: string },
 ): string {
   const parts = [
     '# Scout Phase',
     '',
     'Identify improvements by reading source code. Return proposals in a `<proposals>` XML block containing a JSON array.',
     '',
-    ...(!eco ? ['**IMPORTANT:** Do not use the Task or Explore tools. Read files directly using Read, Glob, and Grep. Do not delegate to subagents.', ''] : []),
+    '**IMPORTANT:** Do not use the Task or Explore tools. Read files directly using Read, Glob, and Grep. Do not delegate to subagents.',
+    '',
     '## How to Scout',
     '',
     'STEP 1 — Discover: Use Glob to list all files in scope. Group them by directory or module (e.g. `src/auth/`, `src/api/`, `lib/utils/`). Identify entry points, core logic, and test directories.',
@@ -100,14 +97,6 @@ export function buildScoutPrompt(
       `**Skip these directories when scouting** (build artifacts, vendor, generated): ${excludeDirs.map(d => `\`${d}\``).join(', ')}`,
     ] : []),
     '',
-    ...(coverageContext ? [
-      `## Coverage Context`,
-      '',
-      `Overall codebase coverage: ${coverageContext.scannedSectors}/${coverageContext.totalSectors} sectors scanned (${coverageContext.sectorPercent ?? coverageContext.percent}% of sectors, ${coverageContext.percent}% of files).`,
-      ...(coverageContext.percent < 50 ? ['Many sectors remain unscanned. Focus on high-impact issues rather than minor cleanups.'] : []),
-      ...(coverageContext.sectorSummary ? ['', coverageContext.sectorSummary] : []),
-      '',
-    ] : []),
     '## Quality Bar',
     '',
     '- Proposals must have **real user or developer impact** — not just lint cleanup or style nits.',
@@ -137,19 +126,6 @@ export function buildScoutPrompt(
     parts.push('**Already completed (do not duplicate):**');
     for (const title of dedupContext) {
       parts.push(`- ${title}`);
-    }
-    parts.push('');
-  }
-
-  if (formula) {
-    parts.push(`**Formula:** ${formula.name} — ${formula.description}`);
-    if (formula.prompt) {
-      parts.push('');
-      parts.push('**Formula instructions:**');
-      parts.push(formula.prompt);
-    }
-    if (formula.risk_tolerance) {
-      parts.push(`**Risk tolerance:** ${formula.risk_tolerance}`);
     }
     parts.push('');
   }
@@ -202,12 +178,6 @@ export function buildScoutPrompt(
     '',
     'The `explored_dirs` field should list the top-level directories you analyzed (e.g. `src/services/`, `lib/utils/`). This is used to rotate to unexplored areas in future cycles.',
   );
-
-  if (coverageContext) {
-    parts.push('');
-    parts.push('If this sector appears misclassified (e.g., labeled as production but contains only tests/config/generated code, or vice versa), include in the SCOUT_OUTPUT payload:');
-    parts.push('`"sector_reclassification": { "production": true/false, "confidence": "medium"|"high" }`');
-  }
 
   return parts.join('\n');
 }
@@ -285,8 +255,9 @@ export function buildExecutePrompt(
   return parts.join('\n');
 }
 
-export function buildQaPrompt(ticket: { title: string; verificationCommands: string[] }): string {
-  return [
+export function buildQaPrompt(ticket: { title: string; verificationCommands: string[]; metadata?: Record<string, unknown> | null }, opts?: { criteriaVerification?: boolean }): string {
+  const criteria = (opts?.criteriaVerification !== false) ? extractCriteria(ticket.metadata) : [];
+  const parts = [
     `# QA: ${ticket.title}`,
     '',
     'Run the following verification commands and report results:',
@@ -296,8 +267,29 @@ export function buildQaPrompt(ticket: { title: string; verificationCommands: str
     'For each command, call `promptwheel_ingest_event` with type `QA_COMMAND_RESULT` and:',
     '`{ "command": "...", "success": true/false, "output": "stdout+stderr" }`',
     '',
+  ];
+
+  if (criteria.length > 0) {
+    parts.push(
+      '## Criteria Verification',
+      '',
+      'After all commands pass, verify each acceptance criterion against `git diff HEAD~1`:',
+      '',
+      ...criteria.map((c, i) => `${i + 1}. ${c}`),
+      '',
+      'Include `criteria_results` in your QA_PASSED/QA_FAILED payload:',
+      '`[{ "criterion": "...", "passed": true/false, "evidence": "..." }]`',
+      '',
+      'If any criterion fails, report QA_FAILED even if all commands passed.',
+      '',
+    );
+  }
+
+  parts.push(
     'After all commands, call `promptwheel_ingest_event` with type `QA_PASSED` if all pass, or `QA_FAILED` with failure details.',
-  ].join('\n');
+  );
+
+  return parts.join('\n');
 }
 
 export function buildPlanningPreamble(ticket: { metadata?: Record<string, unknown> | null }): string {
@@ -317,6 +309,14 @@ export function buildPlanningPreamble(ticket: { metadata?: Record<string, unknow
     ].join('\n') + '\n';
   }
   return '';
+}
+
+/** Extract acceptance_criteria from ticket metadata */
+function extractCriteria(metadata: Record<string, unknown> | null | undefined): string[] {
+  if (!metadata) return [];
+  const raw = metadata['acceptance_criteria'];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((c): c is string => typeof c === 'string');
 }
 
 /** Escape a string for use inside double-quoted shell arguments */
@@ -363,6 +363,19 @@ export function buildInlineTicketPrompt(
 
   const planningPreamble = buildPlanningPreamble(ticket);
 
+  // Build acceptance criteria block from metadata
+  const inlineCriteria = extractCriteria(ticket.metadata);
+  const criteriaBlock = inlineCriteria.length > 0
+    ? [
+        '## Acceptance Criteria',
+        '',
+        ...inlineCriteria.map(c => `- ${c}`),
+        '',
+        'For each criterion above, ensure your implementation explicitly addresses it.',
+        '',
+      ]
+    : [];
+
   // Build tool restriction block from registry
   const inlineConstraintNote = getRegistry().getConstraintNote({ phase: 'EXECUTE', category: ticket.category ?? null });
   const toolRestrictionBlock = inlineConstraintNote
@@ -379,6 +392,7 @@ export function buildInlineTicketPrompt(
       metadataBlock,
       ticket.description ?? '',
       '',
+      ...criteriaBlock,
       '## Constraints',
       '',
       `- **Allowed paths:** ${constraints.allowed_paths.length > 0 ? constraints.allowed_paths.join(', ') : 'any'}`,
@@ -438,6 +452,7 @@ export function buildInlineTicketPrompt(
     metadataBlock,
     ticket.description ?? '',
     '',
+    ...criteriaBlock,
     '## Constraints',
     '',
     `- **Allowed paths:** ${constraints.allowed_paths.length > 0 ? constraints.allowed_paths.join(', ') : 'any'}`,

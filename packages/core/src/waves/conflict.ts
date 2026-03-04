@@ -8,7 +8,6 @@
  * No filesystem, git, or child_process I/O.
  */
 
-import type { CallEdge } from '../codebase-index/shared.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,20 +23,6 @@ export interface ConflictDetectionOptions {
    * - 'relaxed': Only direct file overlap + glob overlap (most parallel, riskier)
    */
   sensitivity?: ConflictSensitivity;
-  /**
-   * Optional dependency graph edges (module → modules it imports).
-   * When provided, proposals touching modules connected by import chains
-   * are treated as conflicting at normal/strict sensitivity, ensuring the
-   * dependency is executed before the consumer.
-   */
-  edges?: Record<string, string[]>;
-  /**
-   * Optional call-graph edges from AST analysis.
-   * When provided, proposals whose target_symbols are connected by
-   * caller→callee relationships are treated as conflicting, even across
-   * different files/modules.
-   */
-  callEdges?: CallEdge[];
 }
 
 // ---------------------------------------------------------------------------
@@ -281,81 +266,6 @@ export function touchesSamePackage(filesA: string[], filesB: string[]): boolean 
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve files to their containing module path in the dependency graph.
- * A file `src/core/index.ts` matches module `src/core` if that key exists in edges.
- */
-function resolveModules(files: string[], edges: Record<string, string[]>): Set<string> {
-  const mods = new Set<string>();
-  for (const f of files) {
-    const parts = f.split('/');
-    for (let i = parts.length - 1; i >= 1; i--) {
-      const candidate = parts.slice(0, i).join('/');
-      if (candidate in edges) {
-        mods.add(candidate);
-        break; // most-specific match
-      }
-    }
-  }
-  return mods;
-}
-
-/**
- * Check if two sets of modules are connected by a direct import edge.
- * Returns true if any module in A imports any module in B, or vice versa.
- */
-export function hasImportChainConflict(
-  filesA: string[],
-  filesB: string[],
-  edges: Record<string, string[]>,
-): boolean {
-  const modsA = resolveModules(filesA, edges);
-  const modsB = resolveModules(filesB, edges);
-  if (modsA.size === 0 || modsB.size === 0) return false;
-
-  // Check: does any module in A import any module in B?
-  for (const modA of modsA) {
-    const deps = edges[modA];
-    if (deps) {
-      for (const dep of deps) {
-        if (modsB.has(dep)) return true;
-      }
-    }
-  }
-  // Check reverse: does any module in B import any module in A?
-  for (const modB of modsB) {
-    const deps = edges[modB];
-    if (deps) {
-      for (const dep of deps) {
-        if (modsA.has(dep)) return true;
-      }
-    }
-  }
-  return false;
-}
-
-/**
- * Check if two sets of target symbols are connected by a caller→callee edge.
- * Returns true if any symbol in A calls any symbol in B, or vice versa.
- */
-export function hasCallGraphConflict(
-  symbolsA: string[],
-  symbolsB: string[],
-  callEdges: CallEdge[],
-): boolean {
-  if (symbolsA.length === 0 || symbolsB.length === 0) return false;
-  const setA = new Set(symbolsA);
-  const setB = new Set(symbolsB);
-  for (const edge of callEdges) {
-    // A calls B or B calls A
-    if ((setA.has(edge.caller) && setB.has(edge.callee)) ||
-        (setB.has(edge.caller) && setA.has(edge.callee))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
  * Check if two proposals have a potential conflict based on their file lists.
  *
  * When both proposals provide `target_symbols` and their file paths overlap,
@@ -418,18 +328,6 @@ export function proposalsConflict<T extends { files: string[]; category?: string
   // Normal and strict: check directory overlap threshold
   if (directoriesOverlap(a.files, b.files, sensitivity === 'strict' ? DIRECTORY_OVERLAP_STRICT : DIRECTORY_OVERLAP_NORMAL)) {
     return true;
-  }
-
-  // Normal and strict: import-chain conflict (dependency graph)
-  if (options.edges && hasImportChainConflict(a.files, b.files, options.edges)) {
-    return true;
-  }
-
-  // Normal and strict: call-graph conflict (cross-file caller→callee)
-  if (options.callEdges && a.target_symbols?.length && b.target_symbols?.length) {
-    if (hasCallGraphConflict(a.target_symbols, b.target_symbols, options.callEdges)) {
-      return true;
-    }
   }
 
   // Strict only: same package in monorepo

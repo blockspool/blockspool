@@ -45,14 +45,11 @@ export * as guidelines from './guidelines/shared.js';
 // Learnings shared algorithms
 export * as learnings from './learnings/shared.js';
 
-// Formulas shared definitions and parsing
-export * as formulas from './formulas/shared.js';
+// YAML parsing utilities
+export * as yamlUtils from './yaml-utils.js';
 
 // Proposals shared algorithms
 export * as proposals from './proposals/shared.js';
-
-// Sector rotation shared algorithms
-export * as sectors from './sectors/shared.js';
 
 // Wave scheduling shared algorithms
 export * as waves from './waves/shared.js';

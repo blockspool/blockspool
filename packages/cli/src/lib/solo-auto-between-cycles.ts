@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import chalk from 'chalk';
 import { spawnSync } from 'node:child_process';
 import type { AutoSessionState } from './solo-auto-state.js';
-import { readRunState, writeRunState, recordCycle, recordDocsAudit, getQualityRate, snapshotLearningROI } from './run-state.js';
+import { readRunState, writeRunState, recordCycle, recordDocsAudit, getQualityRate } from './run-state.js';
 import { getSessionPhase } from './solo-auto-utils.js';
 import {
   checkPrStatuses,
@@ -20,24 +20,14 @@ import { addLearning, loadLearnings, consolidateLearnings, extractTags } from '.
 import { captureQaBaseline } from './solo-ticket.js';
 import { normalizeQaConfig } from './solo-utils.js';
 import { getPromptwheelDir } from './solo-config.js';
-import { removePrEntries } from './file-cooldown.js';
-import { recordFormulaMergeOutcome } from './run-state.js';
-import { updatePrOutcome } from './pr-outcomes.js';
-import {
-  recordMergeOutcome, saveSectors, refreshSectors, enrichSectorsWithAnalysis,
-  suggestScopeAdjustment,
-} from './sectors.js';
 import { loadDedupMemory } from './dedup-memory.js';
 import { calibrateConfidence } from './qa-stats.js';
-import { extractMetaLearnings } from './meta-learnings.js';
 import {
   refreshCodebaseIndex, hasStructuralChanges,
 } from './codebase-index.js';
 import {
-  pushCycleSummary, computeConvergenceMetrics,
-  formatConvergenceOneLiner, type CycleSummary,
+  pushCycleSummary, type CycleSummary,
 } from './cycle-context.js';
-import { buildTasteProfile, saveTasteProfile } from './taste-profile.js';
 import {
   runMeasurement, measureGoals, pickGoalByGap,
   recordGoalMeasurement,
@@ -81,7 +71,8 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
     }
   }
 
-  state.cycleCount++;
+  // cycleCount is incremented AFTER backpressure checks (below) so that
+  // early returns don't need to undo the increment.
   state.cycleOutcomes = [];
 
   // Multi-repo rotation: cycle to next repo
@@ -97,15 +88,6 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
   const totalBudgetMs = state.totalMinutes ? state.totalMinutes * 60 * 1000 : undefined;
   state.sessionPhase = getSessionPhase(Date.now() - state.startTime, totalBudgetMs);
 
-  // Per-sector difficulty calibration
-  if (state.sectorState && state.currentSectorId) {
-    const { getSectorMinConfidence } = await import('./sectors.js');
-    const sec = state.sectorState.sectors.find(s => s.path === state.currentSectorId);
-    if (sec) {
-      state.effectiveMinConfidence = getSectorMinConfidence(sec, state.autoConf.minConfidence ?? 20);
-    }
-  }
-
   // Session phase confidence adjustments
   if (state.sessionPhase === 'warmup') {
     state.effectiveMinConfidence += 10;
@@ -113,8 +95,8 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
     state.effectiveMinConfidence = Math.max(10, state.effectiveMinConfidence - 10);
   }
 
-  // Quality rate confidence boost
-  if (state.cycleCount > 2) {
+  // Quality rate confidence boost (cycleCount not yet incremented, so >= 2 means 3+ cycles done)
+  if (state.cycleCount >= 2) {
     const qualityRate = getQualityRate(state.repoRoot);
     if (qualityRate < 0.5) {
       state.effectiveMinConfidence += 10;
@@ -125,7 +107,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
   }
 
   // Stats-based confidence calibration
-  if (state.cycleCount > 5) {
+  if (state.cycleCount >= 5) {
     try {
       const confDelta = calibrateConfidence(
         state.repoRoot,
@@ -147,7 +129,7 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
     if (openRatio > 0.7) {
       state.displayAdapter.log(chalk.yellow(`  Backpressure: ${state.pendingPrUrls.length}/${state.maxPrs} PRs open — waiting for reviews...`));
       await sleep(15000);
-      state.cycleCount--; // undo increment so the cycle reruns
+      // Don't increment cycleCount — the cycle reruns
       return { shouldSkipCycle: true };
     } else if (openRatio > 0.4) {
       state.effectiveMinConfidence += 15;
@@ -156,6 +138,9 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
       }
     }
   }
+
+  // All backpressure early-returns have exited — safe to commit the cycle increment
+  state.cycleCount++;
 
   // Clamp confidence to prevent runaway compounding from stacking adjustments
   const CONFIDENCE_FLOOR = 0;
@@ -167,16 +152,6 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
     state.effectiveMinConfidence = CONFIDENCE_CEILING;
   } else if (state.effectiveMinConfidence < CONFIDENCE_FLOOR) {
     state.effectiveMinConfidence = CONFIDENCE_FLOOR;
-  }
-
-  // Rebuild taste profile every 10 cycles
-  if (state.cycleCount % 10 === 0 && state.sectorState) {
-    const rs = readRunState(state.repoRoot);
-    state.tasteProfile = buildTasteProfile(state.sectorState, state.allLearnings, rs.formulaStats);
-    saveTasteProfile(state.repoRoot, state.tasteProfile);
-    if (state.options.verbose) {
-      state.displayAdapter.log(chalk.gray(`  Taste profile rebuilt: prefer [${state.tasteProfile.preferredCategories.join(', ')}], avoid [${state.tasteProfile.avoidCategories.join(', ')}]`));
-    }
   }
 
   // Periodic pull
@@ -241,12 +216,6 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
       for (const pr of prStatuses) {
         if (pr.state === 'merged') {
           state.totalMergedPrs++;
-          const prMeta = state.prMetaMap.get(pr.url);
-          if (prMeta) {
-            if (state.sectorState) recordMergeOutcome(state.sectorState, prMeta.sectorId, true);
-            recordFormulaMergeOutcome(state.repoRoot, prMeta.formula, true);
-          }
-          try { updatePrOutcome(state.repoRoot, pr.url, 'merged', Date.now()); } catch { /* non-fatal */ }
           if (state.autoConf.learningsEnabled) {
             addLearning(state.repoRoot, {
               text: `PR merged: ${pr.url}`.slice(0, 200),
@@ -262,12 +231,6 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
           }
         } else if (pr.state === 'closed') {
           state.totalClosedPrs++;
-          const prMeta = state.prMetaMap.get(pr.url);
-          if (prMeta) {
-            if (state.sectorState) recordMergeOutcome(state.sectorState, prMeta.sectorId, false);
-            recordFormulaMergeOutcome(state.repoRoot, prMeta.formula, false);
-          }
-          try { updatePrOutcome(state.repoRoot, pr.url, 'closed', Date.now()); } catch { /* non-fatal */ }
           if (state.autoConf.learningsEnabled) {
             addLearning(state.repoRoot, {
               text: `PR closed/rejected: ${pr.url}`.slice(0, 200),
@@ -291,9 +254,6 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
       const closedOrMergedUrls = prStatuses
         .filter(p => p.state === 'merged' || p.state === 'closed')
         .map(p => p.url);
-      if (closedOrMergedUrls.length > 0) {
-        removePrEntries(state.repoRoot, closedOrMergedUrls);
-      }
       const closedOrMergedSet = new Set(closedOrMergedUrls);
       state.pendingPrUrls = state.pendingPrUrls.filter(u => !closedOrMergedSet.has(u));
     } catch (err) {
@@ -354,9 +314,6 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
 export async function runPostCycleMaintenance(state: AutoSessionState, scope: string, isDocsAuditCycle: boolean): Promise<void> {
   state.currentlyProcessing = false;
 
-  // Save sector outcome stats
-  if (state.sectorState) saveSectors(state.repoRoot, state.sectorState);
-
   // Record cycle completion
   const updatedRunState = recordCycle(state.repoRoot);
   if (isDocsAuditCycle) {
@@ -368,7 +325,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     const cycleSummary: CycleSummary = {
       cycle: updatedRunState.totalCycles,
       scope: scope,
-      formula: state.currentFormulaName,
+      formula: 'default',
       succeeded: state.cycleOutcomes
         .filter(o => o.status === 'completed')
         .map(o => ({ title: o.title, category: o.category || 'unknown' })),
@@ -381,10 +338,9 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     };
     const rs = readRunState(state.repoRoot);
     rs.recentCycles = pushCycleSummary(rs.recentCycles ?? [], cycleSummary);
-    // Persist confidence calibration, drill state, and lens zero-yield pairs for cross-session continuity
+    // Persist confidence calibration and drill state for cross-session continuity
     rs.lastEffectiveMinConfidence = state.effectiveMinConfidence;
     rs.lastDrillConsecutiveInsufficient = state.drillConsecutiveInsufficient;
-    rs.lensZeroYieldPairs = [...state.lensZeroYieldPairs].map(key => ({ key, ts: Date.now() }));
     // Session crash-resume checkpoint
     rs.sessionCheckpoint = {
       cycleCount: state.cycleCount,
@@ -415,7 +371,7 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
           const failingCmds = qaConfig.commands.filter(c => previouslyFailing.includes(c.name));
           if (failingCmds.length > 0) {
             const checkConfig = { ...state.config, qa: { ...state.config.qa, commands: failingCmds } };
-            const recheck = await captureQaBaseline(state.repoRoot, checkConfig, () => {}, state.repoRoot);
+            const recheck = await captureQaBaseline(state.repoRoot, checkConfig, () => {});
             const healed: string[] = [];
             const stillFailing: string[] = [];
             for (const [name, result] of recheck) {
@@ -459,43 +415,15 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
     }
   }
 
-  // Meta-learning extraction (aggregate pattern detection)
-  let metaInsightsAdded = 0;
-  if (state.autoConf.learningsEnabled && state.cycleCount >= 3) {
-    try {
-      metaInsightsAdded = extractMetaLearnings({
-        projectRoot: state.repoRoot,
-        cycleOutcomes: state.cycleOutcomes,
-        allOutcomes: state.allTicketOutcomes,
-        learningsEnabled: state.autoConf.learningsEnabled,
-        existingLearnings: state.allLearnings,
-      });
-      if (metaInsightsAdded > 0 && state.options.verbose) {
-        state.displayAdapter.log(chalk.gray(`  Meta-learnings: ${metaInsightsAdded} process insight(s) extracted`));
-      }
-    } catch (err) {
-      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Meta-learnings extraction failed: ${err instanceof Error ? err.message : String(err)}`));
-    }
-  }
-
   // Low-yield cycle detection — primary Nash equilibrium stop signal
   const completedThisCount = state.cycleOutcomes.filter(o => o.status === 'completed').length;
   if (completedThisCount === 0 && state.cycleCount >= 2) {
     state.consecutiveLowYieldCycles++;
     const MAX_LOW_YIELD_CYCLES = state.drillMode ? 5 : 3;
     if (state.consecutiveLowYieldCycles >= MAX_LOW_YIELD_CYCLES) {
-      // Before shutting down, check if untried lenses remain in the current rotation
-      if (state.lensRotationsCompleted === 0 && state.lensRotation.length > 1) {
-        state.displayAdapter.log(chalk.gray(`  Low yield under "${state.currentLens}" lens — rotating to next lens`));
-        state.consecutiveLowYieldCycles = 0;
-        // advanceLens will be triggered naturally by getNextScope on next cycle
-      } else {
-        const rotations = state.lensRotationsCompleted;
-        const rotLabel = rotations > 0 ? ` (${rotations} full rotation${rotations !== 1 ? 's' : ''} completed)` : '';
-        state.displayAdapter.log(chalk.yellow(`  ${state.consecutiveLowYieldCycles} consecutive low-yield cycles${rotLabel} — stopping`));
-        state.shutdownRequested = true;
-        if (state.shutdownReason === null) state.shutdownReason = 'low_yield';
-      }
+      state.displayAdapter.log(chalk.yellow(`  ${state.consecutiveLowYieldCycles} consecutive low-yield cycles — stopping`));
+      state.shutdownRequested = true;
+      if (state.shutdownReason === null) state.shutdownReason = 'low_yield';
     } else if (state.options.verbose) {
       state.displayAdapter.log(chalk.gray(`  Low-yield cycle (${state.consecutiveLowYieldCycles}/${MAX_LOW_YIELD_CYCLES})`));
     }
@@ -513,128 +441,8 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       ? [...state.qaBaseline.values()].filter(v => !v).length
       : 0;
     const confValue = state.effectiveMinConfidence;
-    const insightsStr = metaInsightsAdded > 0 ? ` | insights +${metaInsightsAdded}` : '';
     const baselineStr = baselineFailing > 0 ? ` | baseline failing ${baselineFailing}` : '';
-    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Spin: quality ${qualityPct}% | confidence ${confValue}${baselineStr}${insightsStr}`));
-  }
-
-  // Convergence metrics
-  if (state.cycleCount >= 3 && state.sectorState) {
-    const rs = readRunState(state.repoRoot);
-    const sessionCtx = {
-      elapsedMs: Date.now() - state.startTime,
-      prsCreated: state.allPrUrls.length,
-      prsMerged: state.totalMergedPrs,
-      prsClosed: state.totalClosedPrs,
-    };
-    // Build drill context for convergence if in drill mode
-    let drillCtx: Parameters<typeof computeConvergenceMetrics>[4] | undefined;
-    if (state.drillMode && state.drillHistory.length >= 2) {
-      const { computeDrillMetrics } = await import('./solo-auto-drill.js');
-      const dm = computeDrillMetrics(state.drillHistory);
-      drillCtx = {
-        completionRate: dm.completionRate,
-        step1FailureRate: dm.step1FailureRate,
-        consecutiveInsufficient: state.drillConsecutiveInsufficient,
-        trajectoryCount: dm.totalTrajectories,
-      };
-    }
-    const metrics = computeConvergenceMetrics(state.sectorState, state.allLearnings.length, rs.recentCycles ?? [], sessionCtx, drillCtx);
-    state.lastConvergenceAction = metrics.suggestedAction;
-    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  ${formatConvergenceOneLiner(metrics)}`));
-    if (metrics.suggestedAction === 'stop') {
-      // Don't converge-stop if untried lenses remain
-      if (state.lensRotationsCompleted === 0 && state.lensRotation.length > 1) {
-        state.displayAdapter.log(chalk.gray(`  Convergence reached for "${state.currentLens}" — untried lenses remain, continuing`));
-      } else if (state.activeTrajectory && state.activeTrajectoryState) {
-        // Adaptive threshold: use historical completion rate to decide when to abandon
-        // If we historically complete 80% of trajectories, a low-progress one is likely still worth finishing
-        // If we historically complete 20%, cut losses earlier
-        let abandonThreshold = 50; // default: stop if < 50% complete
-        if (state.drillMode && state.drillHistory.length >= 3) {
-          const { computeDrillMetrics: cdm } = await import('./solo-auto-drill.js');
-          const dm = cdm(state.drillHistory);
-          // Higher historical completion → higher threshold (more patience)
-          // Lower historical completion → lower threshold (cut losses faster)
-          abandonThreshold = Math.round(30 + (dm.weightedCompletionRate * 40)); // range: 30-70%
-        }
-        const totalSteps = state.activeTrajectory.steps.length;
-        const completedSteps = state.activeTrajectory.steps.filter(
-          s => state.activeTrajectoryState!.stepStates[s.id]?.status === 'completed',
-        ).length;
-        const progressPct = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
-        if (progressPct < abandonThreshold) {
-          state.displayAdapter.log(chalk.yellow(`  Convergence suggests stopping — trajectory "${state.activeTrajectory.name}" only ${progressPct}% complete, skipping it`));
-          if (state.drillMode) {
-            try { finishDrillTrajectory(state, 'stalled'); }
-            catch (err) { state.displayAdapter.log(chalk.yellow(`  Drill: failed to record trajectory outcome — ${err instanceof Error ? err.message : String(err)}`)); }
-          }
-          state.activeTrajectory = null;
-          state.activeTrajectoryState = null;
-          state.currentTrajectoryStep = null;
-          state.shutdownRequested = true;
-          if (state.shutdownReason === null) state.shutdownReason = 'convergence';
-        } else {
-          state.displayAdapter.log(chalk.gray(`  Convergence suggests stopping, but trajectory "${state.activeTrajectory.name}" is ${progressPct}% complete — continuing`));
-        }
-      } else {
-        state.displayAdapter.log(chalk.yellow(`  Convergence suggests stopping — most sectors polished, low yield.`));
-        state.shutdownRequested = true;
-        if (state.shutdownReason === null) state.shutdownReason = 'convergence';
-      }
-    }
-  }
-
-  // Scope adjustment (confidence only — impact uses static config floor)
-  if (state.sectorState && state.cycleCount >= 3) {
-    const scopeAdj = suggestScopeAdjustment(state.sectorState);
-    if (scopeAdj === 'widen') {
-      // In drill mode with active trajectory, don't widen — stay focused on trajectory scope
-      if (state.drillMode && state.currentTrajectoryStep?.scope) {
-        if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Scope adjustment: drill mode — staying focused on trajectory scope`));
-      } else {
-        state.effectiveMinConfidence = state.autoConf.minConfidence ?? 20;
-        if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Scope adjustment: widening (resetting confidence threshold)`));
-      }
-    } else if (scopeAdj === 'narrow' && state.drillMode && state.currentTrajectoryStep) {
-      // In drill mode, tighten confidence when trajectory-guided to focus on high-quality proposals
-      state.effectiveMinConfidence += 5;
-      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Scope adjustment: drill-narrowed (confidence +5)`));
-    }
-    // Clamp after scope adjustments to prevent exceeding ceiling
-    state.effectiveMinConfidence = Math.max(0, Math.min(80, state.effectiveMinConfidence));
-  }
-
-  // Cross-sector pattern learning
-  if (state.sectorState && state.currentSectorId && state.autoConf.learningsEnabled) {
-    const sec = state.sectorState.sectors.find(s => s.path === state.currentSectorId);
-    if (sec?.categoryStats) {
-      for (const [cat, stats] of Object.entries(sec.categoryStats)) {
-        if (stats.success >= 3) {
-          const otherUnscanned = state.sectorState.sectors.filter(
-            s => s.path !== state.currentSectorId && s.production && s.scanCount === 0
-          );
-          if (otherUnscanned.length > 0) {
-            addLearning(state.repoRoot, {
-              text: `Pattern from ${state.currentSectorId}: ${cat} proposals succeed well. Consider similar work in other sectors.`.slice(0, 200),
-              category: 'pattern',
-              source: { type: 'cross_sector_pattern' },
-              tags: [cat],
-            });
-          }
-        }
-      }
-    }
-  }
-
-  // Learning ROI snapshot (every 10 cycles)
-  if (state.cycleCount % 10 === 0 && state.autoConf.learningsEnabled) {
-    try {
-      const { getLearningEffectiveness } = await import('./learnings.js');
-      snapshotLearningROI(state.repoRoot, getLearningEffectiveness);
-    } catch (err) {
-      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Learning ROI snapshot failed: ${err instanceof Error ? err.message : String(err)}`));
-    }
+    if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Spin: quality ${qualityPct}% | confidence ${confValue}${baselineStr}`));
   }
 
   // Periodic learnings consolidation
@@ -664,25 +472,8 @@ export async function runPostCycleMaintenance(state: AutoSessionState, scope: st
       if (state.options.verbose) {
         state.displayAdapter.log(chalk.gray(`  Codebase index refreshed: ${state.codebaseIndex.modules.length} modules`));
       }
-      if (state.sectorState) {
-        state.sectorState = refreshSectors(
-          state.repoRoot,
-          state.sectorState,
-          state.codebaseIndex.modules,
-        );
-        // Re-enrich sectors with updated analysis data (dead exports, instability)
-        enrichSectorsWithAnalysis(
-          state.sectorState.sectors,
-          state.codebaseIndex.dead_exports,
-          state.codebaseIndex.dependency_edges,
-          state.codebaseIndex.reverse_edges,
-        );
-        if (state.options.verbose) {
-          state.displayAdapter.log(chalk.gray(`  Sectors refreshed: ${state.sectorState.sectors.length} sector(s)`));
-        }
-      }
     } catch (err) {
-      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Sectors refresh failed: ${err instanceof Error ? err.message : String(err)}`));
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  Codebase index refresh failed: ${err instanceof Error ? err.message : String(err)}`));
     }
   }
 

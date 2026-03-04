@@ -33,16 +33,6 @@ describe('resolveGuidelinesPaths', () => {
     expect(primary).toContain('AGENTS.md');
   });
 
-  it('returns KIMI.md as primary for kimi backend', () => {
-    const [primary] = resolveGuidelinesPaths('kimi');
-    expect(primary).toContain('KIMI.md');
-  });
-
-  it('returns CLAUDE.md as primary for openai-local backend', () => {
-    const [primary] = resolveGuidelinesPaths('openai-local');
-    expect(primary).toContain('CLAUDE.md');
-  });
-
   it('defaults to claude backend when unspecified', () => {
     const [primary] = resolveGuidelinesPaths();
     expect(primary).toContain('CLAUDE.md');
@@ -68,11 +58,10 @@ describe('resolveGuidelinesPaths', () => {
     const all = [...primary, ...fallback];
     expect(all).toContain('CLAUDE.md');
     expect(all).toContain('AGENTS.md');
-    expect(all).toContain('KIMI.md');
   });
 
   it('returns arrays (not empty) for any backend', () => {
-    for (const backend of ['claude', 'codex', 'kimi', 'openai-local', 'random']) {
+    for (const backend of ['claude', 'codex', 'random']) {
       const [primary, fallback] = resolveGuidelinesPaths(backend);
       expect(Array.isArray(primary)).toBe(true);
       expect(Array.isArray(fallback)).toBe(true);
@@ -92,10 +81,6 @@ describe('getBaselineFilename', () => {
 
   it('returns AGENTS.md for codex backend', () => {
     expect(getBaselineFilename('codex')).toBe('AGENTS.md');
-  });
-
-  it('returns KIMI.md for kimi backend', () => {
-    expect(getBaselineFilename('kimi')).toBe('KIMI.md');
   });
 
   it('defaults to CLAUDE.md', () => {

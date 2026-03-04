@@ -1,7 +1,6 @@
 import { repos } from '@promptwheel/core';
 import type { EventContext, ProcessResult } from './event-helpers.js';
 import {
-  recordSectorOutcome,
   recordTicketDedup,
   isRecord,
   toNumberOrUndefined,
@@ -315,7 +314,6 @@ export async function handleTicketResult(ctx: EventContext, payload: Record<stri
     }
     // Record failed ticket in dedup memory + sector failure
     await recordTicketDedup(ctx.db, ctx.run.rootPath, s.current_ticket_id, false, 'agent_error', ticket);
-    recordSectorOutcome(ctx.run.rootPath, s.current_sector_path, 'failure');
     // Fail the ticket, move to next
     if (s.current_ticket_id) {
       await repos.tickets.updateStatus(ctx.db, s.current_ticket_id, 'blocked');
@@ -342,7 +340,6 @@ export async function handlePrCreated(ctx: EventContext, payload: Record<string,
 
   // Record completed ticket in dedup memory + sector success (before completeTicket clears current_ticket_id)
   await recordTicketDedup(ctx.db, ctx.run.rootPath, s.current_ticket_id, true);
-  recordSectorOutcome(ctx.run.rootPath, s.current_sector_path, 'success', s.codebase_index?.reverse_edges);
 
   // Save PR artifact
   ctx.run.saveArtifact(

@@ -30,7 +30,6 @@ import type {
 import { TERMINAL_PHASES } from './types.js';
 import { deriveScopePolicy } from './scope-policy.js';
 import { checkSpindle, getFileEditWarnings } from './spindle.js';
-import { loadFormula } from './formulas.js';
 import { loadGuidelines, formatGuidelinesForPrompt } from './guidelines.js';
 import { detectProjectMetadata, formatMetadataForPrompt } from './project-metadata.js';
 import { formatIndexForPrompt, refreshCodebaseIndex, hasStructuralChanges } from './codebase-index.js';
@@ -42,14 +41,7 @@ import {
   buildCriticBlock,
   buildPlanRejectionCriticBlock,
 } from '@promptwheel/core/critic/shared';
-import {
-  pickNextSector as pickNextSectorCore,
-  computeCoverage as computeCoverageCore,
-  buildSectorSummary as buildSectorSummaryCore,
-  formatSectorDependencyContext as formatSectorDependencyContextCore,
-} from '@promptwheel/core/sectors/shared';
-import { proposalsConflict, enrichWithSymbols, type SymbolMap } from '@promptwheel/core/waves/shared';
-import { loadAstCache } from '@promptwheel/core/codebase-index';
+import { proposalsConflict } from '@promptwheel/core/waves/shared';
 import {
   getNextStep as getTrajectoryNextStep,
   formatTrajectoryForPrompt,
@@ -68,7 +60,6 @@ import {
 } from './advance-prompts.js';
 import {
   loadTrajectoryData,
-  loadSectorsState,
   buildLearningsBlock,
   buildRiskContextBlock,
   getScoutAutoApprove,
@@ -91,6 +82,12 @@ export interface AdvanceContext {
 /**
  * Core advance function. Called once per loop iteration.
  * Returns the next action for the client to perform.
+ *
+ * NOTE: Some phase handlers (e.g. advanceNextTicket, advanceScout) may call
+ * advance() recursively when transitioning phases within a single step.
+ * Maximum recursion depth is bounded by the number of phases (~6) since
+ * each recursive call transitions to a different phase and the step budget
+ * check at the top prevents infinite loops.
  */
 export async function advance(ctx: AdvanceContext): Promise<AdvanceResponse> {
   const { run, db } = ctx;
@@ -209,13 +206,8 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
   const { run, db } = ctx;
   const s = run.require();
 
-  // If skip_review is on and stale pending_proposals exist, clear them
-  if (s.skip_review && s.pending_proposals !== null) {
-    s.pending_proposals = null;
-  }
-
   // If pending proposals exist, return adversarial review prompt
-  if (!s.skip_review && s.pending_proposals !== null) {
+  if (s.pending_proposals !== null) {
     // Convert raw proposals to ValidatedProposal shape for the review prompt
     const forReview: ValidatedProposal[] = s.pending_proposals.map(p => ({
       category: p.category ?? 'unknown',
@@ -269,9 +261,6 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
 
   const hints = run.consumeHints();
 
-  // Load formula if specified
-  const formula = s.formula ? loadFormula(s.formula, ctx.project.rootPath) : null;
-
   const guidelines = loadGuidelines(ctx.project.rootPath);
   const guidelinesBlock = guidelines ? formatGuidelinesForPrompt(guidelines) + '\n\n' : '';
 
@@ -298,35 +287,7 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     const userScope = s.config_scope;
     const isCatchAll = !userScope || userScope === '**' || userScope === '*';
 
-    if (isCatchAll) {
-      // No user restriction — use sector rotation to focus each cycle
-      try {
-        const sectorsState = loadSectorsState(ctx.project.rootPath);
-        if (sectorsState) {
-          // Sync scout_cycles with persisted sector state so cycle numbers
-          // are monotonically increasing across sessions. Without this,
-          // sectors scanned early in a new session get lastScannedCycle=0
-          // while unseen sectors retain high values from prior sessions.
-          if (s.scout_cycles === 0) {
-            const maxCycle = Math.max(0, ...sectorsState.sectors.map(sec => sec.lastScannedCycle));
-            if (maxCycle > 0) {
-              s.max_cycles += maxCycle;
-              s.scout_cycles = maxCycle;
-            }
-          }
-
-          const picked = pickNextSectorCore(sectorsState, s.scout_cycles);
-          if (picked) {
-            s.scope = picked.scope;
-            s.selected_sector_path = picked.sector.path;
-            s.selected_sector_polished = (picked.sector.polishedAt ?? 0) > 0;
-          }
-        }
-      } catch (err) {
-        run.appendEvent('SECTOR_ROTATION_FAILED', { error: err instanceof Error ? err.message : String(err) });
-      }
-    } else {
-      // User specified explicit scope — honor it, skip sector rotation
+    if (!isCatchAll) {
       s.scope = userScope;
     }
   }
@@ -341,23 +302,6 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     : '';
 
   const learningsBlock = buildLearningsBlock(run, [s.scope, ...s.scouted_dirs], []);
-
-  const cov = run.buildDigest().coverage;
-  let sectorSummary: string | undefined;
-  let sectorPercent: number | undefined;
-  try {
-    const sectorsState = loadSectorsState(ctx.project.rootPath);
-    if (sectorsState) {
-      const metrics = computeCoverageCore(sectorsState);
-      sectorPercent = metrics.sectorPercent;
-      sectorSummary = buildSectorSummaryCore(sectorsState, s.selected_sector_path ?? '');
-    }
-  } catch (err) {
-    console.warn(`[promptwheel] Sector summary failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  const coverageCtx = cov.sectors_total > 0
-    ? { scannedSectors: cov.sectors_scanned, totalSectors: cov.sectors_total, percent: cov.percent, sectorPercent, sectorSummary }
-    : undefined;
 
   // Pre-verify trajectory steps — auto-advance any whose verification commands already pass.
   // This prevents wasting a scout cycle on work that was completed manually or in a prior session.
@@ -405,6 +349,12 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
   let trajectoryBlock = '';
   try {
     const trajData = loadTrajectoryData(ctx.project.rootPath);
+    if (!trajData && s.active_trajectory) {
+      // Trajectory completed/paused/removed — clear trajectory state so scope reverts to user config
+      s.active_trajectory = null;
+      s.trajectory_step_id = null;
+      s.trajectory_step_title = null;
+    }
     if (trajData) {
       let currentStep = getTrajectoryNextStep(trajData.trajectory, trajData.state.stepStates);
       if (currentStep) {
@@ -475,22 +425,8 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     console.warn(`[promptwheel] Trajectory load failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Per-sector structural context (dependents, fan-in, instability)
-  let sectorGraphBlock = '';
-  if (s.selected_sector_path && s.codebase_index) {
-    const sectorsState = loadSectorsState(ctx.project.rootPath);
-    const sector = sectorsState?.sectors.find((sec: { path: string }) => sec.path === s.selected_sector_path);
-    const ctx2 = formatSectorDependencyContextCore(
-      s.selected_sector_path,
-      s.codebase_index.reverse_edges,
-      s.codebase_index.dependency_edges,
-      sector,
-    );
-    if (ctx2) sectorGraphBlock = ctx2 + '\n\n';
-  }
-
-  const prompt = guidelinesBlock + metadataBlock + indexBlock + dedupBlock + trajectoryBlock + sectorGraphBlock + learningsBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
-    s.max_proposals_per_scout, dedupContext, formula, hints, s.eco, s.min_impact_score, s.scouted_dirs, s.scout_exclude_dirs, coverageCtx);
+  const prompt = guidelinesBlock + metadataBlock + indexBlock + dedupBlock + trajectoryBlock + learningsBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
+    s.max_proposals_per_scout, dedupContext, hints, s.min_impact_score, s.scouted_dirs, s.scout_exclude_dirs);
 
   // Reset scout_retries at the start of a fresh cycle (non-retry entry)
   if (s.scout_retries === 0) {
@@ -514,12 +450,6 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
   const { run, db } = ctx;
   const s = run.require();
 
-  // Dry-run mode — stop after scouting, don't execute tickets
-  if (s.dry_run) {
-    run.setPhase('DONE');
-    return stopResponse(run, 'DONE', 'Dry-run mode — scout complete, no tickets executed.');
-  }
-
   // Ensure learnings are loaded for scope policy derivation
   run.ensureLearningsLoaded();
 
@@ -539,37 +469,6 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
     db, s.project_id, { status: 'ready', limit: candidateLimit }
   );
 
-  // Auto-enrich tickets with target_symbols from AST cache (non-fatal)
-  try {
-    const astCache = loadAstCache(ctx.project.rootPath);
-    const symbolMap: SymbolMap = {};
-    for (const [filePath, entry] of Object.entries(astCache)) {
-      if (entry.symbols?.length) {
-        symbolMap[filePath] = entry.symbols;
-      }
-    }
-    if (Object.keys(symbolMap).length > 0) {
-      // Build enrichable proxies from candidate tickets
-      const enrichable = candidateTickets.map(t => ({
-        files: t.allowedPaths ?? [],
-        target_symbols: Array.isArray((t.metadata as Record<string, unknown> | null)?.targetSymbols)
-          ? (t.metadata as Record<string, unknown>).targetSymbols as string[]
-          : undefined,
-      }));
-      enrichWithSymbols(enrichable, symbolMap);
-      // Write enriched symbols back to ticket metadata for the greedy loop
-      for (let i = 0; i < candidateTickets.length; i++) {
-        if (enrichable[i].target_symbols?.length) {
-          const meta = (candidateTickets[i].metadata ?? {}) as Record<string, unknown>;
-          meta.targetSymbols = enrichable[i].target_symbols;
-          (candidateTickets[i] as { metadata: unknown }).metadata = meta;
-        }
-      }
-    }
-  } catch {
-    // Non-fatal — fall back to path-based conflict detection
-  }
-
   // Greedy deconfliction: select tickets whose allowed_paths don't overlap
   const readyTickets: typeof candidateTickets = [];
   for (const candidate of candidateTickets) {
@@ -586,7 +485,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
       return proposalsConflict(
         { files: candidateFiles, category: candidate.category ?? undefined, target_symbols: candidateSymbols },
         { files: selectedFiles, category: selected.category ?? undefined, target_symbols: selectedSymbols },
-        { sensitivity: s.conflict_sensitivity ?? 'normal', edges: s.codebase_index?.dependency_edges },
+        { sensitivity: 'normal' },
       );
     });
     if (!hasConflict) readyTickets.push(candidate);
@@ -606,17 +505,21 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
   }
 
   if (readyTickets.length === 0) {
+    // Don't re-scout if coverage is high and last cycle was barren
+    const coveragePct = s.files_total > 0 ? s.files_scanned / s.files_total : 0;
+    if (coveragePct >= 0.9 && s.consecutive_barren_cycles > 0) {
+      run.setPhase('DONE');
+      return stopResponse(run, 'DONE',
+        `${Math.round(coveragePct * 100)}% coverage with no remaining improvements found`);
+    }
+
     // No more tickets — scout again if cycles remain, otherwise finish
     if (s.scout_cycles < s.max_cycles) {
       run.setPhase('SCOUT');
       return advance(ctx);
     }
     run.setPhase('DONE');
-    const cov = run.buildDigest().coverage;
-    const covSuffix = cov.sectors_total > 0
-      ? ` (${cov.sectors_scanned}/${cov.sectors_total} sectors scanned, ${cov.percent}% coverage)`
-      : '';
-    return stopResponse(run, 'DONE', `No more tickets to process${covSuffix}`);
+    return stopResponse(run, 'DONE', 'No more tickets to process');
   }
 
   // If parallel > 1 and multiple tickets ready → dispatch batch
@@ -650,7 +553,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
           denied_patterns: policy.denied_patterns.map(r => r.source),
           max_files: policy.max_files,
           max_lines: policy.max_lines,
-          required_commands: ticket.verificationCommands ?? [],
+          required_commands: [...new Set([...(ticket.verificationCommands ?? []), ...(s.qa_commands ?? [])])],
           plan_required: policy.plan_required,
           auto_approve_patterns: getExecuteAutoApprove(ticket.category ?? null),
         },
@@ -804,16 +707,11 @@ async function advancePlan(ctx: AdvanceContext): Promise<AdvanceResponse> {
 
   // If too many rejections, block the ticket
   if (s.plan_rejections >= MAX_PLAN_REJECTIONS) {
-    run.appendEvent('TICKET_FAILED', {
-      ticket_id: s.current_ticket_id,
-      reason: 'Plan rejected too many times',
-    });
-    if (s.current_ticket_id) {
-      await repos.tickets.updateStatus(db, s.current_ticket_id, 'blocked');
+    const ticketId = s.current_ticket_id;
+    run.failTicket('Plan rejected too many times');
+    if (ticketId) {
+      await repos.tickets.updateStatus(db, ticketId, 'blocked');
     }
-    s.tickets_blocked++;
-    s.current_ticket_id = null;
-    s.current_ticket_plan = null;
     run.setPhase('BLOCKED_NEEDS_HUMAN');
     return stopResponse(run, 'BLOCKED_NEEDS_HUMAN',
       `Commit plan rejected ${MAX_PLAN_REJECTIONS} times. Needs human review.`);
@@ -973,10 +871,7 @@ async function advanceQa(ctx: AdvanceContext): Promise<AdvanceResponse> {
     : ticket;
 
   const learningsBlock = buildLearningsBlock(run, [], allCommands);
-  const crossVerifyPreamble = s.cross_verify
-    ? '## IMPORTANT — Independent Verification\n\nYou are verifying work as an INDEPENDENT verifier. Do NOT trust any prior claims of success. Run ALL commands yourself and report results honestly.\n\n'
-    : '';
-  const prompt = crossVerifyPreamble + learningsBlock + buildQaPrompt(qaTicket);
+  const prompt = learningsBlock + buildQaPrompt(qaTicket, { criteriaVerification: s.criteria_verification });
 
   return promptResponse(run, 'QA', prompt,
     `Running QA for: ${ticket.title} (attempt ${s.qa_retries + 1}/${MAX_QA_RETRIES})`, {
@@ -1014,7 +909,8 @@ async function advancePr(ctx: AdvanceContext): Promise<AdvanceResponse> {
     });
 }
 
-/** Max session-level steps a worker can go without progress before timeout */
+/** Max session-level steps a worker can go without progress before timeout.
+ *  Can be overridden via SessionConfig.worker_stall_threshold (not yet exposed). */
 const WORKER_STALL_THRESHOLD = 50;
 
 async function advanceParallelExecute(ctx: AdvanceContext): Promise<AdvanceResponse> {

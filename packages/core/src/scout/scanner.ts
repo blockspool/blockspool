@@ -4,6 +4,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { matchesPattern } from '../scope/shared.js';
 
 /**
  * File info with content
@@ -48,53 +49,6 @@ const DEFAULT_EXCLUDES = [
   'yarn.lock',
   'pnpm-lock.yaml',
 ];
-
-/**
- * Check if a path matches a simple glob pattern
- *
- * Supports:
- * - ** for recursive matching
- * - * for single segment matching
- * - Direct path matching
- */
-function matchesPattern(filePath: string, pattern: string): boolean {
-  // Normalize paths
-  const normalizedPath = filePath.replace(/\\/g, '/');
-  const normalizedPattern = pattern.replace(/\\/g, '/');
-
-  // Direct match
-  if (normalizedPath === normalizedPattern) {
-    return true;
-  }
-
-  // Check if pattern is a directory prefix (without glob)
-  if (!normalizedPattern.includes('*') && normalizedPath.startsWith(normalizedPattern + '/')) {
-    return true;
-  }
-
-  // Simple glob matching
-  if (normalizedPattern.includes('*')) {
-    // Escape regex special chars except *
-    const escaped = normalizedPattern
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&');
-
-    // Convert glob patterns to regex
-    // Note: **/ should be optional to match files directly in the directory
-    // e.g., src/services/**/*.ts should match both src/services/auditor.ts
-    // and src/services/sub/file.ts
-    const regexPattern = escaped
-      .replace(/\*\*\//g, '<<<DOUBLESTARSLASH>>>')
-      .replace(/\*\*/g, '<<<DOUBLESTAR>>>')
-      .replace(/\*/g, '[^/]*')
-      .replace(/<<<DOUBLESTARSLASH>>>/g, '(.*\\/)?')
-      .replace(/<<<DOUBLESTAR>>>/g, '.*');
-
-    const regex = new RegExp(`^${regexPattern}$`);
-    return regex.test(normalizedPath);
-  }
-
-  return false;
-}
 
 /**
  * Check if a path should be excluded

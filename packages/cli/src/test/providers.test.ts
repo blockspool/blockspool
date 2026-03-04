@@ -10,12 +10,11 @@ describe('getProviderNames', () => {
     const names = getProviderNames();
     expect(names).toContain('claude');
     expect(names).toContain('codex');
-    expect(names).toContain('kimi');
-    expect(names).toContain('openai-local');
+    expect(names).toContain('anthropic-batch');
   });
 
-  it('returns exactly 4 providers', () => {
-    expect(getProviderNames()).toHaveLength(4);
+  it('returns exactly 3 providers', () => {
+    expect(getProviderNames()).toHaveLength(3);
   });
 
   it('returns an array of strings', () => {
@@ -34,8 +33,6 @@ describe('isValidProvider', () => {
   it('returns true for all registered providers', () => {
     expect(isValidProvider('claude')).toBe(true);
     expect(isValidProvider('codex')).toBe(true);
-    expect(isValidProvider('kimi')).toBe(true);
-    expect(isValidProvider('openai-local')).toBe(true);
   });
 
   it('returns false for unknown provider names', () => {
@@ -102,10 +99,5 @@ describe('getProvider', () => {
   it('claude provider requires ANTHROPIC_API_KEY', () => {
     const config = getProvider('claude');
     expect(config.apiKeyEnvVar).toBe('ANTHROPIC_API_KEY');
-  });
-
-  it('openai-local provider has null apiKeyEnvVar', () => {
-    const config = getProvider('openai-local');
-    expect(config.apiKeyEnvVar).toBeNull();
   });
 });

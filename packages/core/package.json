@@ -1,6 +1,6 @@
 {
   "name": "@promptwheel/core",
-  "version": "0.7.34",
+  "version": "0.7.35",
   "description": "Core business logic and database adapter interface for PromptWheel",
   "author": "PromptWheel",
   "homepage": "https://promptwheel.com",
@@ -72,9 +72,9 @@
       "types": "./dist/learnings/lock.d.ts",
       "import": "./dist/learnings/lock.js"
     },
-    "./formulas/shared": {
-      "types": "./dist/formulas/shared.d.ts",
-      "import": "./dist/formulas/shared.js"
+    "./yaml-utils": {
+      "types": "./dist/yaml-utils.d.ts",
+      "import": "./dist/yaml-utils.js"
     },
     "./proposals/shared": {
       "types": "./dist/proposals/shared.d.ts",

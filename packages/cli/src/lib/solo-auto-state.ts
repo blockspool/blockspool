@@ -25,7 +25,32 @@ import {
 import { runPreflightChecks } from './solo-utils.js';
 import { readRunState } from './run-state.js';
 import { type ExecutionBackend } from './execution-backends/index.js';
-import { getCycleFormula as getCycleFormulaImpl, getCycleCategories as getCycleCategoriesImpl, type CycleFormulaContext } from './solo-cycle-formula.js';
+/** Inline replacement for deleted solo-cycle-formula.ts — returns allow/block from config with option overrides. */
+function getCycleCategoriesImpl(
+  ctx: { options: AutoModeOptions; config: ReturnType<typeof loadConfig> },
+  _formula: null,
+): { allow: string[]; block: string[] } {
+  const autoConf = ctx.config?.auto;
+  let allow = [...(autoConf?.allowCategories ?? DEFAULT_AUTO_CONFIG.allowCategories)];
+  let block = [...(autoConf?.blockCategories ?? DEFAULT_AUTO_CONFIG.blockCategories)];
+
+  if (ctx.options.safe) {
+    allow = allow.filter(c => ['refactor', 'docs', 'types', 'perf'].includes(c));
+  }
+  if (ctx.options.allow) {
+    const explicit = ctx.options.allow.split(',').map(s => s.trim()).filter(Boolean);
+    allow = explicit;
+  }
+  if (ctx.options.block) {
+    const blocked = ctx.options.block.split(',').map(s => s.trim()).filter(Boolean);
+    block = [...block, ...blocked];
+  }
+  if (ctx.options.tests) {
+    if (!allow.includes('test')) allow.push('test');
+  }
+
+  return { allow, block };
+}
 import {
   createMilestoneBranch,
   cleanupMilestone,
@@ -49,11 +74,7 @@ import {
 } from './codebase-index.js';
 import { detectProjectMetadata, formatMetadataForPrompt } from './project-metadata/index.js';
 import { DEFAULT_AUTO_CONFIG } from './solo-config.js';
-import {
-  loadOrBuildSectors, pickNextSector, enrichSectorsWithAnalysis,
-  type SectorState,
-} from './sectors.js';
-import { loadTasteProfile } from './taste-profile.js';
+import { loadExcludePatterns } from './exclude.js';
 import {
   loadGoals, measureGoals, pickGoalByGap, recordGoalMeasurement,
   type GoalMeasurement,
@@ -66,10 +87,8 @@ import type { Trajectory, TrajectoryState, TrajectoryStep } from '@promptwheel/c
 import { getNextStep as getTrajectoryNextStep, trajectoryComplete } from '@promptwheel/core/trajectory/shared';
 import type { DisplayAdapter } from './display-adapter.js';
 import { SpinnerDisplayAdapter } from './display-adapter-spinner.js';
-import { LogDisplayAdapter } from './display-adapter-log.js';
 import { initMetrics, metric } from './metrics.js';
 import { loadIntegrations } from './integrations.js';
-import { buildLensRotation, advanceLens } from './lens-rotation.js';
 
 // ── Session state ───────────────────────────────────────────────────────────
 
@@ -102,7 +121,6 @@ export interface AutoSessionState extends SessionOptions, SessionConfig, Session
 
 /** Resolved values from CLI options — no I/O, no side effects. */
 interface ResolvedOptions {
-  activeFormula: import('./formulas.js').Formula | null;
   totalMinutes: number | undefined;
   maxCycles: number;
   runMode: RunMode;
@@ -116,26 +134,8 @@ interface ResolvedOptions {
   parallelExplicit: boolean;
 }
 
-/** Parse CLI options into resolved values. Loads formula if specified. */
+/** Parse CLI options into resolved values. */
 async function resolveOptions(options: AutoModeOptions): Promise<ResolvedOptions> {
-  let activeFormula: import('./formulas.js').Formula | null = null;
-  if (options.formula) {
-    const { loadFormula, listFormulas } = await import('./formulas.js');
-    activeFormula = loadFormula(options.formula);
-    if (!activeFormula) {
-      const available = listFormulas();
-      console.error(chalk.red(`✗ Formula not found: ${options.formula}`));
-      console.error(chalk.gray(`  Available formulas: ${available.map(f => f.name).join(', ')}`));
-      process.exit(1);
-    }
-    console.log(chalk.cyan(`📜 Using formula: ${activeFormula.name}`));
-    console.log(chalk.gray(`   ${activeFormula.description}`));
-    if (options.verbose && activeFormula.prompt) {
-      console.log(chalk.gray(`   Prompt: ${activeFormula.prompt.slice(0, 80)}...`));
-    }
-    console.log();
-  }
-
   const hoursValue = options.hours ? parseFloat(options.hours) : 0;
   const minutesValue = options.minutes ? parseFloat(options.minutes) : 0;
   const totalMinutes = (hoursValue * 60 + minutesValue) || undefined;
@@ -145,17 +145,17 @@ async function resolveOptions(options: AutoModeOptions): Promise<ResolvedOptions
   const endTime = totalMinutes ? Date.now() + (totalMinutes * 60 * 1000) : undefined;
 
   const defaultMaxPrs = runMode === 'spin' ? 999 : 3;
-  const maxPrs = parseInt(options.maxPrs || String(activeFormula?.maxPrs ?? defaultMaxPrs), 10);
-  const minConfidence = parseInt(options.minConfidence || String(activeFormula?.minConfidence ?? DEFAULT_AUTO_CONFIG.minConfidence), 10);
+  const maxPrs = parseInt(options.maxPrs || String(defaultMaxPrs), 10);
+  const minConfidence = parseInt(options.minConfidence || String(DEFAULT_AUTO_CONFIG.minConfidence), 10);
   const useDraft = options.draft !== false;
 
   const batchSize = options.batchSize ? parseInt(options.batchSize, 10) : undefined;
   const milestoneMode = batchSize !== undefined && batchSize > 0;
-  const userScope = options.scope || activeFormula?.scope;
+  const userScope = options.scope;
   const parallelExplicit = options.parallel !== undefined && options.parallel !== '3';
 
   return {
-    activeFormula, totalMinutes, maxCycles, runMode, endTime,
+    totalMinutes, maxCycles, runMode, endTime,
     maxPrs, minConfidence, useDraft, batchSize, milestoneMode,
     userScope, parallelExplicit,
   };
@@ -317,8 +317,6 @@ async function initEnvironment(
 
 /** Loaded session data — read from disk, no external services. */
 interface SessionData {
-  deepFormula: import('./formulas.js').Formula | null;
-  docsAuditFormula: import('./formulas.js').Formula | null;
   guidelines: ProjectGuidelines | null;
   guidelinesOpts: { backend: GuidelinesBackend; autoCreate: boolean; customPath?: string };
   guidelinesRefreshInterval: number;
@@ -326,14 +324,13 @@ interface SessionData {
   dedupMemory: DedupEntry[];
   codebaseIndex: CodebaseIndex | null;
   excludeDirs: string[];
+  excludePatterns: string[];
   /** Loaded ast-grep module for AST-level analysis, or undefined if unavailable. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   astGrepModule?: any;
   metadataBlock: string | null;
-  sectorState: SectorState | null;
-  tasteProfile: ReturnType<typeof loadTasteProfile>;
-  goals: import('./formulas.js').Formula[];
-  activeGoal: import('./formulas.js').Formula | null;
+  goals: import('./goals.js').Goal[];
+  activeGoal: import('./goals.js').Goal | null;
   activeGoalMeasurement: GoalMeasurement | null;
   activeTrajectory: Trajectory | null;
   activeTrajectoryState: TrajectoryState | null;
@@ -359,19 +356,6 @@ async function loadSessionData(
   cachedQaBaseline: ReadonlyMap<string, boolean> | null,
   adapter: DatabaseAdapter,
 ): Promise<SessionData> {
-  // Formulas for deep scan and docs audit
-  let deepFormula: import('./formulas.js').Formula | null = null;
-  let docsAuditFormula: import('./formulas.js').Formula | null = null;
-  if (!resolved.activeFormula) {
-    const { loadFormula: loadF } = await import('./formulas.js');
-    if (resolved.runMode === 'spin') {
-      deepFormula = loadF('deep');
-    }
-    if (options.docsAudit !== false) {
-      docsAuditFormula = loadF('docs-audit');
-    }
-  }
-
   // Guidelines
   const guidelinesBackend: GuidelinesBackend =
     options.scoutBackend ?? options.executeBackend ?? 'codex';
@@ -433,8 +417,14 @@ async function loadSessionData(
     console.log(chalk.gray(`  Dedup memory loaded: ${dedupMemory.length} titles`));
   }
 
+  // User-defined exclude patterns
+  const excludePatterns = loadExcludePatterns(repoRoot);
+  if (excludePatterns.length > 0) {
+    console.log(chalk.gray(`  Exclude: ${excludePatterns.length} pattern(s) from .promptwheel/exclude.json`));
+  }
+
   // Codebase index
-  const excludeDirs = ['node_modules', 'dist', 'build', '.git', '.promptwheel', 'coverage', '__pycache__'];
+  const excludeDirs = ['node_modules', 'dist', 'build', '.git', '.promptwheel', 'coverage', '__pycache__', ...excludePatterns];
   let codebaseIndex: CodebaseIndex | null = null;
   // Try to load ast-grep for AST-level analysis (optional)
   let astGrepModule: unknown = null;
@@ -494,32 +484,11 @@ async function loadSessionData(
     // Non-fatal
   }
 
-  // Sectors
-  let sectorState: SectorState | null = null;
-  if (codebaseIndex) {
-    try {
-      sectorState = loadOrBuildSectors(repoRoot, codebaseIndex.modules);
-      // Enrich sectors with analysis data (dead exports, instability)
-      enrichSectorsWithAnalysis(
-        sectorState.sectors,
-        codebaseIndex.dead_exports,
-        codebaseIndex.dependency_edges,
-        codebaseIndex.reverse_edges,
-      );
-      if (options.verbose) console.log(chalk.gray(`  Sectors loaded: ${sectorState.sectors.length} sector(s)`));
-    } catch {
-      // Non-fatal
-    }
-  }
-
-  // Taste profile
-  const tasteProfile = loadTasteProfile(repoRoot);
-
   // Goals
   const goals = loadGoals(repoRoot);
-  let activeGoal: import('./formulas.js').Formula | null = null;
+  let activeGoal: import('./goals.js').Goal | null = null;
   let activeGoalMeasurement: GoalMeasurement | null = null;
-  if (goals.length > 0 && !options.formula) {
+  if (goals.length > 0) {
     console.log(chalk.cyan(`🎯 Goals loaded: ${goals.length}`));
     const measurements = measureGoals(goals, repoRoot);
     for (const m of measurements) {
@@ -586,9 +555,9 @@ async function loadSessionData(
   }
 
   return {
-    deepFormula, docsAuditFormula, guidelines, guidelinesOpts, guidelinesRefreshInterval,
-    allLearnings, dedupMemory, codebaseIndex, excludeDirs, astGrepModule: astGrepModule ?? undefined, metadataBlock,
-    sectorState, tasteProfile, goals, activeGoal, activeGoalMeasurement,
+    guidelines, guidelinesOpts, guidelinesRefreshInterval,
+    allLearnings, dedupMemory, codebaseIndex, excludeDirs, excludePatterns, astGrepModule: astGrepModule ?? undefined, metadataBlock,
+    goals, activeGoal, activeGoalMeasurement,
     activeTrajectory, activeTrajectoryState, currentTrajectoryStep,
     batchTokenBudget, scoutConcurrency, scoutTimeoutMs, maxScoutFiles, activeBackendName,
     integrations,
@@ -633,8 +602,6 @@ async function initDependencies(
 
   const modelForBackend = (name: string): string | undefined => {
     if (name === 'codex') return options.codexModel;
-    if (name === 'kimi') return options.kimiModel;
-    if (name === 'openai-local') return options.localModel;
     return undefined;
   };
 
@@ -653,7 +620,6 @@ async function initDependencies(
       scoutBackend = await scoutProvider.createScoutBackend({
         apiKey: apiKeyForBackend(scoutBackendName),
         model: modelForBackend(scoutBackendName),
-        baseUrl: scoutBackendName === 'openai-local' ? options.localUrl : undefined,
       });
     }
   }
@@ -664,8 +630,6 @@ async function initDependencies(
       apiKey: apiKeyForBackend(execBackendName),
       model: modelForBackend(execBackendName),
       unsafeBypassSandbox: options.codexUnsafeFullAccess,
-      baseUrl: execBackendName === 'openai-local' ? options.localUrl : undefined,
-      maxIterations: options.localMaxIterations ? parseInt(options.localMaxIterations, 10) : undefined,
     });
 
     if (!autoConf.timeoutMultiplier) {
@@ -740,13 +704,12 @@ function printSessionHeader(
   directFinalize: string,
   autoConf: Record<string, any>,
   cachedQaBaseline: ReadonlyMap<string, boolean> | null,
-  getCycleFormula: (cycle: number) => import('./formulas.js').Formula | null,
-  getCycleCategories: (formula: import('./formulas.js').Formula | null) => { allow: string[]; block: string[] },
+  getCycleCategories: (formula: null) => { allow: string[]; block: string[] },
   drillMode: boolean,
 ) {
   const { runMode, totalMinutes, endTime, userScope, milestoneMode, batchSize, maxPrs, useDraft } = resolved;
 
-  const initialCategories = getCycleCategories(getCycleFormula(1));
+  const initialCategories = getCycleCategories(null);
 
   {
     console.log(chalk.blue(`🛞 PromptWheel Auto v${CLI_VERSION}`));
@@ -762,9 +725,6 @@ function printSessionHeader(
             ? `${totalMinutes / 60} hours`
             : `${Math.floor(totalMinutes / 60)}h ${Math.round(totalMinutes % 60)}m`;
         console.log(chalk.gray(`  Time budget: ${budgetLabel} (until ${endDate.toLocaleTimeString()})`));
-        if ((totalMinutes ?? 0) >= 360) {
-          console.log(chalk.gray(`  Tip: For always-on improvement, try: promptwheel solo daemon start`));
-        }
       }
     } else {
       console.log(chalk.gray('  Mode: Planning (scout all → roadmap → approve → execute)'));
@@ -809,29 +769,14 @@ function patchStateClosures(
   // passes the original object and we need to redirect at the call site.
   // Instead, the caller will do: shutdownRef = state; after this call.
 
-  // Patch formula helpers to read from state
-  const stateFormulaCtx = (): CycleFormulaContext => ({
-    activeFormula: state.activeFormula,
-    sessionPhase: state.sessionPhase,
-    deepFormula: state.deepFormula,
-    docsAuditFormula: state.docsAuditFormula,
-    isContinuous: state.runMode === 'spin',
-    repoRoot: state.repoRoot,
-    options: state.options,
-    config: state.config,
-    sectorProductionFileCount: state.currentSectorId
-      ? state.sectorState?.sectors.find(s => s.path === state.currentSectorId)?.productionFileCount
-      : undefined,
-    currentLens: state.currentLens,
-  });
-  state.getCycleFormula = (cycle: number) => {
-    if (state.activeGoal && !state.options.formula) {
-      // Every 4th cycle, let lens rotation run to prevent tunnel vision
-      if (cycle % 4 !== 0) return state.activeGoal;
+  // Patch category helpers to read from state
+  state.getCycleFormula = (_cycle: number) => {
+    if (state.activeGoal) {
+      return state.activeGoal;
     }
-    return getCycleFormulaImpl(stateFormulaCtx(), cycle);
+    return null;
   };
-  state.getCycleCategories = (formula) => getCycleCategoriesImpl(stateFormulaCtx(), formula);
+  state.getCycleCategories = () => getCycleCategoriesImpl({ options: state.options, config: state.config }, null);
 
   // Milestone helpers
   state.finalizeMilestone = async () => {
@@ -869,9 +814,9 @@ function patchStateClosures(
   };
 }
 
-/** Start the interactive console (spin mode only, not in daemon mode). */
+/** Start the interactive console (spin mode only). */
 function initInteractiveConsole(state: AutoSessionState) {
-  if (state.runMode !== 'spin' || state.options.daemon) return;
+  if (state.runMode !== 'spin') return;
   // TUI has its own input handling — skip the raw stdin listener to avoid conflicts
   const isTui = state.options.tui !== false && !state.options.dryRun && process.stdout.isTTY;
   if (isTui) return;
@@ -954,28 +899,13 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     }
   };
 
-  // In daemon mode, the daemon loop handles signals itself
-  if (!options.daemon) {
-    process.on('SIGINT', shutdownHandler);
-    process.on('SIGTERM', shutdownHandler);
-  }
+  process.on('SIGINT', shutdownHandler);
+  process.on('SIGTERM', shutdownHandler);
 
-  // Temporary formula helpers for header printing (before state exists)
+  // Temporary category helpers for header printing (before state exists)
   const sessionPhase: 'warmup' | 'deep' | 'cooldown' = 'deep';
-  const tmpFormulaCtx = (): CycleFormulaContext => ({
-    activeFormula: resolved.activeFormula,
-    sessionPhase,
-    deepFormula: sessionData.deepFormula,
-    docsAuditFormula: sessionData.docsAuditFormula,
-    isContinuous: resolved.runMode === 'spin',
-    repoRoot,
-    options,
-    config,
-    sectorProductionFileCount: undefined,
-  });
-  const tmpGetCycleFormula = (cycle: number) => getCycleFormulaImpl(tmpFormulaCtx(), cycle);
-  const tmpGetCycleCategories = (formula: import('./formulas.js').Formula | null) =>
-    getCycleCategoriesImpl(tmpFormulaCtx(), formula);
+  const tmpGetCycleCategories = (_formula: null) =>
+    getCycleCategoriesImpl({ options, config }, null);
 
   // Delivery mode — need autoConf for defaults
   const deliveryMode = options.deliveryMode ?? autoConf.deliveryMode ?? 'direct';
@@ -983,15 +913,13 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
   const directFinalize = options.directFinalize ?? autoConf.directFinalize ?? 'merge';
 
   const drillMode = options.drill !== false && autoConf.drill?.enabled !== false && resolved.runMode === 'spin';
-  printSessionHeader(resolved, deliveryMode, directBranch, directFinalize, autoConf, cachedQaBaseline, tmpGetCycleFormula, tmpGetCycleCategories, drillMode);
+  printSessionHeader(resolved, deliveryMode, directBranch, directFinalize, autoConf, cachedQaBaseline, tmpGetCycleCategories, drillMode);
 
   const branches = await initBranches(options, resolved, deliveryMode, directBranch, repoRoot, depsResult.detectedBaseBranch);
 
   // Display adapter
   let displayAdapter: DisplayAdapter;
-  if (options.daemon) {
-    displayAdapter = new LogDisplayAdapter();
-  } else {
+  {
     const useTui = options.tui !== false && !options.dryRun && process.stdout.isTTY;
     displayAdapter = new SpinnerDisplayAdapter();
     if (useTui) {
@@ -1021,11 +949,6 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     config,
     autoConf,
     repoRoot,
-
-    activeFormula: resolved.activeFormula,
-    deepFormula: sessionData.deepFormula,
-    docsAuditFormula: sessionData.docsAuditFormula,
-    currentFormulaName: 'default',
 
     runMode: resolved.runMode,
     totalMinutes: resolved.totalMinutes,
@@ -1060,11 +983,6 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     totalClosedPrs: 0,
     pendingPrUrls: [],
 
-    sectorState: sessionData.sectorState,
-    currentSectorId: null,
-    currentSectorCycle: 0,
-    sessionScannedSectors: new Set(),
-
     effectiveMinConfidence: (() => {
       const rs = readRunState(repoRoot);
       const persisted = rs.lastEffectiveMinConfidence;
@@ -1090,8 +1008,8 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     dedupMemory: sessionData.dedupMemory,
     codebaseIndex: sessionData.codebaseIndex,
     excludeDirs: sessionData.excludeDirs,
+    excludePatterns: sessionData.excludePatterns,
     metadataBlock: sessionData.metadataBlock,
-    tasteProfile: sessionData.tasteProfile,
 
     goals: sessionData.goals,
     activeGoal: sessionData.activeGoal,
@@ -1133,18 +1051,10 @@ export async function initSession(options: AutoModeOptions): Promise<AutoSession
     _pendingIntegrationProposals: [],
     integrationLastRun: {},
     currentLens: 'default',
-    lensRotation: buildLensRotation(repoRoot, resolved.activeFormula),
+    lensRotation: ['default'],
     lensIndex: 0,
     lensMatrix: new Map(),
-    lensZeroYieldPairs: (() => {
-      const rs = readRunState(repoRoot);
-      const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
-      return new Set(
-        (rs.lensZeroYieldPairs ?? [])
-          .filter((p: { ts: number }) => Date.now() - p.ts < SEVEN_DAYS)
-          .map((p: { key: string }) => p.key),
-      );
-    })(),
+    lensZeroYieldPairs: new Set(),
     lensExecutionStrikes: new Map(),
     lensFullyExhausted: false,
     lensRotationsCompleted: 0,
@@ -1269,103 +1179,7 @@ export function shouldContinue(state: AutoSessionState): boolean {
   return true;
 }
 
-/**
- * Check if a sector has files modified since its last scan.
- * Checks HEAD plus PromptWheel's direct branch so our own commits
- * are detected without scanning every branch in the repo.
- */
-function sectorHasChanges(repoRoot: string, sector: { path: string; lastScannedAt: number }): boolean {
-  if (sector.lastScannedAt === 0) return true; // never scanned = always scan
-  try {
-    const sinceDate = new Date(sector.lastScannedAt).toISOString();
-    // Check HEAD and promptwheel-direct branch for changes
-    const result = spawnSync('git', [
-      'log', 'HEAD', '--glob=refs/heads/promptwheel-*',
-      '--since', sinceDate, '--name-only', '--pretty=format:',
-      '--', `${sector.path}/**`,
-    ], {
-      cwd: repoRoot,
-      encoding: 'utf-8',
-      timeout: 5000,
-    });
-    const changedFiles = (result.stdout ?? '').trim();
-    return changedFiles.length > 0;
-  } catch {
-    return true; // on error, assume changes exist
-  }
-}
-
-export function getNextScope(state: AutoSessionState, _depth = 0): string | null {
+export function getNextScope(state: AutoSessionState): string | null {
   if (state.userScope) return state.userScope;
-  if (state.sectorState) {
-    const rs = readRunState(state.repoRoot);
-    state.currentSectorCycle = rs.totalCycles;
-
-    // Keep picking sectors until we find one with changes (or unscanned)
-    const tried = new Set<string>();
-    while (tried.size < state.sectorState.sectors.length) {
-      const pick = pickNextSector(state.sectorState, state.currentSectorCycle);
-      if (!pick) break;
-
-      if (tried.has(pick.sector.path)) break; // looped back
-      tried.add(pick.sector.path);
-
-      // Always scan each sector at least once per session; after that, only on changes
-      const scannedThisSession = state.sessionScannedSectors.has(pick.sector.path);
-      if (pick.sector.scanCount === 0 || !scannedThisSession || sectorHasChanges(state.repoRoot, pick.sector)) {
-        state.sessionScannedSectors.add(pick.sector.path);
-        state.currentSectorId = pick.sector.path;
-        return pick.scope;
-      }
-
-      // Mark as "just scanned" so pickNextSector moves to the next one
-      pick.sector.lastScannedCycle = state.currentSectorCycle;
-    }
-
-    // All sectors scanned under current lens — try next lens
-    if (state.lensRotation.length > 1) {
-      const advanced = advanceLens(state);
-      if (advanced) {
-        // Reset sessionScannedSectors for the new lens
-        // (but respect lensMatrix — skip sectors already scanned under new lens)
-        state.sessionScannedSectors = new Set(
-          state.lensMatrix.get(state.currentLens) ?? [],
-        );
-        // Retry sector pick with fresh scanning state
-        return getNextScope(state, _depth + 1);
-      }
-    }
-
-    // All lenses exhausted for this rotation — reset for a fresh pass.
-    // Clear lensMatrix and sessionScannedSectors so each lens×sector
-    // pair is eligible again. This lets spin mode keep producing work
-    // instead of entering a permanent idle state.
-    state.lensRotationsCompleted++;
-    state.lensFullyExhausted = true;  // signals shutdown logic that a full rotation completed
-    state.lensMatrix.clear();
-    state.sessionScannedSectors.clear();
-    // Pre-mark unchanged sectors as already scanned — only sectors with
-    // actual git changes become eligible for rescanning after a full rotation.
-    if (state.sectorState) {
-      for (const sector of state.sectorState.sectors) {
-        if (!sectorHasChanges(state.repoRoot, sector)) {
-          state.sessionScannedSectors.add(sector.path);
-        }
-      }
-    }
-    state.lensIndex = 0;
-    state.currentLens = state.lensRotation[0];
-    // Reset exhaustion flag after clearing — the fresh rotation has untried pairs again
-    state.lensFullyExhausted = false;
-    // Pick the first sector of the fresh rotation immediately
-    // (avoid a wasted 30s idle cycle). Guard against infinite recursion
-    // in case all sectors are exhausted even after reset.
-    if (_depth === 0) {
-      return getNextScope(state, 1);
-    }
-    state.currentSectorId = null;
-    return null;
-  }
-  state.currentSectorId = null;
   return '**';
 }

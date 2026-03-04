@@ -11,16 +11,13 @@
 import type { DatabaseAdapter } from '@promptwheel/core/db';
 import type { ScoutBackend } from '@promptwheel/core/services';
 import type { projects } from '@promptwheel/core/repos';
-import type { Formula } from './formulas.js';
 import type { loadConfig, createScoutDeps } from './solo-config.js';
 import type { ExecutionBackend } from './execution-backends/index.js';
 import type { ProjectGuidelines, GuidelinesBackend } from './guidelines.js';
 import type { Learning } from './learnings.js';
 import type { DedupEntry } from './dedup-memory.js';
 import type { CodebaseIndex } from './codebase-index.js';
-import type { loadTasteProfile } from './taste-profile.js';
-import type { GoalMeasurement } from './goals.js';
-import type { SectorState } from './sectors.js';
+import type { GoalMeasurement, Goal } from './goals.js';
 import type { Trajectory, TrajectoryState, TrajectoryStep } from '@promptwheel/core/trajectory/shared';
 import type { TicketOutcome } from './run-history.js';
 import type { TraceAnalysis } from '@promptwheel/core/trace/shared';
@@ -39,7 +36,6 @@ export interface AutoModeOptions {
   hours?: string;
   pr?: boolean;
   scope?: string;
-  formula?: string;
   dryRun?: boolean;
   verbose?: boolean;
   plan?: boolean;
@@ -56,7 +52,6 @@ export interface AutoModeOptions {
   tests?: boolean;
   yes?: boolean;
   parallel?: string;
-  eco?: boolean;
 
   // Legacy/advanced options
   minutes?: string;
@@ -64,12 +59,10 @@ export interface AutoModeOptions {
   maxPrs?: string;
   minConfidence?: string;
   draft?: boolean;
-  deep?: boolean;
   batchSize?: string;
   scoutBackend?: string;
   executeBackend?: string;
   codexModel?: string;
-  kimiModel?: string;
   codexUnsafeFullAccess?: boolean;
   includeClaudeMd?: boolean;
   batchTokenBudget?: string;
@@ -79,9 +72,6 @@ export interface AutoModeOptions {
   docsAuditInterval?: string;
   scoutConcurrency?: string;
   codexMcp?: boolean;
-  localUrl?: string;
-  localModel?: string;
-  localMaxIterations?: string;
   deliveryMode?: 'direct' | 'pr' | 'auto-merge';
   directBranch?: string;
   directFinalize?: 'pr' | 'merge' | 'none';
@@ -91,11 +81,9 @@ export interface AutoModeOptions {
   qaFix?: boolean;
   /** Enable live terminal UI with agent output streaming */
   tui?: boolean;
-  /** Running inside daemon process (no TTY, no interactive console, no process.exit) */
-  daemon?: boolean;
   /** Drill mode — auto-generate trajectories from scout output in spin mode */
   drill?: boolean;
-  /** Explicit spin mode flag (used by daemon to force spin without CLI parsing) */
+  /** Explicit spin mode flag */
   spin?: boolean;
   /** Poll GitHub issues with this label and convert to proposals (default label: "promptwheel") */
   issues?: boolean | string;
@@ -120,10 +108,6 @@ export interface SessionConfig {
   config: ReturnType<typeof loadConfig>;
   autoConf: Record<string, any>;
   repoRoot: string;
-  activeFormula: Formula | null;
-  deepFormula: Formula | null;
-  docsAuditFormula: Formula | null;
-  currentFormulaName: string;
   guidelines: ProjectGuidelines | null;
   guidelinesOpts: { backend: GuidelinesBackend; autoCreate: boolean; customPath?: string };
   guidelinesRefreshInterval: number;
@@ -132,12 +116,11 @@ export interface SessionConfig {
   dedupMemory: DedupEntry[];
   codebaseIndex: CodebaseIndex | null;
   excludeDirs: string[];
+  excludePatterns: string[];
   metadataBlock: string | null;
-  tasteProfile: ReturnType<typeof loadTasteProfile>;
-  goals: Formula[];
-  activeGoal: Formula | null;
+  goals: Goal[];
+  activeGoal: Goal | null;
   activeGoalMeasurement: GoalMeasurement | null;
-  sectorState: SectorState | null;
   activeTrajectory: Trajectory | null;
   activeTrajectoryState: TrajectoryState | null;
   currentTrajectoryStep: TrajectoryStep | null;
@@ -174,9 +157,6 @@ export interface SessionRuntime {
   completedDirectTickets: Array<{ title: string; category: string; files: string[] }>;
   /** Trace analyses collected from ticket executions (one per ticket, when stream-json available) */
   allTraceAnalyses: TraceAnalysis[];
-  currentSectorId: string | null;
-  currentSectorCycle: number;
-  sessionScannedSectors: Set<string>;
   effectiveMinConfidence: number;
   consecutiveLowYieldCycles: number;
   /** Consecutive main-loop iterations with zero completed tickets (catches all empty-cycle paths) */
@@ -186,7 +166,7 @@ export interface SessionRuntime {
   sessionPhase: 'warmup' | 'deep' | 'cooldown';
   allTicketOutcomes: TicketOutcome[];
   cycleOutcomes: TicketOutcome[];
-  prMetaMap: Map<string, { sectorId: string; formula: string }>;
+  prMetaMap: Map<string, Record<string, unknown>>;
   qaBaseline: ReadonlyMap<string, boolean> | null;
   shutdownRequested: boolean;
   shutdownReason: 'user_signal' | 'user_quit' | 'convergence' | 'low_yield' | 'idle' | 'branch_diverged' | 'time_limit' | 'pr_limit' | 'rate_limited' | 'completed' | null;
@@ -323,8 +303,8 @@ export interface SessionDeps {
 export interface SessionUI {
   displayAdapter: DisplayAdapter;
   interactiveConsole: InteractiveConsole | undefined;
-  getCycleFormula: (cycle: number) => Formula | null;
-  getCycleCategories: (formula: Formula | null) => { allow: string[]; block: string[] };
+  getCycleFormula: (cycle: number) => { name: string; prompt?: string; model?: string; categories?: string[] } | null;
+  getCycleCategories: (formula: { name: string; categories?: string[] } | null) => { allow: string[]; block: string[] };
   finalizeMilestone: () => Promise<void>;
   startNewMilestone: () => Promise<void>;
 }

@@ -3,7 +3,6 @@
  *
  * Tests the executeProposals function's outcome recording logic:
  * - Quality signal recording (first_pass, retried)
- * - Formula ticket outcome tracking
  * - Dedup memory recording
  * - Auto-tune QA config application
  * - Dry run short-circuiting
@@ -29,10 +28,9 @@ vi.mock('../lib/solo-ticket.js', () => ({
 
 vi.mock('../lib/run-state.js', () => ({
   recordQualitySignal: vi.fn().mockResolvedValue(undefined),
-  recordFormulaTicketOutcome: vi.fn().mockResolvedValue(undefined),
   recordCategoryOutcome: vi.fn().mockResolvedValue(undefined),
   pushRecentDiff: vi.fn().mockResolvedValue(undefined),
-  readRunState: vi.fn().mockReturnValue({ totalCycles: 5, formulaStats: {} }),
+  readRunState: vi.fn().mockReturnValue({ totalCycles: 5 }),
 }));
 
 vi.mock('../lib/error-ledger.js', () => ({
@@ -105,11 +103,6 @@ vi.mock('../lib/file-cooldown.js', () => ({
   recordPrFiles: vi.fn(),
 }));
 
-vi.mock('../lib/sectors.js', () => ({
-  recordTicketOutcome: vi.fn(),
-  computeCoverage: vi.fn().mockReturnValue({ scannedSectors: 0, totalSectors: 0, percent: 0 }),
-}));
-
 vi.mock('../lib/wave-scheduling.js', () => ({
   partitionIntoWaves: vi.fn().mockImplementation((proposals: any[]) => [proposals]),
 }));
@@ -161,11 +154,10 @@ vi.mock('@promptwheel/core/repos', () => ({
 
 import { executeProposals } from '../lib/solo-auto-execute.js';
 import { soloRunTicket } from '../lib/solo-ticket.js';
-import { recordQualitySignal, recordFormulaTicketOutcome, pushRecentDiff } from '../lib/run-state.js';
+import { recordQualitySignal, pushRecentDiff } from '../lib/run-state.js';
 import { recordDedupEntry } from '../lib/dedup-memory.js';
 import { addLearning } from '../lib/learnings.js';
 import { shouldContinue } from '../lib/solo-auto-state.js';
-import { recordTicketOutcome } from '../lib/sectors.js';
 import { runs } from '@promptwheel/core/repos';
 import type { AutoSessionState } from '../lib/solo-auto-state.js';
 import type { TicketProposal } from '@promptwheel/core/scout';
@@ -201,9 +193,6 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
     },
     repoRoot: '/tmp/test-repo',
 
-    activeFormula: null,
-    deepFormula: null,
-    docsAuditFormula: null,
     currentFormulaName: 'default',
 
     runMode: 'planning' as const,
@@ -238,10 +227,6 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
     totalClosedPrs: 0,
     pendingPrUrls: [],
 
-    sectorState: null,
-    currentSectorId: null,
-    currentSectorCycle: 0,
-
     effectiveMinConfidence: 20,
     consecutiveLowYieldCycles: 0,
     consecutiveIdleCycles: 0,
@@ -260,6 +245,7 @@ function makeState(overrides: Partial<AutoSessionState> = {}): AutoSessionState 
     dedupMemory: [],
     codebaseIndex: null,
     excludeDirs: [],
+    excludePatterns: [],
     metadataBlock: null,
     tasteProfile: null,
 
@@ -382,22 +368,6 @@ describe('executeProposals', () => {
       expect(recordQualitySignal).toHaveBeenCalledWith('/tmp/test-repo', 'first_pass');
     });
 
-    it('records formula ticket outcome as success', async () => {
-      vi.mocked(soloRunTicket).mockResolvedValue({
-        success: true,
-        durationMs: 5000,
-        prUrl: 'https://github.com/test/repo/pull/1',
-        branchName: 'promptwheel/tkt_mock',
-      });
-
-      const state = makeState();
-      const proposals = [makeProposal()];
-
-      await executeProposals(state, proposals);
-
-      expect(recordFormulaTicketOutcome).toHaveBeenCalledWith('/tmp/test-repo', 'default', true);
-    });
-
     it('increments totalPrsCreated and tracks PR URL', async () => {
       vi.mocked(soloRunTicket).mockResolvedValue({
         success: true,
@@ -422,22 +392,6 @@ describe('executeProposals', () => {
   // ────────────────────────────────────────────────────────────────────────
 
   describe('failed ticket execution', () => {
-    it('records formula ticket outcome as failure', async () => {
-      vi.mocked(soloRunTicket).mockResolvedValue({
-        success: false,
-        durationMs: 5000,
-        error: 'Something went wrong',
-        failureReason: 'agent_error',
-      });
-
-      const state = makeState();
-      const proposals = [makeProposal()];
-
-      await executeProposals(state, proposals);
-
-      expect(recordFormulaTicketOutcome).toHaveBeenCalledWith('/tmp/test-repo', 'default', false);
-    });
-
     it('does not record quality signal on failure', async () => {
       vi.mocked(soloRunTicket).mockResolvedValue({
         success: false,
@@ -554,28 +508,6 @@ describe('executeProposals', () => {
       }));
     });
 
-    it('records sector ticket outcome as failure when sector is active', async () => {
-      vi.mocked(soloRunTicket).mockResolvedValue({
-        success: false,
-        durationMs: 5000,
-        error: 'fail',
-        failureReason: 'agent_error',
-      });
-
-      const state = makeState();
-      state.sectorState = { sectors: [] } as any;
-      state.currentSectorId = 'src/auth';
-      const proposals = [makeProposal({ category: 'refactor' })];
-
-      await executeProposals(state, proposals);
-
-      expect(recordTicketOutcome).toHaveBeenCalledWith(
-        state.sectorState,
-        'src/auth',
-        false,
-        'refactor',
-      );
-    });
   });
 
   // ────────────────────────────────────────────────────────────────────────

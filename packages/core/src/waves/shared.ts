@@ -1,9 +1,8 @@
 /**
  * Wave scheduling shared algorithms — barrel re-export.
  *
- * All implementations live in focused submodules:
- * - conflict.ts — conflict detection, path helpers, wave partitioning
- * - merge.ts — symbol enrichment, merge prediction, structural merge, scout escalation
+ * All implementations live in conflict.ts — conflict detection, path helpers,
+ * and wave partitioning.
  */
 
 export {
@@ -33,26 +32,8 @@ export {
   touchesSamePackage,
 
   // Main conflict detection
-  hasImportChainConflict,
-  hasCallGraphConflict,
   proposalsConflict,
 
   // Wave partitioning
   partitionIntoWaves,
 } from './conflict.js';
-
-export {
-  // Symbol enrichment
-  type SymbolMap,
-  enrichWithSymbols,
-
-  // Merge prediction
-  predictMergeConflict,
-  orderMergeSequence,
-
-  // Scout escalation
-  buildScoutEscalation,
-
-  // Structural merge
-  tryStructuralMerge,
-} from './merge.js';

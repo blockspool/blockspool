@@ -1,12 +1,9 @@
 /**
- * Cycle context for convergence-aware scout prompting.
+ * Cycle context for scout prompting.
  *
  * Tracks recent cycle outcomes so the scout can propose follow-up work
- * instead of random scattershot. Also computes convergence metrics
- * to guide session-level decisions.
+ * instead of random scattershot.
  */
-
-import type { SectorState } from './sectors.js';
 
 // ---------------------------------------------------------------------------
 // Cycle Summary
@@ -89,112 +86,3 @@ export function pushCycleSummary(
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Convergence Metrics
-// ---------------------------------------------------------------------------
-
-export interface ConvergenceMetrics {
-  polishedSectorPct: number;
-  avgProposalYield: number;
-  learningsDensity: number;
-  successRateTrend: 'improving' | 'stable' | 'declining';
-  suggestedAction: 'continue' | 'widen_scope' | 'deepen' | 'stop';
-  mergeRate: number;
-  velocity: { prsPerHour: number; mergeRatePercent: number };
-}
-
-/**
- * Compute convergence metrics from sectors, learnings count, and recent cycles.
- */
-export function computeConvergenceMetrics(
-  sectorState: SectorState,
-  learningsCount: number,
-  recentCycles: CycleSummary[],
-  sessionContext?: { elapsedMs: number; prsCreated: number; prsMerged: number; prsClosed: number },
-  drillContext?: { completionRate: number; step1FailureRate: number; consecutiveInsufficient: number; trajectoryCount: number },
-): ConvergenceMetrics {
-  const prodSectors = sectorState.sectors.filter(s => s.production && s.fileCount > 0);
-  const polishedCount = prodSectors.filter(s => (s.polishedAt ?? 0) > 0).length;
-  const polishedSectorPct = prodSectors.length > 0
-    ? Math.round((polishedCount / prodSectors.length) * 100)
-    : 0;
-
-  const scannedSectors = prodSectors.filter(s => s.scanCount > 0);
-  const avgProposalYield = scannedSectors.length > 0
-    ? scannedSectors.reduce((sum, s) => sum + s.proposalYield, 0) / scannedSectors.length
-    : 0;
-
-  const totalFiles = prodSectors.reduce((sum, s) => sum + s.fileCount, 0);
-  const learningsDensity = totalFiles > 0 ? learningsCount / totalFiles : 0;
-
-  // Compute success rate trend from last 3 cycles
-  let successRateTrend: ConvergenceMetrics['successRateTrend'] = 'stable';
-  if (recentCycles.length >= 3) {
-    const rates = recentCycles.slice(-3).map(c => {
-      const total = c.succeeded.length + c.failed.length + c.noChanges.length;
-      return total > 0 ? c.succeeded.length / total : 0;
-    });
-    const first = rates[0];
-    const last = rates[rates.length - 1];
-    if (last - first > 0.1) successRateTrend = 'improving';
-    else if (first - last > 0.1) successRateTrend = 'declining';
-  }
-
-  // Determine suggested action — incorporates drill-specific signals when available
-  let suggestedAction: ConvergenceMetrics['suggestedAction'] = 'continue';
-  if (polishedSectorPct > 80 && avgProposalYield < 0.5) {
-    suggestedAction = 'stop';
-  } else if (drillContext && drillContext.trajectoryCount >= 3 && drillContext.completionRate < 0.2 && drillContext.step1FailureRate > 0.5) {
-    // Drill-specific: most trajectories fail on step 1 → generation quality is poor, stop drilling
-    suggestedAction = 'stop';
-  } else if (drillContext && drillContext.consecutiveInsufficient >= 2) {
-    // Drill-specific: survey keeps finding nothing → codebase is converged
-    suggestedAction = 'stop';
-  } else if (polishedSectorPct > 60 && successRateTrend === 'declining') {
-    suggestedAction = 'widen_scope';
-  } else if (avgProposalYield > 1.5 && successRateTrend === 'improving') {
-    suggestedAction = 'deepen';
-  }
-
-  // Merge rate from sector-level data
-  let totalMerged = 0;
-  let totalClosed = 0;
-  for (const s of prodSectors) {
-    totalMerged += s.mergeCount ?? 0;
-    totalClosed += s.closedCount ?? 0;
-  }
-  const mergeRate = (totalMerged + totalClosed) > 0
-    ? totalMerged / (totalMerged + totalClosed)
-    : 0;
-
-  // Velocity from session context
-  const elapsedHours = sessionContext ? sessionContext.elapsedMs / 3_600_000 : 0;
-  const prsPerHour = elapsedHours > 0 ? (sessionContext?.prsCreated ?? 0) / elapsedHours : 0;
-  const mergedTotal = sessionContext?.prsMerged ?? 0;
-  const closedTotal = sessionContext?.prsClosed ?? 0;
-  const mergeRatePercent = (mergedTotal + closedTotal) > 0
-    ? Math.round((mergedTotal / (mergedTotal + closedTotal)) * 100)
-    : 0;
-
-  return {
-    polishedSectorPct, avgProposalYield, learningsDensity, successRateTrend, suggestedAction,
-    mergeRate,
-    velocity: { prsPerHour, mergeRatePercent },
-  };
-}
-
-const TREND_ARROWS: Record<string, string> = {
-  improving: '\u2191',
-  stable: '\u2192',
-  declining: '\u2193',
-};
-
-/**
- * Format a one-liner convergence summary for console output.
- */
-export function formatConvergenceOneLiner(m: ConvergenceMetrics): string {
-  const arrow = TREND_ARROWS[m.successRateTrend] ?? '→';
-  const velStr = m.velocity.prsPerHour > 0 ? `, ${m.velocity.prsPerHour.toFixed(1)} PRs/h` : '';
-  const mergeStr = m.mergeRate > 0 ? `, merge ${Math.round(m.mergeRate * 100)}%` : '';
-  return `Convergence: ${m.polishedSectorPct}% polished, yield ${m.avgProposalYield.toFixed(1)}/scan, success ${arrow}${velStr}${mergeStr} — ${m.suggestedAction}`;
-}

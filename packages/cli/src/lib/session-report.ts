@@ -7,7 +7,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { getPromptwheelDir } from './solo-config.js';
-import { computeCoverage } from './sectors.js';
 import { formatElapsed } from './solo-auto-utils.js';
 import { getQualityRate } from './run-state.js';
 import type { SessionSummaryContext } from './solo-session-summary.js';
@@ -189,10 +188,6 @@ export function generateSessionReport(ctx: SessionReportContext): string {
   lines.push('## Health');
   lines.push('');
   lines.push(`- Quality: ${qualityPct}%${totalCompleted > 0 ? ` (${totalCompleted - ctx.totalFailed}/${totalCompleted} first-pass)` : ''}`);
-  if (ctx.sectorState) {
-    const cov = computeCoverage(ctx.sectorState);
-    lines.push(`- Sector coverage: ${cov.scannedSectors}/${cov.totalSectors} (${cov.percent}%)`);
-  }
   lines.push(`- Learnings: ${ctx.allLearningsCount} accumulated`);
   lines.push('');
 
@@ -246,17 +241,6 @@ export function generateSessionJson(ctx: SessionReportContext): Record<string, u
     })),
     prUrls: ctx.allPrUrls,
   };
-
-  if (ctx.sectorState) {
-    const cov = computeCoverage(ctx.sectorState);
-    result.coverage = {
-      scannedSectors: cov.scannedSectors,
-      totalSectors: cov.totalSectors,
-      scannedFiles: cov.scannedFiles,
-      totalFiles: cov.totalFiles,
-      percent: cov.percent,
-    };
-  }
 
   if (ctx.drillStats && ctx.drillStats.trajectoriesGenerated > 0) {
     result.drill = {

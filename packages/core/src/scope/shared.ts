@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 export const ALWAYS_DENIED: string[] = [
-  '.env', '.env.*',
+  '.env', '.env.*', '**/.env', '**/.env.*',
   'node_modules/**', '.git/**', '.promptwheel/**',
   'dist/**', 'build/**', 'coverage/**',
   // Lock files are auto-generated; governed by per-ticket allowed_paths instead
@@ -41,7 +41,8 @@ export const CREDENTIAL_PATTERNS: RegExp[] = [
 // ---------------------------------------------------------------------------
 
 export const FILE_DENY_PATTERNS: RegExp[] = [
-  /\.(env|pem|key)$/,
+  /\.env($|\.)/,
+  /\.(pem|key)$/,
   /credentials/i,
   /secret/i,
 ];
@@ -129,6 +130,9 @@ export function detectCredentialPattern(filePath: string): boolean {
 // Pure glob-style pattern matching (no external deps)
 // ---------------------------------------------------------------------------
 
+const REGEX_CACHE_MAX = 500;
+const regexCache = new Map<string, RegExp>();
+
 /**
  * Simple glob-style pattern matching.
  * Supports: * (any chars), ** (any path segments), ? (single char)
@@ -137,22 +141,32 @@ export function matchesPattern(filePath: string, pattern: string): boolean {
   const normalizedFile = filePath.replace(/\\/g, '/');
   const normalizedPattern = pattern.replace(/\\/g, '/');
 
-  // Convert glob to regex
-  let regexPattern = normalizedPattern
-    .replace(/\*\*\//g, '<<<GLOBSTAR_SLASH>>>')
-    .replace(/\*\*/g, '<<<GLOBSTAR>>>')
-    .replace(/\*/g, '<<<STAR>>>')
-    .replace(/\?/g, '<<<QUESTION>>>');
+  let regex = regexCache.get(normalizedPattern);
+  if (!regex) {
+    // Convert glob to regex
+    let regexPattern = normalizedPattern
+      .replace(/\*\*\//g, '<<<GLOBSTAR_SLASH>>>')
+      .replace(/\*\*/g, '<<<GLOBSTAR>>>')
+      .replace(/\*/g, '<<<STAR>>>')
+      .replace(/\?/g, '<<<QUESTION>>>');
 
-  regexPattern = regexPattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    regexPattern = regexPattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 
-  regexPattern = regexPattern
-    .replace(/<<<GLOBSTAR_SLASH>>>/g, '(?:.*/)?')
-    .replace(/<<<GLOBSTAR>>>/g, '.*')
-    .replace(/<<<STAR>>>/g, '[^/]*')
-    .replace(/<<<QUESTION>>>/g, '[^/]');
+    regexPattern = regexPattern
+      .replace(/<<<GLOBSTAR_SLASH>>>/g, '(?:.*/)?')
+      .replace(/<<<GLOBSTAR>>>/g, '.*')
+      .replace(/<<<STAR>>>/g, '[^/]*')
+      .replace(/<<<QUESTION>>>/g, '[^/]');
 
-  const regex = new RegExp(`^${regexPattern}$`);
+    regex = new RegExp(`^${regexPattern}$`);
+    if (regexCache.size >= REGEX_CACHE_MAX) {
+      // Evict oldest entry (first key in insertion order)
+      const firstKey = regexCache.keys().next().value;
+      if (firstKey !== undefined) regexCache.delete(firstKey);
+    }
+    regexCache.set(normalizedPattern, regex);
+  }
+
   return regex.test(normalizedFile);
 }
 
@@ -361,28 +375,25 @@ export function analyzeViolationsForExpansion(
     }
   }
 
-  // Second pass: cross-directory within same top-level module
+  // Second pass: cross-directory within same two-level module prefix.
+  // Only match two-segment prefixes (e.g. "packages/cli") to prevent
+  // overly broad expansion to single-segment dirs like "packages/".
   if (pathsToAdd.length < notAllowedViolations.length) {
-    const allowedTopDirs = new Set<string>();
+    const allowedTwoLevelDirs = new Set<string>();
     for (const dir of allowedDirs) {
       const parts = dir.split('/');
-      if (parts.length >= 1) allowedTopDirs.add(parts[0]);
-      if (parts.length >= 2) allowedTopDirs.add(parts.slice(0, 2).join('/'));
+      if (parts.length >= 2) allowedTwoLevelDirs.add(parts.slice(0, 2).join('/'));
     }
-
-    const hasPackagesDir = [...allowedDirs].some(d => d.startsWith('packages/'));
-    if (hasPackagesDir) allowedTopDirs.add('packages');
 
     for (const violation of notAllowedViolations) {
       const normalizedFile = normalizePath(violation.file);
       if (pathsToAdd.includes(normalizedFile)) continue;
 
       const fileParts = normalizedFile.split('/');
-      const fileTopDir = fileParts.length >= 2
-        ? fileParts.slice(0, 2).join('/')
-        : fileParts[0];
+      if (fileParts.length < 2) continue; // skip root-level files in second pass
+      const fileTopDir = fileParts.slice(0, 2).join('/');
 
-      if (allowedTopDirs.has(fileTopDir) || allowedTopDirs.has(fileParts[0])) {
+      if (allowedTwoLevelDirs.has(fileTopDir)) {
         pathsToAdd.push(normalizedFile);
       }
     }

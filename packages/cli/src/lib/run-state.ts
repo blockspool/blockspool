@@ -22,37 +22,6 @@ export interface DeferredProposal {
   deferredAtCycle?: number;
 }
 
-export interface FormulaStats {
-  cycles: number;
-  proposalsGenerated: number;
-  ticketsSucceeded: number;
-  ticketsTotal: number;
-  recentCycles: number;
-  recentProposalsGenerated: number;
-  recentTicketsSucceeded: number;
-  recentTicketsTotal: number;
-  lastResetCycle: number;
-  mergeCount?: number;
-  closedCount?: number;
-}
-
-export interface FormulaDisplayMetrics {
-  cycles: number;
-  proposalsPerCycle: number;
-  successRate: number;
-  recentSuccessRate: number;
-}
-
-export function getFormulaDisplayMetrics(stats: FormulaStats): FormulaDisplayMetrics {
-  return {
-    cycles: stats.cycles,
-    proposalsPerCycle: stats.cycles > 0 ? stats.proposalsGenerated / stats.cycles : 0,
-    successRate: stats.ticketsTotal > 0 ? stats.ticketsSucceeded / stats.ticketsTotal : 0,
-    recentSuccessRate: stats.recentTicketsTotal > 0
-      ? stats.recentTicketsSucceeded / stats.recentTicketsTotal : 0,
-  };
-}
-
 export interface CategorySuccessStats {
   proposals: number;
   success: number;
@@ -60,14 +29,6 @@ export interface CategorySuccessStats {
   successRate: number;
   confidenceAdjustment: number;
   lastUpdatedCycle: number;
-}
-
-export interface LearningSnapshot {
-  ts: number;
-  total: number;
-  applied: number;
-  successRate: number;
-  lowPerformers: string[];
 }
 
 export interface RunState {
@@ -79,8 +40,6 @@ export interface RunState {
   lastRunAt: number;
   /** Proposals deferred because they were outside the session scope */
   deferredProposals: DeferredProposal[];
-  /** Per-formula performance stats for adaptive rotation */
-  formulaStats: Record<string, FormulaStats>;
   /** Recent cycle summaries for convergence-aware prompting */
   recentCycles?: CycleSummary[];
   /** Recent diff summaries for follow-up proposal generation */
@@ -95,21 +54,10 @@ export interface RunState {
   };
   /** Per-category success/failure stats for confidence calibration */
   categoryStats?: Record<string, CategorySuccessStats>;
-  /** Per-integration provider tracking */
-  integrationStats?: Record<string, {
-    lastRunCycle: number;
-    totalRuns: number;
-    totalResults: number;
-    lastError?: string;
-  }>;
-  /** Learning ROI snapshots (ring buffer, max 20) */
-  learningSnapshots?: LearningSnapshot[];
   /** Persisted confidence calibration from last session */
   lastEffectiveMinConfidence?: number;
   /** Persisted drill consecutive insufficient count */
   lastDrillConsecutiveInsufficient?: number;
-  /** Persisted lens zero-yield pairs with timestamps for TTL-based expiry */
-  lensZeroYieldPairs?: Array<{ key: string; ts: number }>;
   /** Session crash-resume checkpoint — restored if recent enough */
   sessionCheckpoint?: {
     cycleCount: number;
@@ -151,7 +99,6 @@ const DEFAULT_STATE: RunState = {
   lastDocsAuditCycle: 0,
   lastRunAt: 0,
   deferredProposals: [],
-  formulaStats: {},
   recentCycles: [],
   recentDiffs: [],
 };
@@ -175,26 +122,9 @@ export function readRunState(repoRoot: string): RunState {
       recentDiffs: Array.isArray(parsed.recentDiffs) ? parsed.recentDiffs : [],
       qualitySignals: parsed.qualitySignals ?? undefined,
       categoryStats: parsed.categoryStats ?? undefined,
-      integrationStats: parsed.integrationStats ?? undefined,
-      learningSnapshots: Array.isArray(parsed.learningSnapshots) ? parsed.learningSnapshots : undefined,
       lastEffectiveMinConfidence: typeof parsed.lastEffectiveMinConfidence === 'number' ? parsed.lastEffectiveMinConfidence : undefined,
       lastDrillConsecutiveInsufficient: typeof parsed.lastDrillConsecutiveInsufficient === 'number' ? parsed.lastDrillConsecutiveInsufficient : undefined,
-      lensZeroYieldPairs: Array.isArray(parsed.lensZeroYieldPairs) ? parsed.lensZeroYieldPairs : undefined,
       sessionCheckpoint: parsed.sessionCheckpoint ?? undefined,
-      formulaStats: (() => {
-        const statsRaw = parsed.formulaStats ?? {};
-        for (const key of Object.keys(statsRaw)) {
-          const e = statsRaw[key];
-          e.recentCycles ??= 0;
-          e.recentProposalsGenerated ??= 0;
-          e.recentTicketsSucceeded ??= 0;
-          e.recentTicketsTotal ??= 0;
-          e.lastResetCycle ??= 0;
-          e.mergeCount ??= 0;
-          e.closedCount ??= 0;
-        }
-        return statsRaw;
-      })(),
     };
   } catch {
     return { ...DEFAULT_STATE };
@@ -247,45 +177,6 @@ export function recordDocsAudit(repoRoot: string): Promise<void> {
   return withRunStateLock(() => {
     const state = readRunState(repoRoot);
     state.lastDocsAuditCycle = state.totalCycles;
-    writeRunState(repoRoot, state);
-  });
-}
-
-/**
- * Record that a formula was used and produced N proposals.
- */
-export function recordFormulaResult(repoRoot: string, formulaName: string, proposalCount: number): Promise<void> {
-  return withRunStateLock(() => {
-    const state = readRunState(repoRoot);
-    const entry = state.formulaStats[formulaName] ??= { cycles: 0, proposalsGenerated: 0, ticketsSucceeded: 0, ticketsTotal: 0, recentCycles: 0, recentProposalsGenerated: 0, recentTicketsSucceeded: 0, recentTicketsTotal: 0, lastResetCycle: 0 };
-    entry.cycles++;
-    entry.proposalsGenerated += proposalCount;
-    entry.recentCycles++;
-    entry.recentProposalsGenerated += proposalCount;
-    if (state.totalCycles - entry.lastResetCycle >= 20) {
-      entry.recentCycles = 1;
-      entry.recentProposalsGenerated = proposalCount;
-      entry.recentTicketsSucceeded = 0;
-      entry.recentTicketsTotal = 0;
-      entry.lastResetCycle = state.totalCycles;
-    }
-    writeRunState(repoRoot, state);
-  });
-}
-
-/**
- * Record a ticket success/failure for the formula that produced it.
- */
-export function recordFormulaTicketOutcome(repoRoot: string, formulaName: string, success: boolean): Promise<void> {
-  return withRunStateLock(() => {
-    const state = readRunState(repoRoot);
-    const entry = state.formulaStats[formulaName] ??= { cycles: 0, proposalsGenerated: 0, ticketsSucceeded: 0, ticketsTotal: 0, recentCycles: 0, recentProposalsGenerated: 0, recentTicketsSucceeded: 0, recentTicketsTotal: 0, lastResetCycle: 0 };
-    entry.ticketsTotal++;
-    entry.recentTicketsTotal++;
-    if (success) {
-      entry.ticketsSucceeded++;
-      entry.recentTicketsSucceeded++;
-    }
     writeRunState(repoRoot, state);
   });
 }
@@ -392,22 +283,6 @@ export function popDeferredForScope(repoRoot: string, scope: string, currentCycl
   return matched;
 }
 
-/**
- * Record a formula merge/close outcome for PR merge signal tracking.
- */
-export function recordFormulaMergeOutcome(projectRoot: string, formula: string, merged: boolean): Promise<void> {
-  return withRunStateLock(() => {
-    const state = readRunState(projectRoot);
-    const entry = state.formulaStats[formula] ??= { cycles: 0, proposalsGenerated: 0, ticketsSucceeded: 0, ticketsTotal: 0, recentCycles: 0, recentProposalsGenerated: 0, recentTicketsSucceeded: 0, recentTicketsTotal: 0, lastResetCycle: 0, mergeCount: 0, closedCount: 0 };
-    if (merged) {
-      entry.mergeCount = (entry.mergeCount ?? 0) + 1;
-    } else {
-      entry.closedCount = (entry.closedCount ?? 0) + 1;
-    }
-    writeRunState(projectRoot, state);
-  });
-}
-
 /** Max recent diffs to keep (ring buffer) */
 const MAX_RECENT_DIFFS = 10;
 
@@ -490,66 +365,3 @@ export function recordCategoryOutcome(repoRoot: string, category: string, succes
   });
 }
 
-/** Max learning snapshots to keep (ring buffer) */
-const MAX_LEARNING_SNAPSHOTS = 20;
-
-/**
- * Snapshot learning ROI: calls getLearningEffectiveness and appends to ring buffer.
- */
-export function snapshotLearningROI(repoRoot: string, getLearningEffectiveness: (root: string) => {
-  total: number;
-  applied: number;
-  successRate: number;
-  topPerformers: Array<{ id: string; text: string; effectiveness: number }>;
-}): Promise<void> {
-  return withRunStateLock(() => {
-    const state = readRunState(repoRoot);
-    const effectiveness = getLearningEffectiveness(repoRoot);
-
-    const lowPerformers = effectiveness.topPerformers
-      .filter(p => p.effectiveness < 0.3)
-      .map(p => p.text.slice(0, 80));
-
-    const snapshots = state.learningSnapshots ??= [];
-    snapshots.push({
-      ts: Date.now(),
-      total: effectiveness.total,
-      applied: effectiveness.applied,
-      successRate: effectiveness.successRate,
-      lowPerformers,
-    });
-    if (snapshots.length > MAX_LEARNING_SNAPSHOTS) {
-      snapshots.splice(0, snapshots.length - MAX_LEARNING_SNAPSHOTS);
-    }
-    state.learningSnapshots = snapshots;
-    writeRunState(repoRoot, state);
-  });
-}
-
-/**
- * Get confidence adjustment for a category. Returns 0 if no data.
- */
-export function getCategoryConfidenceAdjustment(repoRoot: string, category: string): number {
-  const state = readRunState(repoRoot);
-  return state.categoryStats?.[category]?.confidenceAdjustment ?? 0;
-}
-
-/**
- * Record an integration provider invocation.
- */
-export function recordIntegrationRun(repoRoot: string, providerName: string, resultCount: number, error?: string): Promise<void> {
-  return withRunStateLock(() => {
-    const state = readRunState(repoRoot);
-    const stats = state.integrationStats ??= {};
-    const entry = stats[providerName] ??= { lastRunCycle: 0, totalRuns: 0, totalResults: 0 };
-    entry.lastRunCycle = state.totalCycles;
-    entry.totalRuns++;
-    entry.totalResults += resultCount;
-    if (error) {
-      entry.lastError = error.slice(0, 200);
-    } else {
-      delete entry.lastError;
-    }
-    writeRunState(repoRoot, state);
-  });
-}

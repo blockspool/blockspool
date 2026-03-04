@@ -13,8 +13,26 @@ import {
 } from '../spindle/index.js';
 import { parseChangedFiles, checkScopeViolations } from '../scope.js';
 import { gitExec, cleanupWorktree } from '../solo-git.js';
-import { generateSpindleRecommendations } from '../solo-ci.js';
 import type { RunTicketResult, SpindleAbortDetails } from '../solo-ticket-types.js';
+
+function generateSpindleRecommendations(
+  trigger: SpindleAbortDetails['trigger'],
+  _ticket: { allowedPaths: string[]; forbiddenPaths: string[] },
+  config: { tokenBudgetAbort: number; maxStallIterations: number; similarityThreshold: number },
+): string[] {
+  const r: string[] = [];
+  switch (trigger) {
+    case 'token_budget': r.push(`Increase token limit: config.spindle.tokenBudgetAbort (current: ${config.tokenBudgetAbort})`, 'Break ticket into smaller, focused tasks'); break;
+    case 'stalling': r.push('Agent may be stuck - check if requirements are clear', `Decrease stall threshold: config.spindle.maxStallIterations (current: ${config.maxStallIterations})`); break;
+    case 'oscillation': r.push('Agent is flip-flopping between approaches', 'Clarify the desired solution in ticket description'); break;
+    case 'repetition': r.push('Agent is repeating similar outputs', `Adjust similarity threshold: config.spindle.similarityThreshold (current: ${config.similarityThreshold})`); break;
+    case 'spinning': r.push('Agent has high activity but no progress', 'Simplify the task requirements'); break;
+    case 'qa_ping_pong': r.push('QA failures are alternating between two error types', 'Fix one issue fully before addressing the next'); break;
+    case 'command_failure': r.push('Same command keeps failing with the same error', 'Manual intervention needed'); break;
+  }
+  r.push('Disable Spindle (not recommended): config.spindle.enabled = false');
+  return r;
+}
 import type { TicketContext, StepResult } from './types.js';
 import { appendSpindleIncident } from '../spindle-incidents.js';
 

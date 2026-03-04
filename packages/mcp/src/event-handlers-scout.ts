@@ -1,15 +1,12 @@
 import type { EventContext, ProcessResult } from './event-helpers.js';
-import { loadSectorsState, atomicWriteJsonSync } from './event-helpers.js';
 import { isRecord, toBooleanOrUndefined, toNumberOrUndefined, toStringArrayOrUndefined, toStringOrUndefined } from './event-helpers.js';
 import { repos, SCOUT_DEFAULTS } from '@promptwheel/core';
 import { filterAndCreateTickets, parseReviewedProposals } from './proposals.js';
 import type { RawProposal } from './proposals.js';
 import { addLearning, extractTags } from './learnings.js';
-import {
-  recordScanResult as recordScanResultCore,
-} from '@promptwheel/core/sectors/shared';
 
 const MAX_SCOUT_RETRIES = SCOUT_DEFAULTS.MAX_SCOUT_RETRIES;
+const MAX_BARREN_CYCLES = SCOUT_DEFAULTS.MAX_BARREN_CYCLES;
 
 function isRawProposal(value: unknown): value is RawProposal {
   return isRecord(value);
@@ -55,34 +52,6 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
     s.files_total = totalFiles;
   }
 
-  // Handle sector reclassification if present — use recordScanResult with 0 proposals
-  const sectorReclass = (() => {
-    const raw = payload['sector_reclassification'];
-    if (!isRecord(raw)) return undefined;
-    const production = toBooleanOrUndefined(raw['production']);
-    const confidence = toStringOrUndefined(raw['confidence']);
-    return { production, confidence };
-  })();
-  if (sectorReclass && (sectorReclass.confidence === 'medium' || sectorReclass.confidence === 'high') && exploredDirs.length > 0) {
-    try {
-      const loaded = loadSectorsState(ctx.run.rootPath);
-      if (loaded) {
-        const targetPath = exploredDirs[0].replace(/\/$/, '');
-        const target = loaded.state.sectors.find(sec => sec.path === targetPath);
-        if (target) {
-          // Apply reclassification directly (recordScanResult would also bump scan counters)
-          if (sectorReclass.production !== undefined) {
-            target.production = sectorReclass.production;
-          }
-          target.classificationConfidence = sectorReclass.confidence;
-          atomicWriteJsonSync(loaded.filePath, loaded.state);
-        }
-      }
-    } catch (err) {
-      console.warn(`[promptwheel] sector reclassification: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
   // Fallback: if pending_proposals exist and the LLM sent review results
   // through SCOUT_OUTPUT instead of PROPOSALS_REVIEWED, redirect to the
   // PROPOSALS_REVIEWED handler.
@@ -112,29 +81,10 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
     : `Attempt ${s.scout_retries + 1}: Explored ${exploredDirs.join(', ') || '(unknown)'}. Found ${rawProposals.length} proposals.`;
   s.scout_exploration_log.push(logEntry);
 
-  // Update sector scan stats if a sector was selected for this cycle.
-  // This must happen BEFORE the empty-proposals check so that zero-yield
-  // sectors are still recorded — otherwise rotation keeps picking the same
-  // exhausted sector indefinitely.
-  if (s.selected_sector_path) {
-    try {
-      const loaded = loadSectorsState(ctx.run.rootPath);
-      if (loaded) {
-        recordScanResultCore(loaded.state, s.selected_sector_path, s.scout_cycles, rawProposals.length);
-        atomicWriteJsonSync(loaded.filePath, loaded.state);
-      }
-    } catch (err) {
-      console.warn(`[promptwheel] record sector scan stats: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    s.current_sector_path = s.selected_sector_path;
-    s.selected_sector_path = undefined;
-    s.selected_sector_polished = false;
-  }
-
   if (rawProposals.length === 0) {
-    // Polished sectors don't get retries — they've been scanned 5+ times
-    // with consistently low yield; retrying wastes LLM calls
-    const effectiveMaxRetries = s.selected_sector_polished ? 0 : MAX_SCOUT_RETRIES;
+    // At high coverage, reduce retry attempts — there's little left to find
+    const coveragePct = s.files_total > 0 ? s.files_scanned / s.files_total : 0;
+    const effectiveMaxRetries = coveragePct >= 0.9 ? 1 : MAX_SCOUT_RETRIES;
 
     if (s.scout_retries < effectiveMaxRetries) {
       s.scout_retries++;
@@ -146,16 +96,30 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
       };
     }
 
-    // Retries exhausted — try next cycle if budget allows
+    // Retries exhausted — track consecutive barren cycles
+    s.consecutive_barren_cycles = (s.consecutive_barren_cycles ?? 0) + 1;
+    const attempts = s.scout_retries + 1;
+
+    // Early termination: stop burning tokens when codebase is exhausted
+    if (s.consecutive_barren_cycles >= MAX_BARREN_CYCLES) {
+      ctx.run.setPhase('DONE');
+      return {
+        processed: true,
+        phase_changed: true,
+        new_phase: 'DONE',
+        message: `No proposals after ${s.consecutive_barren_cycles} consecutive barren cycles (${attempts} attempts each). Codebase appears exhausted.`,
+      };
+    }
+
+    // Try next cycle if budget allows
     if (s.scout_cycles < s.max_cycles) {
-      const attempts = s.scout_retries + 1;
       s.scout_retries = 0;
       s.scout_exploration_log = [];
       // Stay in SCOUT — advance() will pick a new sector for the next cycle
       return {
         processed: true,
         phase_changed: false,
-        message: `No proposals after ${attempts} attempt(s). Moving to next cycle.`,
+        message: `No proposals after ${attempts} attempt(s). Moving to next cycle (${s.consecutive_barren_cycles}/${MAX_BARREN_CYCLES} barren).`,
       };
     }
 
@@ -166,44 +130,6 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
       phase_changed: true,
       new_phase: 'DONE',
       message: 'No proposals in scout output after all retries, transitioning to DONE',
-    };
-  }
-
-  // skip_review: create tickets directly without adversarial review pass
-  if (s.skip_review) {
-    ctx.run.saveArtifact(
-      `${s.step_count}-scout-proposals.json`,
-      JSON.stringify({ raw: rawProposals, skip_review: true }, null, 2),
-    );
-
-    const result = await filterAndCreateTickets(ctx.run, ctx.db, rawProposals);
-
-    if (result.created_ticket_ids.length > 0) {
-      s.scout_retries = 0;
-      ctx.run.setPhase('NEXT_TICKET');
-      return {
-        processed: true,
-        phase_changed: true,
-        new_phase: 'NEXT_TICKET',
-        message: `Created ${result.created_ticket_ids.length} tickets (review skipped, ${result.rejected.length} rejected)`,
-      };
-    }
-
-    // All proposals rejected
-    if (s.scout_retries < MAX_SCOUT_RETRIES) {
-      s.scout_retries++;
-      return {
-        processed: true,
-        phase_changed: false,
-        message: `All proposals rejected (review skipped, attempt ${s.scout_retries}/${MAX_SCOUT_RETRIES + 1}). Retrying.`,
-      };
-    }
-    ctx.run.setPhase('DONE');
-    return {
-      processed: true,
-      phase_changed: true,
-      new_phase: 'DONE',
-      message: `All proposals rejected (review skipped) after all retries`,
     };
   }
 
@@ -299,6 +225,7 @@ export async function handleProposalsReviewed(ctx: EventContext, payload: Record
 
   if (result.created_ticket_ids.length > 0) {
     s.scout_retries = 0;
+    s.consecutive_barren_cycles = 0;
     ctx.run.setPhase('NEXT_TICKET');
     return {
       processed: true,
@@ -308,13 +235,16 @@ export async function handleProposalsReviewed(ctx: EventContext, payload: Record
     };
   }
 
-  // All proposals rejected after review
-  if (s.scout_retries < MAX_SCOUT_RETRIES) {
+  // All proposals rejected after review — reduce retries at high coverage
+  const coveragePct = s.files_total > 0 ? s.files_scanned / s.files_total : 0;
+  const effectiveMaxRetries = coveragePct >= 0.9 ? 1 : MAX_SCOUT_RETRIES;
+
+  if (s.scout_retries < effectiveMaxRetries) {
     s.scout_retries++;
     return {
       processed: true,
       phase_changed: false,
-      message: `All proposals rejected after review (attempt ${s.scout_retries}/${MAX_SCOUT_RETRIES + 1}). Retrying.`,
+      message: `All proposals rejected after review (attempt ${s.scout_retries}/${effectiveMaxRetries + 1}). Retrying.`,
     };
   }
   ctx.run.setPhase('DONE');

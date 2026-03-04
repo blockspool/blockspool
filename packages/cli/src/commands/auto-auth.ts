@@ -11,20 +11,15 @@ export interface AuthOptions {
   provider?: string;
   codex?: boolean;
   claude?: boolean;
-  kimi?: boolean;
-  local?: boolean;
-  localModel?: string;
-  localUrl?: string;
   scoutBackend?: string;
   executeBackend?: string;
   codexModel?: string;
-  kimiModel?: string;
   codexUnsafeFullAccess?: boolean;
   batch?: boolean;
 }
 
 /**
- * Expand provider shorthands (--codex, --kimi, --local) and validate auth.
+ * Expand provider shorthands (--codex) and validate auth.
  * Auto-detects backend from environment if no flags given.
  * Returns resolved scout/execute backend names.
  */
@@ -39,8 +34,6 @@ export async function resolveBackends(options: AuthOptions): Promise<{
     const p = options.provider.toLowerCase();
     if (p === 'codex') options.codex = true;
     else if (p === 'claude') options.claude = true;
-    else if (p === 'kimi') options.kimi = true;
-    else if (p === 'local' || p === 'openai-local') options.local = true;
     else if (isValidProvider(p)) {
       // Known provider but no shorthand — set backend directly
       options.scoutBackend = options.scoutBackend ?? p;
@@ -54,7 +47,7 @@ export async function resolveBackends(options: AuthOptions): Promise<{
   }
 
   // Expand shorthands
-  const shorthands = [options.codex && 'codex', options.claude && 'claude', options.kimi && 'kimi', options.local && 'local'].filter(Boolean);
+  const shorthands = [options.codex && 'codex', options.claude && 'claude'].filter(Boolean);
   if (shorthands.length > 1) {
     exitCommandError({
       message: `Cannot combine ${shorthands.map(s => `--${s}`).join(' and ')}`,
@@ -63,7 +56,7 @@ export async function resolveBackends(options: AuthOptions): Promise<{
 
   // Auto-detect backend from environment if no explicit choice
   // Default: Codex. Use --claude to opt into Claude.
-  if (!options.codex && !options.claude && !options.kimi && !options.local && !options.scoutBackend && !options.executeBackend) {
+  if (!options.codex && !options.claude && !options.scoutBackend && !options.executeBackend) {
     options.codex = true;
   }
 
@@ -71,22 +64,6 @@ export async function resolveBackends(options: AuthOptions): Promise<{
     options.scoutBackend = options.scoutBackend ?? 'codex';
     options.executeBackend = options.executeBackend ?? 'codex';
   }
-  if (options.kimi) {
-    options.scoutBackend = options.scoutBackend ?? 'kimi';
-    options.executeBackend = options.executeBackend ?? 'kimi';
-  }
-  if (options.local) {
-    if (!options.localModel) {
-      exitCommandError({
-        message: '--local-model is required when using --local',
-        humanDetails: [chalk.gray('  Example: promptwheel --local --local-model kimi-k2.5')],
-      });
-    }
-    options.scoutBackend = options.scoutBackend ?? 'openai-local';
-    options.executeBackend = options.executeBackend ?? 'openai-local';
-    console.log(chalk.yellow('⚠ Local provider has no sandbox — worktree isolation + QA gating provides safety'));
-  }
-
   // --batch overrides scout backend to anthropic-batch (execution stays as-is)
   if (options.batch) {
     if (!process.env.ANTHROPIC_API_KEY) {
@@ -117,7 +94,6 @@ export async function resolveBackends(options: AuthOptions): Promise<{
 
   const needsClaude = scoutBackendName === 'claude' || executeBackendName === 'claude';
   const needsCodex = scoutBackendName === 'codex' || executeBackendName === 'codex';
-  const needsKimi = scoutBackendName === 'kimi' || executeBackendName === 'kimi';
   const insideClaudeCode = process.env.CLAUDECODE === '1';
 
   // Detect running inside Claude Code session
@@ -172,19 +148,6 @@ export async function resolveBackends(options: AuthOptions): Promise<{
         });
       }
     }
-  }
-
-  // Auth: Kimi lane
-  if (needsKimi) {
-    if (!process.env.MOONSHOT_API_KEY) {
-      console.log(chalk.yellow('⚠ MOONSHOT_API_KEY not set — using kimi CLI stored credentials'));
-      console.log(chalk.gray('  If auth fails, set MOONSHOT_API_KEY or run: kimi → /login'));
-    }
-  }
-
-  // Model selection for Kimi
-  if (needsKimi && !options.kimiModel) {
-    options.kimiModel = 'kimi-k2.5';
   }
 
   // Model selection for Codex

@@ -25,7 +25,7 @@ export interface ProviderConfig {
   apiKeyEnvVar: string | null;
   /** Alternative auth description (e.g., "codex login") */
   altAuth?: string;
-  /** Primary guidelines filename (CLAUDE.md, AGENTS.md, KIMI.md, etc.) */
+  /** Primary guidelines filename (CLAUDE.md, AGENTS.md, etc.) */
   guidelinesFile: string;
   /** Default scout timeout in ms */
   defaultScoutTimeoutMs: number;

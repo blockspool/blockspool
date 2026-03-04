@@ -83,7 +83,10 @@ export async function ensureForRepo(
     return existing;
   }
 
-  // Create new project (use ON CONFLICT to handle race conditions / worktree paths)
+  // Create new project. Use INSERT ... ON CONFLICT DO NOTHING to handle
+  // race conditions where two concurrent calls both pass the getByRepoRoot check.
+  // We conflict on (id) since that's the PK; after INSERT we re-query by root_path
+  // to handle the case where another caller inserted a different id for the same root_path.
   const id = opts.id ?? `proj_${nanoid(6)}`;
   await db.query(
     `INSERT INTO projects (id, name, repo_url, root_path)
@@ -92,8 +95,15 @@ export async function ensureForRepo(
     [id, opts.name, opts.repoUrl ?? null, opts.rootPath]
   );
 
-  const created = await getById(db, id);
+  // Re-query by root_path to handle concurrent insert race:
+  // if another process inserted a row with the same root_path but different id,
+  // our INSERT succeeded as a no-op (different id, no conflict) but we should
+  // return whichever row actually owns this root_path.
+  const created = await getByRepoRoot(db, opts.rootPath);
   if (!created) {
+    // Fallback: try by ID in case root_path query somehow missed it
+    const byId = await getById(db, id);
+    if (byId) return byId;
     throw new Error('Failed to create project');
   }
   return created;

@@ -34,9 +34,11 @@ export const SCOUT_DEFAULTS = {
   /** Maximum proposals per scout cycle */
   MAX_PROPOSALS_PER_SCOUT: 5,
   /** Minimum impact score for proposals (matches PROPOSALS_DEFAULTS.DEFAULT_MIN_IMPACT) */
-  MIN_IMPACT_SCORE: 3,
+  MIN_IMPACT_SCORE: 5,
   /** Retries when scout returns zero proposals */
   MAX_SCOUT_RETRIES: 3,
+  /** Stop session after N consecutive cycles with no accepted proposals */
+  MAX_BARREN_CYCLES: 2,
   /** Default scope glob */
   SCOPE: '**',
   /** Default trust ladder categories */

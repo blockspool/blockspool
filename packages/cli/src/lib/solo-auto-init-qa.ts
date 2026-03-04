@@ -43,7 +43,7 @@ export async function initQaBaseline(
   const qaConfig = normalizeQaConfig(config);
 
   // Run each command to establish baseline
-  let baseline = await captureQaBaseline(repoRoot, config, (msg) => console.log(chalk.gray(msg)), repoRoot);
+  let baseline = await captureQaBaseline(repoRoot, config, (msg) => console.log(chalk.gray(msg)));
 
   // Check for failures
   const failingCommands = [...baseline.entries()].filter(([, r]) => !r.passed).map(([name]) => name);
@@ -79,7 +79,7 @@ export async function initQaBaseline(
       // Re-run baseline after auto-fix
       console.log(chalk.gray('  Re-checking baselines...'));
       resetQaStatsForSession(repoRoot);
-      baseline = await captureQaBaseline(repoRoot, config, (msg) => console.log(chalk.gray(msg)), repoRoot);
+      baseline = await captureQaBaseline(repoRoot, config, (msg) => console.log(chalk.gray(msg)));
 
       // Auto-commit lint auto-fix changes
       try {
@@ -140,7 +140,7 @@ Read the error output above, then fix the source code. Minimal, targeted changes
       // Re-check baselines
       const checkSpinner = createSpinner('Re-checking baselines...');
       resetQaStatsForSession(repoRoot);
-      baseline = await captureQaBaseline(repoRoot, config, (msg) => checkSpinner.update(msg), repoRoot);
+      baseline = await captureQaBaseline(repoRoot, config, (msg) => checkSpinner.update(msg));
 
       const nowFailing = [...baseline.entries()].filter(([, r]) => !r.passed).map(([name]) => name);
 

@@ -13,7 +13,7 @@ import { runClaude, type ExecutionBackend } from './execution-backends/index.js'
 import {
   buildProposalReviewPrompt, parseReviewedProposals, applyReviewToProposals,
 } from './proposal-review.js';
-import { deferProposal, popDeferredForScope, recordFormulaResult, readRunState } from './run-state.js';
+import { deferProposal, popDeferredForScope, readRunState } from './run-state.js';
 import { addLearning, extractTags } from './learnings.js';
 import {
   isDuplicateProposal, getDeduplicationContext,
@@ -24,10 +24,6 @@ import {
 } from './dedup-memory.js';
 import { matchAgainstMemory } from '@promptwheel/core/dedup/shared';
 // balanceProposals removed — let quality determine proposal mix organically
-import {
-  getSectorCategoryAffinity, updateProposalYield,
-} from './sectors.js';
-import { getCooledFiles, computeCooldownOverlap } from './file-cooldown.js';
 import { sleep } from './dedup.js';
 
 export interface FilterResult {
@@ -44,12 +40,11 @@ export async function filterProposals(
   state: AutoSessionState,
   proposals: TicketProposal[],
   scope: string,
-  cycleFormula: import('./formulas.js').Formula | null,
 ): Promise<FilterResult> {
-  const { block: blockCategories } = state.getCycleCategories(cycleFormula);
+  const { block: blockCategories } = state.getCycleCategories(null);
 
   // Adversarial proposal review
-  if (state.autoConf.adversarialReview && !state.options.eco && proposals.length > 0) {
+  if (state.autoConf.adversarialReview && proposals.length > 0) {
     try {
       const reviewPrompt = buildProposalReviewPrompt(proposals);
       const reviewBackend = state.executionBackend ?? {
@@ -164,10 +159,23 @@ export async function filterProposals(
     }
   }
 
+  // Impact floor filter — reject proposals below min_impact_score
+  const minImpact = state.autoConf.minImpactScore ?? SCOUT_DEFAULTS.MIN_IMPACT_SCORE;
+  let rejectedByImpact = 0;
+  const impactFiltered = proposals.filter((p) => {
+    const impact = p.impact_score ?? 5;
+    if (impact < minImpact) {
+      rejectedByImpact++;
+      if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  ✗ Low impact (${impact}/${minImpact}): ${p.title}`));
+      return false;
+    }
+    return true;
+  });
+
   // Category filter — only block explicitly blocked categories
   let rejectedByCategory = 0;
   let rejectedByScope = 0;
-  const categoryFiltered = proposals.filter((p) => {
+  const categoryFiltered = impactFiltered.filter((p) => {
     const category = (p.category || 'refactor').toLowerCase();
     if (blockCategories.length > 0 && blockCategories.some(blocked => category.includes(blocked))) {
       rejectedByCategory++;
@@ -210,6 +218,7 @@ export async function filterProposals(
   // Track pipeline counts for always-on summary
   const pipelineCounts = {
     found: proposals.length,
+    impact: impactFiltered.length,
     cat: categoryFiltered.length,
     scope: scopeFiltered.length,
     dedup: 0,  // filled after dedup
@@ -345,38 +354,15 @@ export async function filterProposals(
     });
   }
 
-  // Category×Sector affinity
-  if (state.sectorState && state.currentSectorId) {
-    const sec = state.sectorState.sectors.find(s => s.path === state.currentSectorId);
-    if (sec) {
-      const { boost, suppress } = getSectorCategoryAffinity(sec);
-      if (boost.length > 0 || suppress.length > 0) {
-        const boostSet = new Set(boost);
-        const suppressSet = new Set(suppress);
-        approvedProposals.sort((a, b) => {
-          const aBoost = boostSet.has(a.category) ? 0 : suppressSet.has(a.category) ? 2 : 1;
-          const bBoost = boostSet.has(b.category) ? 0 : suppressSet.has(b.category) ? 2 : 1;
-          return aBoost - bBoost;
-        });
-        for (const p of approvedProposals) {
-          if (suppressSet.has(p.category)) {
-            p.confidence = Math.max(0, (p.confidence || 50) - 15);
-          } else if (boostSet.has(p.category)) {
-            p.confidence = Math.min(100, (p.confidence || 50) + 5);
-          }
-        }
-      }
-    }
-  }
-
   // Compact pipeline summary (verbose only)
   if (state.options.verbose) {
-    const { found, cat, scope: sc, dedup: dd } = pipelineCounts;
-    state.displayAdapter.log(chalk.gray(`  Filter: ${found} → cat:${cat} → scope:${sc} → dedup:${dd}`));
+    const { found, impact: imp, cat, scope: sc, dedup: dd } = pipelineCounts;
+    state.displayAdapter.log(chalk.gray(`  Filter: ${found} → impact:${imp} → cat:${cat} → scope:${sc} → dedup:${dd}`));
   }
 
   if (approvedProposals.length === 0) {
     const parts: string[] = [];
+    if (rejectedByImpact > 0) parts.push(`${rejectedByImpact} below impact floor`);
     if (rejectedByCategory > 0) parts.push(`${rejectedByCategory} blocked by category`);
     if (rejectedByScope > 0) parts.push(`${rejectedByScope} out of scope`);
     if (duplicateCount > 0) parts.push(`${duplicateCount} duplicates`);
@@ -408,19 +394,7 @@ export async function filterProposals(
     ? (state.batchSize! - state.milestoneTicketCount + (state.maxPrs - state.totalMilestonePrs - 1) * state.batchSize!)
     : (state.maxPrs - state.totalPrsCreated);
   const defaultBatch = state.milestoneMode ? 10 : (state.runMode === 'spin' ? 5 : 3);
-  const cooledFiles = getCooledFiles(state.repoRoot);
-  if (cooledFiles.size > 0) {
-    approvedProposals.sort((a, b) => {
-      const overlapA = computeCooldownOverlap(a.files ?? a.allowed_paths ?? [], cooledFiles);
-      const overlapB = computeCooldownOverlap(b.files ?? b.allowed_paths ?? [], cooledFiles);
-      return overlapA - overlapB;
-    });
-  }
   const toProcess = approvedProposals.slice(0, Math.min(prsRemaining, defaultBatch));
-
-  // Update yield tracking
-  recordFormulaResult(state.repoRoot, state.currentFormulaName, approvedProposals.length);
-  if (state.sectorState && state.currentSectorId) updateProposalYield(state.sectorState, state.currentSectorId, approvedProposals.length);
 
   const totalSkipped = duplicateCount + hardDedupRejected.length;
   const statsMsg = totalSkipped > 0

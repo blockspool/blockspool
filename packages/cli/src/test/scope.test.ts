@@ -349,7 +349,7 @@ describe('analyzeViolationsForExpansion', () => {
     expect(result.canExpand).toBe(false);
   });
 
-  it('expands for cross-package monorepo paths', () => {
+  it('does not expand for cross-package monorepo paths (different two-level prefix)', () => {
     const violations: ScopeViolation[] = [
       { file: 'packages/core/src/repos/tickets.ts', violation: 'not_in_allowed' },
     ];
@@ -357,11 +357,12 @@ describe('analyzeViolationsForExpansion', () => {
 
     const result = analyzeViolationsForExpansion(violations, currentPaths);
 
-    expect(result.canExpand).toBe(true);
-    expect(result.addedPaths).toContain('packages/core/src/repos/tickets.ts');
+    // packages/core and packages/cli differ at the second path segment,
+    // so cross-package expansion is intentionally blocked.
+    expect(result.canExpand).toBe(false);
   });
 
-  it('expands for files in same top-level module', () => {
+  it('does not expand for files in a different top-level subdirectory', () => {
     const violations: ScopeViolation[] = [
       { file: 'src/services/auth.ts', violation: 'not_in_allowed' },
     ];
@@ -369,8 +370,9 @@ describe('analyzeViolationsForExpansion', () => {
 
     const result = analyzeViolationsForExpansion(violations, currentPaths);
 
-    expect(result.canExpand).toBe(true);
-    expect(result.addedPaths).toContain('src/services/auth.ts');
+    // src/services and src/lib differ at the second path segment (two-level prefix:
+    // src/lib vs src/services), so expansion to an unrelated sibling directory is blocked.
+    expect(result.canExpand).toBe(false);
   });
 });
 

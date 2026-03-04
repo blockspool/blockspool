@@ -132,23 +132,6 @@ describe('handleScoutOutput', () => {
     );
   });
 
-  it('creates tickets directly when skip_review is enabled', async () => {
-    startRun({ skip_review: true });
-    const s = run.require();
-    expect(s.phase).toBe('SCOUT');
-
-    const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
-      proposals: [makeProposal('Remove dead code')],
-    });
-
-    expect(result.processed).toBe(true);
-    expect(result.phase_changed).toBe(true);
-    expect(result.new_phase).toBe('NEXT_TICKET');
-    expect(result.message).toContain('review skipped');
-    // Pending proposals should not be set (tickets created directly)
-    expect(s.pending_proposals).toBeNull();
-  });
-
   it('retries on empty proposals when retries remain', async () => {
     startRun();
     const s = run.require();
@@ -198,59 +181,6 @@ describe('handleScoutOutput', () => {
     expect(s.scout_exploration_log).toEqual([]); // reset
     expect(s.phase).toBe('SCOUT');
     expect(result.message).toContain('Moving to next cycle');
-  });
-
-  it('skips retries for polished sectors and moves to next cycle', async () => {
-    startRun();
-    const s = run.require();
-    s.scout_retries = 0;
-    s.selected_sector_polished = true;
-    s.max_cycles = 10;
-    s.scout_cycles = 2;
-
-    const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
-      proposals: [],
-    });
-
-    expect(result.processed).toBe(true);
-    expect(result.phase_changed).toBe(false);
-    // Should NOT have retried — goes straight to next cycle
-    expect(s.scout_retries).toBe(0);
-    expect(result.message).toContain('Moving to next cycle');
-    expect(s.phase).toBe('SCOUT');
-  });
-
-  it('skips retries for polished sectors and transitions to DONE when no cycles remain', async () => {
-    startRun();
-    const s = run.require();
-    s.scout_retries = 0;
-    s.selected_sector_polished = true;
-    s.scout_cycles = s.max_cycles; // no cycles left
-
-    const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
-      proposals: [],
-    });
-
-    expect(result.processed).toBe(true);
-    expect(result.phase_changed).toBe(true);
-    expect(result.new_phase).toBe('DONE');
-  });
-
-  it('preserves retries for non-polished sectors', async () => {
-    startRun();
-    const s = run.require();
-    s.scout_retries = 0;
-    s.selected_sector_polished = false;
-
-    const result = await processEvent(run, db, 'SCOUT_OUTPUT', {
-      proposals: [],
-    });
-
-    expect(result.processed).toBe(true);
-    expect(result.phase_changed).toBe(false);
-    expect(result.message).toContain('Retrying');
-    expect(s.scout_retries).toBe(1);
-    expect(s.phase).toBe('SCOUT');
   });
 
   it('ignores SCOUT_OUTPUT outside SCOUT phase', async () => {
@@ -1230,21 +1160,4 @@ describe('processEvent — routing', () => {
     expect(result.message).toContain('recorded');
   });
 
-  it('USER_OVERRIDE skip_review creates tickets from pending proposals', async () => {
-    startRun();
-    const s = run.require();
-    s.phase = 'SCOUT';
-    s.pending_proposals = [makeProposal('Waiting for review')];
-
-    const result = await processEvent(run, db, 'USER_OVERRIDE', {
-      skip_review: true,
-    });
-
-    expect(result.processed).toBe(true);
-    expect(result.phase_changed).toBe(true);
-    expect(result.new_phase).toBe('NEXT_TICKET');
-    expect(result.message).toContain('skip_review');
-    expect(s.skip_review).toBe(true);
-    expect(s.pending_proposals).toBeNull();
-  });
 });

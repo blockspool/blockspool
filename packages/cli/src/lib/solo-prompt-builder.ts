@@ -62,6 +62,8 @@ export function buildTicketPrompt(ticket: NonNullable<Awaited<ReturnType<typeof 
     parts.push('## Acceptance Criteria');
     for (const c of opts.acceptanceCriteria) parts.push(`- ${c}`);
     parts.push('');
+    parts.push('For each criterion above, ensure your implementation explicitly addresses it.');
+    parts.push('');
   }
 
   if (ticket.allowedPaths.length > 0) {
@@ -93,6 +95,9 @@ export function buildTicketPrompt(ticket: NonNullable<Awaited<ReturnType<typeof 
   parts.push('2. Implement the required changes');
   parts.push('3. Keep changes minimal and focused');
   parts.push('4. Do NOT run test/build/lint commands — QA is automated after you finish');
+  if (opts?.acceptanceCriteria?.length) {
+    parts.push('5. Before finishing, review each acceptance criterion and confirm your changes satisfy it');
+  }
 
   if (opts?.formulaHint) {
     parts.push('');

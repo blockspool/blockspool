@@ -15,7 +15,7 @@ PromptWheel coordinates autonomous coding agents across your codebase — execut
 ### Inside Claude Code (recommended)
 
 ```bash
-/plugin install promptwheel@promptwheel
+/plugin install promptwheel-ai/promptwheel
 
 /promptwheel:run
 ```

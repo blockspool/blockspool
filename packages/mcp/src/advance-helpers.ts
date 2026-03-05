@@ -8,6 +8,7 @@ import {
   recordAccess,
 } from './learnings.js';
 import type { AdaptiveRiskAssessment } from '@promptwheel/core/learnings/shared';
+import { getIncludedLearningIds } from '@promptwheel/core/learnings/shared';
 
 export { loadTrajectoryData } from '@promptwheel/core/trajectory/io';
 
@@ -37,10 +38,10 @@ export function buildLearningsBlock(
   const block = formatLearningsForPrompt(relevant, budget);
   if (!block) return '';
 
-  // Track which learnings were injected
-  const injectedIds = relevant
-    .filter(l => block.includes(l.text))
-    .map(l => l.id);
+  // Track which learnings were injected (using budget-aware ID selection
+  // instead of substring matching, which produces false positives when one
+  // learning's text is a substring of another's)
+  const injectedIds = getIncludedLearningIds(relevant, budget);
   s.injected_learning_ids = [...new Set([...s.injected_learning_ids, ...injectedIds])];
 
   // Record access

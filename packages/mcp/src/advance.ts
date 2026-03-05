@@ -280,16 +280,12 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     }
   }
 
-  // Sector rotation: use core pickNextSector for full 9-tiebreaker sort
-  // Skip when a trajectory is active — trajectory scope takes priority
-  // Skip when user provides explicit (non-catch-all) scope — honor their restriction
+  // Restore scope and categories to user config when no trajectory is active.
+  // Trajectories override these per-step; without this reset, stale values persist
+  // after a trajectory completes.
   if (!s.active_trajectory) {
-    const userScope = s.config_scope;
-    const isCatchAll = !userScope || userScope === '**' || userScope === '*';
-
-    if (!isCatchAll) {
-      s.scope = userScope;
-    }
+    s.scope = s.config_scope;
+    s.categories = [...s.config_categories];
   }
 
   // Build codebase index block — use cycles + retries so retries advance the chunk
@@ -332,10 +328,14 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
         run.appendEvent('TRAJECTORY_PRE_VERIFIED', { steps_advanced: advanced });
         // Check if the entire trajectory is now complete
         if (trajectoryComplete(trajData.trajectory, trajData.state.stepStates)) {
+          const stepCounts = countStepStatuses(trajData.state.stepStates);
           completeTrajectory(ctx.project.rootPath);
           run.appendEvent('TRAJECTORY_COMPLETED', {
             trajectory: trajData.trajectory.name,
             total_steps: trajData.trajectory.steps.length,
+            steps_completed: stepCounts.completed,
+            steps_skipped: stepCounts.skipped,
+            steps_failed: stepCounts.failed,
             source: 'pre_verify',
           });
         }
@@ -350,10 +350,12 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
   try {
     const trajData = loadTrajectoryData(ctx.project.rootPath);
     if (!trajData && s.active_trajectory) {
-      // Trajectory completed/paused/removed — clear trajectory state so scope reverts to user config
+      // Trajectory completed/paused/removed — clear trajectory state and restore user config
       s.active_trajectory = null;
       s.trajectory_step_id = null;
       s.trajectory_step_title = null;
+      s.scope = s.config_scope;
+      s.categories = [...s.config_categories];
     }
     if (trajData) {
       let currentStep = getTrajectoryNextStep(trajData.trajectory, trajData.state.stepStates);
@@ -388,10 +390,14 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
           }
           // Check if stuck step was the last one → trajectory complete
           if (trajectoryComplete(trajData.trajectory, trajData.state.stepStates)) {
+            const stepCounts = countStepStatuses(trajData.state.stepStates);
             completeTrajectory(ctx.project.rootPath);
             run.appendEvent('TRAJECTORY_COMPLETED', {
               trajectory: trajData.trajectory.name,
               total_steps: trajData.trajectory.steps.length,
+              steps_completed: stepCounts.completed,
+              steps_skipped: stepCounts.skipped,
+              steps_failed: stepCounts.failed,
               source: 'stuck_detection',
             });
           }
@@ -591,10 +597,25 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
       console.warn(`[promptwheel] Failed to read qa-baseline.json: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Detect default branch for rebase instructions in worktree mode
+    let baseBranch = 'main';
+    if (s.create_prs && !s.direct) {
+      try {
+        const result = spawnSync('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], {
+          cwd: ctx.project.rootPath, timeout: 5000, encoding: 'utf-8',
+        });
+        const ref = result.stdout?.trim(); // e.g. "refs/remotes/origin/master"
+        if (ref) {
+          const parts = ref.split('/');
+          baseBranch = parts[parts.length - 1] || 'main';
+        }
+      } catch { /* fall back to 'main' */ }
+    }
+
     for (const pt of parallelTickets) {
       const ticket = readyTickets.find(t => t.id === pt.ticket_id)!;
       pt.inline_prompt = buildInlineTicketPrompt(
-        ticket, pt.constraints, guidelinesBlock, metadataBlock, s.create_prs, s.draft, s.direct, setupCommand, baselineFailures,
+        ticket, pt.constraints, guidelinesBlock, metadataBlock, s.create_prs, s.draft, s.direct, setupCommand, baselineFailures, baseBranch,
       );
     }
 
@@ -894,6 +915,11 @@ async function advancePr(ctx: AdvanceContext): Promise<AdvanceResponse> {
     ? await repos.tickets.getById(ctx.db, s.current_ticket_id)
     : null;
 
+  if (!ticket) {
+    run.setPhase('NEXT_TICKET');
+    return advance(ctx);
+  }
+
   const prompt = buildPrPrompt(ticket, s.draft);
 
   return promptResponse(run, 'PR', prompt,
@@ -1015,6 +1041,18 @@ function emptyConstraints(): AdvanceConstraints {
     plan_required: false,
     auto_approve_patterns: [],
   };
+}
+
+function countStepStatuses(stepStates: Record<string, { status: string }>): { completed: number; skipped: number; failed: number } {
+  let completed = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const ss of Object.values(stepStates)) {
+    if (ss.status === 'completed') completed++;
+    else if (ss.status === 'skipped') skipped++;
+    else if (ss.status === 'failed') failed++;
+  }
+  return { completed, skipped, failed };
 }
 
 function terminalReason(phase: Phase): string {

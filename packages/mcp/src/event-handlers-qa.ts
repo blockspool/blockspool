@@ -16,7 +16,7 @@ import {
 import { recordCommandFailure, recordDiff } from './spindle.js';
 import { recordQualitySignal } from './run-state-bridge.js';
 import { recordQaCommandResult } from './qa-stats.js';
-import { addLearning, confirmLearning, extractTags, type StructuredKnowledge } from './learnings.js';
+import { addLearning, confirmLearnings, extractTags, type StructuredKnowledge } from './learnings.js';
 
 export async function handleQaCommandResult(ctx: EventContext, payload: Record<string, unknown>): Promise<ProcessResult> {
   const s = ctx.run.require();
@@ -75,35 +75,35 @@ export async function handleQaPassed(ctx: EventContext, payload: Record<string, 
     return { processed: true, phase_changed: false, message: 'QA passed outside QA phase' };
   }
 
-  // Confirm injected learnings on success
+  // Confirm injected learnings on success (batch to reduce lock contention)
   if (s.learnings_enabled && s.injected_learning_ids.length > 0) {
-    for (const id of s.injected_learning_ids) {
-      confirmLearning(ctx.run.rootPath, id);
-    }
+    confirmLearnings(ctx.run.rootPath, s.injected_learning_ids);
     s.injected_learning_ids = [];
   }
 
   // Record quality signal for spin tracking
   recordQualitySignal(ctx.run.rootPath, 'qa_pass');
 
+  // Fetch ticket once — shared by learning recording and dedup below
+  const ticket = s.current_ticket_id
+    ? await repos.tickets.getById(ctx.db, s.current_ticket_id)
+    : null;
+
   // Record success learning with cochange data from the plan
-  if (s.learnings_enabled && s.current_ticket_id) {
+  if (s.learnings_enabled && ticket) {
     try {
-      const ticket = await repos.tickets.getById(ctx.db, s.current_ticket_id);
-      if (ticket) {
-        // Extract cochange files from the approved plan (files that changed together)
-        const planFiles = s.current_ticket_plan?.files_to_touch?.map(f => f.path) ?? [];
-        const structured: StructuredKnowledge | undefined = planFiles.length > 1
-          ? { cochange_files: planFiles, pattern_type: 'dependency' }
-          : undefined;
-        addLearning(ctx.run.rootPath, {
-          text: `${ticket.category ?? 'refactor'} succeeded: ${ticket.title}`.slice(0, 200),
-          category: 'pattern',
-          source: { type: 'ticket_success', detail: ticket.category ?? 'refactor' },
-          tags: extractTags(ticket.allowedPaths ?? [], ticket.verificationCommands ?? []),
-          structured,
-        });
-      }
+      // Extract cochange files from the approved plan (files that changed together)
+      const planFiles = s.current_ticket_plan?.files_to_touch?.map(f => f.path) ?? [];
+      const structured: StructuredKnowledge | undefined = planFiles.length > 1
+        ? { cochange_files: planFiles, pattern_type: 'dependency' }
+        : undefined;
+      addLearning(ctx.run.rootPath, {
+        text: `${ticket.category ?? 'refactor'} succeeded: ${ticket.title}`.slice(0, 200),
+        category: 'pattern',
+        source: { type: 'ticket_success', detail: ticket.category ?? 'refactor' },
+        tags: extractTags(ticket.allowedPaths ?? [], ticket.verificationCommands ?? []),
+        structured,
+      });
     } catch (err) {
       console.warn(`[promptwheel] record success learning: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -134,7 +134,7 @@ export async function handleQaPassed(ctx: EventContext, payload: Record<string, 
 
   // Skip PR phase when not creating PRs
   if (!s.create_prs) {
-    await recordTicketDedup(ctx.db, ctx.run.rootPath, s.current_ticket_id, true);
+    await recordTicketDedup(ctx.db, ctx.run.rootPath, s.current_ticket_id, true, undefined, ticket);
     ctx.run.completeTicket();
     ctx.run.appendEvent('TICKET_COMPLETED_NO_PR', payload);
     ctx.run.setPhase('NEXT_TICKET');

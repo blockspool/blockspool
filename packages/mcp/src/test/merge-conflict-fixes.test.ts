@@ -400,6 +400,36 @@ describe('Fix 3 — rebase before push in worktree prompts', () => {
     expect(prompt).not.toContain('merge conflict during rebase');
   });
 
+  it('uses custom baseBranch in rebase instructions', () => {
+    const ticket = {
+      id: 'tkt_branch',
+      title: 'Fix on master repo',
+      description: 'Fix for a repo using master',
+      allowedPaths: ['src/auth/'],
+      verificationCommands: ['npm test'],
+      category: 'fix',
+    };
+    const constraints = {
+      allowed_paths: ['src/auth/'],
+      denied_paths: [],
+      denied_patterns: [],
+      max_files: 10,
+      max_lines: 500,
+      required_commands: ['npm test'],
+      plan_required: false,
+      auto_approve_patterns: [],
+    };
+
+    const prompt = buildInlineTicketPrompt(
+      ticket, constraints, '', '', /* createPrs */ true, /* draft */ false,
+      /* direct */ false, undefined, [], /* baseBranch */ 'master',
+    );
+
+    expect(prompt).toContain('git fetch origin master');
+    expect(prompt).toContain('git rebase origin/master');
+    expect(prompt).not.toContain('origin/main');
+  });
+
   it('does NOT include rebase in direct mode', () => {
     const ticket = {
       id: 'tkt_789',

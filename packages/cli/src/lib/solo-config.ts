@@ -72,8 +72,6 @@ export interface AutoConfig {
   blockCategories: string[];
   minConfidence: number;
   maxPrs: number;
-  docsAudit: boolean;
-  docsAuditInterval: number;
   /** Pull from origin every N cycles to stay current with team changes (0 = disabled, default 5) */
   pullEveryNCycles: number;
   /** What to do when pull fails due to divergence: "halt" stops the session, "warn" logs and continues (default "halt") */
@@ -129,22 +127,7 @@ export interface AutoConfig {
   minImpactScore?: number;
   /** Max consecutive idle cycles (no completed tickets) before spin stops (default: 15) */
   maxIdleCycles?: number;
-  /**
-   * MCP integration providers invoked on cadence during spin.
-   * Alternative to standalone `.promptwheel/integrations.yaml`.
-   */
-  integrations?: {
-    providers: Array<{
-      name: string;
-      command: string;
-      tool: string;
-      args?: Record<string, unknown>;
-      every: number;
-      phase: 'pre-scout' | 'post-cycle';
-      feed: 'proposals' | 'learnings' | 'nudges';
-      timeout?: number;
-    }>;
-  };
+  // Integrations are configured via `.promptwheel/integrations.yaml` (not inline config).
   /** Opt-out: disable LLM-based acceptance criteria verification in QA. Default: true (enabled). */
   criteriaVerification?: boolean;
   /** Lens rotation settings */
@@ -266,8 +249,6 @@ export const DEFAULT_AUTO_CONFIG: AutoConfig = {
   blockCategories: [],
   minConfidence: 0,
   maxPrs: 3,
-  docsAudit: true,
-  docsAuditInterval: 3,
   pullEveryNCycles: 5,
   pullPolicy: 'halt' as const,
   guidelinesRefreshCycles: 10,

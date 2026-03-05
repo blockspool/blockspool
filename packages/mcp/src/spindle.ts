@@ -211,10 +211,6 @@ export function recordPlanHash(spindle: SpindleState, plan: unknown): void {
   if (spindle.plan_hashes.length > 10) spindle.plan_hashes.shift();
 }
 
-export function recordTicketResult(spindle: SpindleState, changedFiles: string[], diff: string | null): void {
-  recordDiff(spindle, diff);
-}
-
 // ---------------------------------------------------------------------------
 // Detection functions
 // ---------------------------------------------------------------------------

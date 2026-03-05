@@ -51,7 +51,9 @@ function writeEntries(projectRoot: string, entries: DedupEntry[]): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(fp, JSON.stringify(entries, null, 2) + '\n', 'utf8');
+  const tmp = fp + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(entries, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, fp);
 }
 
 // ---------------------------------------------------------------------------

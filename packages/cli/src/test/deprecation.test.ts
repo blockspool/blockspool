@@ -47,13 +47,6 @@ describe('warnDeprecatedFlags', () => {
     expect(count).toBe(0);
   });
 
-  it('warns for --no-docs-audit (docsAudit === false)', () => {
-    const count = warnDeprecatedFlags({ docsAudit: false });
-    expect(count).toBe(1);
-    const output = consoleSpy.mock.calls.map(c => String(c[0])).join('\n');
-    expect(output).toContain('--no-docs-audit is deprecated');
-  });
-
   it('counts multiple deprecated flags', () => {
     const count = warnDeprecatedFlags({
       minutes: '60',

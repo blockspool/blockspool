@@ -58,6 +58,16 @@ function buildCoreMigrationRegistry(
   );
 }
 
+/**
+ * Initial schema — 7 tables total.
+ *
+ * Actively used by MCP + CLI: projects, tickets, runs
+ * Unused by MCP path (kept for schema stability):
+ *   leases      — reserved for future multi-agent coordination
+ *   run_events  — MCP uses ndjson files in run dir instead
+ *   artifacts   — MCP stores artifacts as files in run dir
+ *   learnings   — MCP uses ndjson files in .promptwheel/ instead
+ */
 export const SQLITE_CORE_MIGRATION_001_INITIAL: Migration = {
   id: '001_initial',
   up: `
@@ -171,6 +181,7 @@ export const SQLITE_CORE_MIGRATION_001_INITIAL: Migration = {
   checksum: 'initial-001-v1',
 };
 
+/** Run steps table — unused by MCP path; used by CLI QA loop. */
 export const SQLITE_CORE_MIGRATION_002_RUN_STEPS: Migration = {
   id: '002_run_steps',
   up: `

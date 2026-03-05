@@ -537,24 +537,6 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
     return { shouldBreak: true };
   }
 
-  // User confirmation on first cycle (skip in planning mode — roadmap already got approval)
-  if (state.cycleCount === 1 && !state.options.yes && state.runMode !== 'spin' && state.runMode !== 'planning' && !state.options.tui) {
-    const readline = await import('readline');
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const confirmMsg = `Proceed with ${toProcess.length} improvement(s)? [Y/n] `;
-    const answer = await new Promise<string>((resolve) => {
-      rl.question(chalk.bold(confirmMsg), resolve);
-    });
-    rl.close();
-
-    if (answer.toLowerCase() === 'n' || answer.toLowerCase() === 'no') {
-      state.displayAdapter.log(chalk.gray('Cancelled.'));
-      await state.adapter.close();
-      process.exit(0);
-    }
-    state.displayAdapter.log('');
-  }
-
   state.currentlyProcessing = true;
 
   // Capture QA baseline once for this cycle — shared immutably across all

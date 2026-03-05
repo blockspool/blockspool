@@ -38,7 +38,6 @@ const DEPRECATED_FLAGS: DeprecatedFlag[] = [
   { key: 'maxScoutFiles', flag: '--max-scout-files', replacement: 'file limits are managed automatically' },
   { key: 'scoutConcurrency', flag: '--scout-concurrency', replacement: 'concurrency is managed automatically' },
   { key: 'codexMcp', flag: '--codex-mcp', replacement: 'MCP mode is no longer supported; use --provider codex' },
-  { key: 'docsAuditInterval', flag: '--docs-audit-interval', replacement: 'docs auditing cadence is automatic' },
   { key: 'autoMerge', flag: '--auto-merge', replacement: 'use --pr for pull requests' },
   { key: 'directBranch', flag: '--direct-branch', replacement: 'branch naming is handled automatically' },
   { key: 'directFinalize', flag: '--direct-finalize', replacement: 'finalization mode is selected automatically' },
@@ -46,11 +45,10 @@ const DEPRECATED_FLAGS: DeprecatedFlag[] = [
 
 /**
  * Boolean flags with defaults need special handling:
- * --no-draft → draft === false, --no-docs-audit → docsAudit === false
+ * --no-draft → draft === false
  */
 const DEPRECATED_BOOLEAN_FLAGS: Array<DeprecatedFlag & { triggerValue: boolean }> = [
   { key: 'draft', flag: '--no-draft', replacement: 'drafts are the default; use --pr for pull requests', triggerValue: false },
-  { key: 'docsAudit', flag: '--no-docs-audit', replacement: 'docs auditing is always on', triggerValue: false },
 ];
 
 /**

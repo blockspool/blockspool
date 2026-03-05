@@ -228,6 +228,7 @@ export class RunManager {
       scope: config.scope ?? SCOUT_DEFAULTS.SCOPE,
       config_scope: config.scope ?? SCOUT_DEFAULTS.SCOPE,
       categories: config.categories ?? [...SCOUT_DEFAULTS.CATEGORIES],
+      config_categories: config.categories ?? [...SCOUT_DEFAULTS.CATEGORIES],
       min_confidence: config.min_confidence ?? SCOUT_DEFAULTS.MIN_CONFIDENCE,
       max_proposals_per_scout: config.max_proposals ?? SCOUT_DEFAULTS.MAX_PROPOSALS_PER_SCOUT,
       min_impact_score: config.min_impact_score ?? SCOUT_DEFAULTS.MIN_IMPACT_SCORE,
@@ -398,6 +399,10 @@ export class RunManager {
     // Backfill config_scope for sessions created before this field existed
     if (!this.state.config_scope) {
       this.state.config_scope = this.state.scope;
+    }
+    // Backfill config_categories for sessions created before this field existed
+    if (!this.state.config_categories) {
+      this.state.config_categories = [...this.state.categories];
     }
     return this.state;
   }

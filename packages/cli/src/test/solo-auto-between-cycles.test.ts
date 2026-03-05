@@ -71,7 +71,6 @@ function writeRunStateRaw(overrides: Record<string, any> = {}): void {
   ensurePromptwheelDir();
   const state = {
     totalCycles: 0,
-    lastDocsAuditCycle: 0,
     lastRunAt: 0,
     deferredProposals: [],
     recentCycles: [],
@@ -373,7 +372,7 @@ describe('runPostCycleMaintenance', () => {
       cycleOutcomes: [],
     });
 
-    await runPostCycleMaintenance(state, '**', false);
+    await runPostCycleMaintenance(state, '**');
 
     const rs = readRunStateRaw();
     expect(rs.totalCycles).toBe(6);
@@ -411,7 +410,7 @@ describe('runPostCycleMaintenance', () => {
       },
     });
 
-    await runPostCycleMaintenance(state, '**', false);
+    await runPostCycleMaintenance(state, '**');
 
     // After consolidation, allLearnings should have been reloaded
     // (consolidateLearnings deduplicates/merges, then loadLearnings re-reads)
@@ -442,7 +441,7 @@ describe('runPostCycleMaintenance', () => {
       allLearnings: [...seedLearnings],
     });
 
-    await runPostCycleMaintenance(state, '**', false);
+    await runPostCycleMaintenance(state, '**');
 
     // allLearnings should still be refreshed (reloaded) but not consolidated
     // unless the count exceeds 50
@@ -462,7 +461,7 @@ describe('runPostCycleMaintenance', () => {
       options: { verbose: true },
     });
 
-    await runPostCycleMaintenance(state, '**', false);
+    await runPostCycleMaintenance(state, '**');
 
     // Find the spin one-liner in displayAdapter.log output
     const logMock = state.displayAdapter.log as ReturnType<typeof vi.fn>;
@@ -480,7 +479,7 @@ describe('runPostCycleMaintenance', () => {
       cycleOutcomes: [],
     });
 
-    await runPostCycleMaintenance(state, '**', false);
+    await runPostCycleMaintenance(state, '**');
 
     const logMock = state.displayAdapter.log as ReturnType<typeof vi.fn>;
     const spinCall = logMock.mock.calls.find(
@@ -501,7 +500,7 @@ describe('runPostCycleMaintenance', () => {
       currentlyProcessing: true,
     });
 
-    await runPostCycleMaintenance(state, '**', false);
+    await runPostCycleMaintenance(state, '**');
 
     expect(state.currentlyProcessing).toBe(false);
   });
@@ -521,7 +520,7 @@ describe('runPostCycleMaintenance', () => {
       currentFormulaName: 'default',
     });
 
-    await runPostCycleMaintenance(state, 'src/**', false);
+    await runPostCycleMaintenance(state, 'src/**');
 
     const rs = readRunStateRaw();
     expect(rs.recentCycles).toBeDefined();

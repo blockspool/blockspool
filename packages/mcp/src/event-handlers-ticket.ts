@@ -339,7 +339,10 @@ export async function handlePrCreated(ctx: EventContext, payload: Record<string,
   }
 
   // Record completed ticket in dedup memory + sector success (before completeTicket clears current_ticket_id)
-  await recordTicketDedup(ctx.db, ctx.run.rootPath, s.current_ticket_id, true);
+  const ticket = s.current_ticket_id
+    ? await repos.tickets.getById(ctx.db, s.current_ticket_id)
+    : null;
+  await recordTicketDedup(ctx.db, ctx.run.rootPath, s.current_ticket_id, true, undefined, ticket);
 
   // Save PR artifact
   ctx.run.saveArtifact(

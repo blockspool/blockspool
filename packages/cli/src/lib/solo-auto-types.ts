@@ -68,8 +68,6 @@ export interface AutoModeOptions {
   batchTokenBudget?: string;
   scoutTimeout?: string;
   maxScoutFiles?: string;
-  docsAudit?: boolean;
-  docsAuditInterval?: string;
   scoutConcurrency?: string;
   codexMcp?: boolean;
   deliveryMode?: 'direct' | 'pr' | 'auto-merge';

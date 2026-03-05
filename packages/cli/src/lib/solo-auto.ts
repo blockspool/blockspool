@@ -484,8 +484,7 @@ async function runWheelMode(state: import('./solo-auto-state.js').AutoSessionSta
 
     // Track execution yield per [lens, sector] — marks pairs where proposals
     // are found but consistently fail (scope too narrow, multi-file coordination, etc.)
-    const completedThisCycle = state.cycleOutcomes.filter(o => o.status === 'completed').length;
-    await runPostCycleMaintenance(state, filterResult.scope, scoutResult.isDocsAuditCycle);
+    await runPostCycleMaintenance(state, filterResult.scope);
 
     // Reset progress for idle (cycle complete)
     state._cycleProgress = null;

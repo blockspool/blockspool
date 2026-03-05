@@ -368,7 +368,7 @@ export function detectProjectMetadata(projectRoot: string): ProjectMetadata {
   // -----------------------------------------------------------------------
   // C# / .NET
   // -----------------------------------------------------------------------
-  if (exists('*.sln') || exists('*.csproj') || existsGlob(projectRoot, '*.csproj')) {
+  if (hasFileWithExtension(projectRoot, '.sln') || hasFileWithExtension(projectRoot, '.csproj')) {
     if (!meta.languages.includes('C#')) meta.languages.push('C#');
     meta.package_manager = meta.package_manager ?? 'dotnet';
     if (!meta.test_runner) {
@@ -463,7 +463,7 @@ export function detectProjectMetadata(projectRoot: string): ProjectMetadata {
   // -----------------------------------------------------------------------
   // Haskell
   // -----------------------------------------------------------------------
-  if (exists('stack.yaml') || exists('cabal.project') || existsGlob(projectRoot, '*.cabal')) {
+  if (exists('stack.yaml') || exists('cabal.project') || hasFileWithExtension(projectRoot, '.cabal')) {
     if (!meta.languages.includes('Haskell')) meta.languages.push('Haskell');
     meta.package_manager = meta.package_manager ?? (exists('stack.yaml') ? 'stack' : 'cabal');
 
@@ -549,12 +549,6 @@ function hasFileWithExtension(dir: string, ext: string): boolean {
   } catch {
     return false;
   }
-}
-
-/** @deprecated Use hasFileWithExtension instead */
-function existsGlob(dir: string, pattern: string): boolean {
-  const ext = pattern.replace('*', '');
-  return hasFileWithExtension(dir, ext);
 }
 
 // ---------------------------------------------------------------------------

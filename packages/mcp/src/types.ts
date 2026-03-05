@@ -123,6 +123,8 @@ export interface RunState {
   /** Original user-provided scope — preserved across sector rotations */
   config_scope: string;
   categories: string[];
+  /** Original user-provided categories — preserved across trajectory overrides */
+  config_categories: string[];
   min_confidence: number;
   max_proposals_per_scout: number;
   min_impact_score: number;
@@ -408,7 +410,7 @@ export interface EventPayloadMap {
   TRAJECTORY_PRE_VERIFIED: { steps_advanced: number };
   TRAJECTORY_STEP_STARTED: { trajectory: string; step_id: string; step_title: string };
   TRAJECTORY_STEP_FAILED: { trajectory: string; step_id: string; step_title: string; reason: string };
-  TRAJECTORY_COMPLETED: { trajectory: string; steps_completed: number; steps_skipped: number; steps_failed: number };
+  TRAJECTORY_COMPLETED: { trajectory: string; total_steps: number; steps_completed: number; steps_skipped: number; steps_failed: number; source: string };
 
   HINT_CONSUMED: { hint: string };
   USER_OVERRIDE: { hint: string };

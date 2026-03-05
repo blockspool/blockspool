@@ -77,28 +77,50 @@ export const PROPOSALS_DEFAULTS = {
   DEDUP_THRESHOLD: 0.6,
 } as const;
 
-/** Fields required for a proposal to pass schema validation. */
-export const REQUIRED_FIELDS: (keyof ValidatedProposal)[] = [
-  'category', 'title', 'description', 'allowed_paths',
-  'files', 'confidence', 'verification_commands',
-];
-
 // ---------------------------------------------------------------------------
 // Schema validation
 // ---------------------------------------------------------------------------
 
+/** Coerce a value to number if it's a numeric string, otherwise return as-is. */
+function coerceToNumber(value: unknown): unknown {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return value;
+}
+
 /**
  * Validate that a raw proposal has all required fields.
  * Returns a comma-separated string of missing fields, or null if valid.
+ *
+ * Applies forgiveness coercions in-place:
+ * - `confidence`: coerced from string (e.g. `"75"` → `75`), defaults to 50 if missing
+ * - `touched_files_estimate`: coerced from string
+ * - `impact_score`: coerced from string
  */
 export function validateProposalSchema(raw: RawProposal): string | null {
   const missing: string[] = [];
+
+  // Coerce numeric fields from string before validation
+  raw.confidence = coerceToNumber(raw.confidence) as number | undefined;
+  raw.touched_files_estimate = coerceToNumber(raw.touched_files_estimate) as number | undefined;
+  raw.impact_score = coerceToNumber(raw.impact_score) as number | undefined;
+
+  // Default confidence to 50 if missing entirely (matches CLI behavior)
+  if (raw.confidence === undefined || raw.confidence === null) {
+    raw.confidence = 50;
+  }
 
   // Hard-required: no sensible default possible
   if (!raw.category || typeof raw.category !== 'string') missing.push('category');
   if (!raw.title || typeof raw.title !== 'string') missing.push('title');
   if (!raw.description || typeof raw.description !== 'string') missing.push('description');
-  if (!Array.isArray(raw.allowed_paths)) missing.push('allowed_paths');
+  // allowed_paths can be derived from files — only fail if neither is usable
+  if (!Array.isArray(raw.allowed_paths) && !(Array.isArray(raw.files) && raw.files.length > 0)) {
+    missing.push('allowed_paths');
+  }
   if (typeof raw.confidence !== 'number') missing.push('confidence');
 
   // Soft-required: normalizeProposal provides safe defaults for these.
@@ -117,16 +139,26 @@ export function validateProposalSchema(raw: RawProposal): string | null {
  * Caller must ensure schema validation passed first.
  */
 export function normalizeProposal(raw: RawProposal): ValidatedProposal {
+  // Lowercase category — LLMs produce "Fix", "Refactor" etc. Trust ladder
+  // uses lowercase set (e.g. allowedCategories.has("fix")), so normalize here.
+  const category = raw.category!.toLowerCase();
+
+  // Clamp impact_score to 1-10 range (CLI already does this, MCP didn't)
+  const rawImpact = raw.impact_score ?? PROPOSALS_DEFAULTS.DEFAULT_IMPACT;
+  const impact_score = Math.max(1, Math.min(10, rawImpact));
+
   const result: ValidatedProposal = {
-    category: raw.category!,
+    category,
     title: raw.title!,
     description: raw.description!,
     acceptance_criteria: raw.acceptance_criteria ?? [],
     verification_commands: raw.verification_commands ?? [],
-    allowed_paths: raw.allowed_paths ?? [],
+    allowed_paths: Array.isArray(raw.allowed_paths) && raw.allowed_paths.length > 0
+      ? raw.allowed_paths
+      : [...(raw.files ?? [])],
     files: raw.files ?? [],
     confidence: raw.confidence!,
-    impact_score: raw.impact_score ?? PROPOSALS_DEFAULTS.DEFAULT_IMPACT,
+    impact_score,
     rationale: raw.rationale ?? '',
     estimated_complexity: raw.estimated_complexity ?? 'moderate',
     risk: raw.risk ?? 'medium',

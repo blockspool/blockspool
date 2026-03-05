@@ -351,6 +351,7 @@ export function buildInlineTicketPrompt(
   direct: boolean,
   setupCommand?: string,
   baselineFailures: string[] = [],
+  baseBranch: string = 'main',
 ): string {
   const slug = ticket.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
   const branch = `promptwheel/${ticket.id}/${slug}`;
@@ -510,9 +511,9 @@ export function buildInlineTicketPrompt(
     'git add -A',
     `git commit -m "${shellEscape(ticket.title)}"`,
     ...(createPrs ? [
-      '# Rebase onto latest main to avoid merge conflicts',
-      'git fetch origin main',
-      'git rebase origin/main',
+      `# Rebase onto latest ${baseBranch} to avoid merge conflicts`,
+      `git fetch origin ${baseBranch}`,
+      `git rebase origin/${baseBranch}`,
       `git push -u origin ${branch}`,
     ] : []),
     '```',

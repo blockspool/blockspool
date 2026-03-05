@@ -24,10 +24,8 @@ interface QualitySignals {
 
 interface RunState {
   totalCycles: number;
-  lastDocsAuditCycle: number;
   lastRunAt: number;
   deferredProposals: unknown[];
-  formulaStats: Record<string, unknown>;
   recentCycles?: unknown[];
   recentDiffs?: unknown[];
   qualitySignals?: QualitySignals;
@@ -48,10 +46,8 @@ function readRunState(projectRoot: string): RunState {
   if (!fs.existsSync(fp)) {
     return {
       totalCycles: 0,
-      lastDocsAuditCycle: 0,
       lastRunAt: 0,
       deferredProposals: [],
-      formulaStats: {},
       recentCycles: [],
       recentDiffs: [],
     };
@@ -61,10 +57,8 @@ function readRunState(projectRoot: string): RunState {
     const parsed = JSON.parse(raw);
     return {
       totalCycles: parsed.totalCycles ?? 0,
-      lastDocsAuditCycle: parsed.lastDocsAuditCycle ?? 0,
       lastRunAt: parsed.lastRunAt ?? 0,
       deferredProposals: Array.isArray(parsed.deferredProposals) ? parsed.deferredProposals : [],
-      formulaStats: parsed.formulaStats ?? {},
       recentCycles: parsed.recentCycles,
       recentDiffs: parsed.recentDiffs,
       qualitySignals: parsed.qualitySignals ?? undefined,
@@ -73,10 +67,8 @@ function readRunState(projectRoot: string): RunState {
     console.warn(`[promptwheel] failed to parse run-state.json: ${err instanceof Error ? err.message : String(err)}`);
     return {
       totalCycles: 0,
-      lastDocsAuditCycle: 0,
       lastRunAt: 0,
       deferredProposals: [],
-      formulaStats: {},
       recentCycles: [],
       recentDiffs: [],
     };

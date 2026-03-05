@@ -7,7 +7,6 @@
 
 import type { RunTicketResult } from './solo-ticket-types.js';
 import type { TicketProposal } from '@promptwheel/core/scout';
-import { classifyFailure } from './failure-classifier.js';
 
 export type RecoveryAction =
   | { action: 'retry_with_hint'; hint: string }
@@ -31,9 +30,6 @@ export function analyzeFailure(
 ): RecoveryAction {
   const failureReason = result.failureReason ?? 'agent_error';
   const error = result.error ?? '';
-  // classifyFailure is called for side-effect-free classification; result unused directly
-  // but keeps the analysis pipeline consistent with failure-classifier patterns
-  classifyFailure(failureReason, error);
 
   // Timeout — too complex, don't retry
   if (failureReason === 'timeout') {

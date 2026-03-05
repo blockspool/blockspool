@@ -45,6 +45,36 @@ const PLAN_ACTIONS = new Set(['create', 'modify', 'delete']);
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
 type PlanAction = 'create' | 'modify' | 'delete';
 
+// ---------------------------------------------------------------------------
+// Forgiveness aliases — normalize LLM synonym variations
+// ---------------------------------------------------------------------------
+
+const ACTION_ALIASES: Record<string, PlanAction> = {
+  update: 'modify', edit: 'modify', change: 'modify',
+  add: 'create', new: 'create',
+  remove: 'delete', rm: 'delete',
+};
+
+const RISK_ALIASES: Record<string, string> = {
+  none: 'low', minimal: 'low',
+  moderate: 'medium',
+  critical: 'high', severe: 'high',
+};
+
+/** Normalize a plan action string, accepting common LLM synonyms. */
+export function normalizePlanAction(value: string): PlanAction | undefined {
+  const lower = value.toLowerCase();
+  if (isPlanAction(lower)) return lower;
+  return ACTION_ALIASES[lower];
+}
+
+/** Normalize a risk level string, accepting common LLM synonyms. */
+export function normalizeRiskLevel(value: string): string | undefined {
+  const lower = value.toLowerCase();
+  if (RISK_LEVELS.has(lower)) return lower;
+  return RISK_ALIASES[lower];
+}
+
 export const EVENT_MAX_PAYLOAD_BYTES = 512 * 1024;
 export const EVENT_MAX_RECORD_ARRAY_ITEMS = 200;
 export const EVENT_MAX_STRING_ARRAY_ITEMS = 400;
@@ -415,6 +445,7 @@ export function validateAndSanitizeEventPayload(
       const cleanItems: Record<string, unknown>[] = [];
       for (const item of reviewedProposals.value) {
         const clean: Record<string, unknown> = {};
+        let skipItem = false;
 
         if ('title' in item) {
           const title = validateStringField(
@@ -425,20 +456,17 @@ export function validateAndSanitizeEventPayload(
             'truncate',
             truncations,
           );
-          if (!title.ok) return title;
-          clean['title'] = title.value;
+          if (!title.ok) { skipItem = true; } else { clean['title'] = title.value; }
         }
-        if ('confidence' in item) {
+        if (!skipItem && 'confidence' in item) {
           const confidence = toNumberOrUndefined(item['confidence']);
-          if (confidence === undefined) return invalid(type, '`reviewed_proposals[].confidence` must be a number');
-          clean['confidence'] = confidence;
+          if (confidence === undefined) { skipItem = true; } else { clean['confidence'] = confidence; }
         }
-        if ('impact_score' in item) {
+        if (!skipItem && 'impact_score' in item) {
           const impactScore = toNumberOrUndefined(item['impact_score']);
-          if (impactScore === undefined) return invalid(type, '`reviewed_proposals[].impact_score` must be a number');
-          clean['impact_score'] = impactScore;
+          if (impactScore === undefined) { skipItem = true; } else { clean['impact_score'] = impactScore; }
         }
-        if ('review_note' in item) {
+        if (!skipItem && 'review_note' in item) {
           const reviewNote = validateStringField(
             type,
             'reviewed_proposals[].review_note',
@@ -447,11 +475,12 @@ export function validateAndSanitizeEventPayload(
             'truncate',
             truncations,
           );
-          if (!reviewNote.ok) return reviewNote;
-          clean['review_note'] = reviewNote.value;
+          if (!reviewNote.ok) { skipItem = true; } else { clean['review_note'] = reviewNote.value; }
         }
 
-        cleanItems.push({ ...item, ...clean });
+        if (!skipItem) {
+          cleanItems.push({ ...item, ...clean });
+        }
       }
 
       sanitized['reviewed_proposals'] = cleanItems;
@@ -507,8 +536,9 @@ export function validateAndSanitizeEventPayload(
           truncations,
         );
         if (!pathValue.ok || !pathValue.value) return invalid(type, '`files_to_touch[].path` must be a non-empty string');
-        const actionValue = 'action' in file ? toStringOrUndefined(file['action']) : 'modify';
-        if (!actionValue || !PLAN_ACTIONS.has(actionValue) || !isPlanAction(actionValue)) {
+        const rawAction = 'action' in file ? toStringOrUndefined(file['action']) : 'modify';
+        const actionValue = rawAction ? normalizePlanAction(rawAction) : undefined;
+        if (!actionValue) {
           return invalid(type, '`files_to_touch[].action` must be create, modify, or delete');
         }
         const reasonValue = 'reason' in file
@@ -542,8 +572,9 @@ export function validateAndSanitizeEventPayload(
       }
 
       if ('risk_level' in payload) {
-        const riskLevel = toStringOrUndefined(payload['risk_level']);
-        if (!riskLevel || !RISK_LEVELS.has(riskLevel)) {
+        const rawRisk = toStringOrUndefined(payload['risk_level']);
+        const riskLevel = rawRisk ? normalizeRiskLevel(rawRisk) : undefined;
+        if (!riskLevel) {
           return invalid(type, '`risk_level` must be low, medium, or high');
         }
         sanitized['risk_level'] = riskLevel;

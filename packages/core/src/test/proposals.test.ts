@@ -111,8 +111,35 @@ describe('validateProposalSchema', () => {
     expect(result).toContain('category');
   });
 
-  it('reports missing confidence (not a number)', () => {
-    const result = validateProposalSchema(makeRaw({ confidence: undefined }));
+  it('coerces string confidence to number', () => {
+    const raw = makeRaw({ confidence: '75' as any });
+    const result = validateProposalSchema(raw);
+    expect(result).toBeNull();
+    expect(raw.confidence).toBe(75);
+  });
+
+  it('defaults missing confidence to 50', () => {
+    const raw = makeRaw({ confidence: undefined });
+    const result = validateProposalSchema(raw);
+    expect(result).toBeNull();
+    expect(raw.confidence).toBe(50);
+  });
+
+  it('coerces string impact_score to number', () => {
+    const raw = makeRaw({ impact_score: '7' as any });
+    validateProposalSchema(raw);
+    expect(raw.impact_score).toBe(7);
+  });
+
+  it('coerces string touched_files_estimate to number', () => {
+    const raw = makeRaw({ touched_files_estimate: '3' as any });
+    validateProposalSchema(raw);
+    expect(raw.touched_files_estimate).toBe(3);
+  });
+
+  it('rejects non-numeric string confidence', () => {
+    const raw = makeRaw({ confidence: 'high' as any });
+    const result = validateProposalSchema(raw);
     expect(result).toContain('confidence');
   });
 
@@ -120,7 +147,8 @@ describe('validateProposalSchema', () => {
     const result = validateProposalSchema({ title: 'Only title' } as RawProposal);
     expect(result).toBeTruthy();
     const fields = result!.split(', ');
-    expect(fields.length).toBeGreaterThan(3);
+    // category, description, allowed_paths are missing (confidence defaults to 50)
+    expect(fields.length).toBeGreaterThanOrEqual(3);
   });
 
   it('validates array fields when present', () => {
@@ -193,6 +221,36 @@ describe('normalizeProposal', () => {
   it('defaults acceptance_criteria to empty array', () => {
     const result = normalizeProposal(makeRaw({ acceptance_criteria: undefined }));
     expect(result.acceptance_criteria).toEqual([]);
+  });
+
+  it('lowercases category', () => {
+    const result = normalizeProposal(makeRaw({ category: 'Fix' }));
+    expect(result.category).toBe('fix');
+  });
+
+  it('lowercases mixed-case category', () => {
+    const result = normalizeProposal(makeRaw({ category: 'REFACTOR' }));
+    expect(result.category).toBe('refactor');
+  });
+
+  it('clamps impact_score above 10 to 10', () => {
+    const result = normalizeProposal(makeRaw({ impact_score: 15 }));
+    expect(result.impact_score).toBe(10);
+  });
+
+  it('clamps impact_score below 1 to 1', () => {
+    const result = normalizeProposal(makeRaw({ impact_score: -2 }));
+    expect(result.impact_score).toBe(1);
+  });
+
+  it('clamps impact_score of 0 to 1', () => {
+    const result = normalizeProposal(makeRaw({ impact_score: 0 }));
+    expect(result.impact_score).toBe(1);
+  });
+
+  it('preserves impact_score in valid range', () => {
+    const result = normalizeProposal(makeRaw({ impact_score: 7 }));
+    expect(result.impact_score).toBe(7);
   });
 });
 

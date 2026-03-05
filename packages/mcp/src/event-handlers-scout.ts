@@ -182,7 +182,8 @@ export async function handleProposalsReviewed(ctx: EventContext, payload: Record
   // Merge reviewed scores back into pending proposals
   for (const reviewed of reviewedItems) {
     if (!reviewed.title) continue;
-    const match = pendingProposals.find(p => p.title === reviewed.title);
+    const reviewedLower = reviewed.title.toLowerCase();
+    const match = pendingProposals.find(p => p.title?.toLowerCase() === reviewedLower);
     if (match) {
       // Record learning if confidence lowered >20 pts
       if (s.learnings_enabled && typeof reviewed.confidence === 'number' && typeof match.confidence === 'number') {

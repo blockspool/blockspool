@@ -14,7 +14,7 @@ import * as path from 'node:path';
 
 export interface RunHistoryEntry {
   timestamp: string;
-  mode: 'auto' | 'manual' | 'ci';
+  mode: 'auto' | 'manual';
   scope: string;
   formula?: string;
   ticketsProposed: number;

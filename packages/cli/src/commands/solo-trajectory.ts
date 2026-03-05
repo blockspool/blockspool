@@ -256,7 +256,7 @@ export function registerTrajectoryCommands(solo: Command): void {
       if (state && state.trajectoryName === name) {
         clearTrajectoryState(repoRoot);
         console.log(chalk.green(`Trajectory "${name}" reset.`));
-        console.log(chalk.gray('  Run `promptwheel trajectory activate ${name}` to start again.'));
+        console.log(chalk.gray(`  Run \`promptwheel trajectory activate ${name}\` to start again.`));
       } else {
         console.log(chalk.gray(`Trajectory "${name}" is not active. Nothing to reset.`));
       }

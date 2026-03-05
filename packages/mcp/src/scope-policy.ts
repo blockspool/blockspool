@@ -368,6 +368,30 @@ export function isFileAllowed(filePath: string, policy: ScopePolicy): boolean {
 // Enforce category file-type restrictions
 // ---------------------------------------------------------------------------
 
+const CATEGORY_FILE_PATTERNS: Readonly<Record<string, readonly string[]>> = {
+  docs: ['*.md', '*.mdx', '*.txt', '*.rst', '**/*.md', '**/*.mdx', '**/*.txt', '**/*.rst'],
+  test: [
+    // JS/TS
+    '*.test.*', '*.spec.*', '**/*.test.*', '**/*.spec.*', '**/__tests__/**', '__tests__/**',
+    // Python
+    'test_*', '**/test_*', '*_test.py', '**/*_test.py', '**/tests/**', 'tests/**', '**/conftest.py',
+    // Go
+    '*_test.go', '**/*_test.go',
+    // Rust (tests/ dir)
+    'tests/**', '**/tests/**',
+    // Java/Kotlin
+    '*Test.java', '**/*Test.java', '*Test.kt', '**/*Test.kt', '**/src/test/**',
+    // Ruby
+    '*_spec.rb', '**/*_spec.rb', '**/spec/**',
+    // Elixir
+    '*_test.exs', '**/*_test.exs',
+    // Swift
+    '*Tests.swift', '**/*Tests.swift',
+    // PHP
+    '*Test.php', '**/*Test.php',
+  ],
+};
+
 /**
  * Check if a file path is allowed by the category tool policy.
  * Returns true if no category policy exists (= everything allowed).
@@ -377,30 +401,6 @@ export function isFileAllowed(filePath: string, policy: ScopePolicy): boolean {
  */
 export function isCategoryFileAllowed(filePath: string, category: string | null): boolean {
   if (!category) return true;
-
-  const CATEGORY_FILE_PATTERNS: Record<string, string[]> = {
-    docs: ['*.md', '*.mdx', '*.txt', '*.rst', '**/*.md', '**/*.mdx', '**/*.txt', '**/*.rst'],
-    test: [
-      // JS/TS
-      '*.test.*', '*.spec.*', '**/*.test.*', '**/*.spec.*', '**/__tests__/**', '__tests__/**',
-      // Python
-      'test_*', '**/test_*', '*_test.py', '**/*_test.py', '**/tests/**', 'tests/**', '**/conftest.py',
-      // Go
-      '*_test.go', '**/*_test.go',
-      // Rust (tests/ dir)
-      'tests/**', '**/tests/**',
-      // Java/Kotlin
-      '*Test.java', '**/*Test.java', '*Test.kt', '**/*Test.kt', '**/src/test/**',
-      // Ruby
-      '*_spec.rb', '**/*_spec.rb', '**/spec/**',
-      // Elixir
-      '*_test.exs', '**/*_test.exs',
-      // Swift
-      '*Tests.swift', '**/*Tests.swift',
-      // PHP
-      '*Test.php', '**/*Test.php',
-    ],
-  };
 
   const patterns = CATEGORY_FILE_PATTERNS[category];
   if (!patterns) return true; // no restrictions for this category (e.g. security, fix, refactor)

@@ -124,13 +124,26 @@ export function addLearning(
  * Confirm a learning: bump weight +10 and update last_confirmed_at.
  */
 export function confirmLearning(projectRoot: string, id: string): void {
+  confirmLearnings(projectRoot, [id]);
+}
+
+/**
+ * Batch-confirm learnings: bump weight +10 and update last_confirmed_at for all IDs
+ * in a single lock cycle. Reduces file I/O from N lock-read-write cycles to 1.
+ */
+export function confirmLearnings(projectRoot: string, ids: string[]): void {
+  if (ids.length === 0) return;
   const fp = learningsPath(projectRoot);
+  const now = new Date().toISOString();
   withLearningsLock(fp, () => {
     const learnings = readLearnings(projectRoot);
-    const l = learnings.find(x => x.id === id);
-    if (!l) return;
-    l.weight = Math.min(LEARNINGS_DEFAULTS.MAX_WEIGHT, l.weight + 10);
-    l.last_confirmed_at = new Date().toISOString();
+    const idSet = new Set(ids);
+    for (const l of learnings) {
+      if (idSet.has(l.id)) {
+        l.weight = Math.min(LEARNINGS_DEFAULTS.MAX_WEIGHT, l.weight + 10);
+        l.last_confirmed_at = now;
+      }
+    }
     writeLearnings(projectRoot, learnings);
   });
 }

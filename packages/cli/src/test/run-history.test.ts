@@ -65,7 +65,7 @@ describe('appendRunHistory', () => {
 
   it('appends to existing file', () => {
     const entry1 = makeEntry({ mode: 'auto', scope: 'src/**' });
-    const entry2 = makeEntry({ mode: 'ci', scope: 'tests/**' });
+    const entry2 = makeEntry({ mode: 'manual', scope: 'tests/**' });
 
     appendRunHistory(entry1, tmpDir);
     appendRunHistory(entry2, tmpDir);
@@ -77,7 +77,7 @@ describe('appendRunHistory', () => {
     const parsed2 = JSON.parse(lines[1]);
     expect(parsed1.mode).toBe('auto');
     expect(parsed1.scope).toBe('src/**');
-    expect(parsed2.mode).toBe('ci');
+    expect(parsed2.mode).toBe('manual');
     expect(parsed2.scope).toBe('tests/**');
   });
 });

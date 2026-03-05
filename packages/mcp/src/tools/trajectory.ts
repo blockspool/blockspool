@@ -510,7 +510,13 @@ export function registerTrajectoryTools(server: McpServer, getState: () => Sessi
 
         // ── Skip (delegates to shared skipStep) ──
         if (action === 'skip') {
-          const skipResult = skipStep(trajectory!, trajState, params.step_id);
+          if (!trajectory) {
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Trajectory definition not found — cannot skip step' }) }],
+              isError: true,
+            };
+          }
+          const skipResult = skipStep(trajectory, trajState, params.step_id);
           if (!skipResult.skipped) {
             return {
               content: [{ type: 'text' as const, text: JSON.stringify({ error: skipResult.error }) }],

@@ -162,7 +162,8 @@ export function consolidateLearnings(learnings: Learning[]): Learning[] | null {
         // Guard: don't merge frequently accessed learnings
         if (entries[i].access_count >= 3 || entries[j].access_count >= 3) continue;
         // Merge j into i (keep higher weight)
-        if (entries[j].weight > entries[i].weight) {
+        const jWins = entries[j].weight > entries[i].weight;
+        if (jWins) {
           entries[i].weight = entries[j].weight;
           entries[i].text = entries[j].text;
         }
@@ -177,21 +178,24 @@ export function consolidateLearnings(learnings: Learning[]): Learning[] | null {
         // Merge tags
         const tagSet = new Set([...entries[i].tags, ...entries[j].tags]);
         entries[i].tags = [...tagSet];
-        // Merge structured knowledge (union cochange_files and fragile_paths, keep winner's other fields)
+        // Merge structured knowledge (union cochange_files and fragile_paths, prefer winner's scalar fields)
         if (entries[i].structured || entries[j].structured) {
           const si = entries[i].structured ?? {};
           const sj = entries[j].structured ?? {};
+          const winner = jWins ? sj : si;
+          const loser = jWins ? si : sj;
           entries[i].structured = {
-            ...si,
+            ...loser,
+            ...winner,
             cochange_files: si.cochange_files || sj.cochange_files
               ? [...new Set([...(si.cochange_files ?? []), ...(sj.cochange_files ?? [])])]
               : undefined,
             fragile_paths: si.fragile_paths || sj.fragile_paths
               ? [...new Set([...(si.fragile_paths ?? []), ...(sj.fragile_paths ?? [])])]
               : undefined,
-            // Keep winner's root_cause (already set by weight comparison above)
-            root_cause: si.root_cause ?? sj.root_cause,
-            failure_context: si.failure_context ?? sj.failure_context,
+            // Prefer winner's scalar fields, fall back to loser's
+            root_cause: winner.root_cause ?? loser.root_cause,
+            failure_context: winner.failure_context ?? loser.failure_context,
           };
         }
         // Preserve most recent confirmation date for decay calculations
@@ -276,6 +280,44 @@ export function formatLearningsForPrompt(
 
   if (lines.length === 0) return '';
   return header + lines.join('\n') + footer;
+}
+
+/**
+ * Return the IDs of learnings that would be included in the formatted prompt.
+ * Mirrors the selection logic of formatLearningsForPrompt (sort by weight, budget clip)
+ * without building the full string. Use this instead of substring matching on the block.
+ */
+export function getIncludedLearningIds(
+  learnings: Learning[],
+  budget: number = LEARNINGS_DEFAULTS.DEFAULT_BUDGET,
+): string[] {
+  if (learnings.length === 0) return [];
+
+  const sorted = [...learnings].sort((a, b) => b.weight - a.weight);
+  const ids: string[] = [];
+  let charCount = 0;
+
+  const headerFooterLen = '<project-learnings>\n## Learnings from Previous Runs\n'.length
+    + '\n</project-learnings>'.length;
+  charCount += headerFooterLen;
+
+  for (const l of sorted) {
+    const tag = l.category.toUpperCase();
+    let lineLen = `- [${tag}] ${l.text} (w:${Math.round(l.weight)})`.length;
+
+    if (l.structured) {
+      const annotation = formatStructuredAnnotation(l.structured);
+      if (annotation) {
+        lineLen += 1 + annotation.length; // +1 for '\n'
+      }
+    }
+
+    if (charCount + lineLen + 1 > budget) break;
+    ids.push(l.id);
+    charCount += lineLen + 1;
+  }
+
+  return ids;
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +485,7 @@ export function assessAdaptiveRisk(
   ticketPaths: string[],
 ): AdaptiveRiskAssessment {
   const pathSet = new Set(ticketPaths.map(p => p.replace(/\/?\*\*?$/, '')));
+  const pathArray = [...pathSet];
   let score = 0;
   let failureCount = 0;
   const fragilePaths = new Set<string>();
@@ -456,7 +499,7 @@ export function assessAdaptiveRisk(
       for (const tag of l.tags) {
         if (tag.startsWith('path:')) {
           const lPath = tag.slice(5);
-          if (pathSet.has(lPath) || [...pathSet].some(p => lPath.startsWith(p + '/') || p.startsWith(lPath + '/'))) {
+          if (pathSet.has(lPath) || pathArray.some(p => lPath.startsWith(p + '/') || p.startsWith(lPath + '/'))) {
             compactionOverlap = true;
             break;
           }
@@ -479,7 +522,7 @@ export function assessAdaptiveRisk(
     for (const tag of l.tags) {
       if (tag.startsWith('path:')) {
         const lPath = tag.slice(5);
-        if (pathSet.has(lPath) || [...pathSet].some(p => lPath.startsWith(p + '/') || p.startsWith(lPath + '/'))) {
+        if (pathSet.has(lPath) || pathArray.some(p => lPath.startsWith(p + '/') || p.startsWith(lPath + '/'))) {
           hasOverlap = true;
           break;
         }

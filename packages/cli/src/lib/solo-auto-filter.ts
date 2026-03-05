@@ -177,7 +177,7 @@ export async function filterProposals(
   let rejectedByScope = 0;
   const categoryFiltered = impactFiltered.filter((p) => {
     const category = (p.category || 'refactor').toLowerCase();
-    if (blockCategories.length > 0 && blockCategories.some(blocked => category.includes(blocked))) {
+    if (blockCategories.length > 0 && blockCategories.some(blocked => category === blocked)) {
       rejectedByCategory++;
       if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  ✗ Blocked category (${category}): ${p.title}`));
       return false;

@@ -414,6 +414,47 @@ describe('handleProposalsReviewed', () => {
     expect(result.message).toContain('rejected after review');
   });
 
+  it('skips bad review items instead of rejecting whole event', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'SCOUT';
+    s.pending_proposals = [
+      makeProposal('Good proposal A'),
+      makeProposal('Good proposal B'),
+    ];
+
+    // One item has non-numeric confidence (bad), two are good
+    const result = await processEvent(run, db, 'PROPOSALS_REVIEWED', {
+      reviewed_proposals: [
+        { title: 'Good proposal A', confidence: 80, impact_score: 7 },
+        { title: 'Bad item', confidence: 'not-a-number', impact_score: 5 },
+        { title: 'Good proposal B', confidence: 70, impact_score: 6 },
+      ],
+    });
+
+    // Should succeed — bad item skipped, two good items kept
+    expect(result.processed).toBe(true);
+    expect(result.phase_changed).toBe(true);
+    expect(result.new_phase).toBe('NEXT_TICKET');
+  });
+
+  it('matches review titles case-insensitively', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'SCOUT';
+    s.pending_proposals = [makeProposal('Fix Auth Module', { confidence: 90 })];
+
+    const result = await processEvent(run, db, 'PROPOSALS_REVIEWED', {
+      reviewed_proposals: [
+        { title: 'fix auth module', confidence: 70, impact_score: 6 },
+      ],
+    });
+
+    expect(result.processed).toBe(true);
+    expect(result.phase_changed).toBe(true);
+    expect(result.new_phase).toBe('NEXT_TICKET');
+  });
+
   it('merges reviewed scores back into pending proposals', async () => {
     startRun();
     const s = run.require();
@@ -1066,6 +1107,71 @@ describe('processEvent — routing', () => {
     });
     expect(result.processed).toBe(true);
     expect(result.new_phase).toBe('EXECUTE');
+  });
+
+  it('normalizes action aliases in PLAN_SUBMITTED (update → modify)', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'PLAN';
+    s.current_ticket_id = 'tkt_alias';
+
+    const result = await processEvent(run, db, 'PLAN_SUBMITTED', {
+      ticket_id: 'tkt_alias',
+      files_to_touch: [{ path: 'src/x.ts', action: 'update', reason: 'fix' }],
+      estimated_lines: 5,
+      risk_level: 'low',
+    });
+    expect(result.processed).toBe(true);
+    expect(result.new_phase).toBe('EXECUTE');
+  });
+
+  it('normalizes action alias "add" → "create" in PLAN_SUBMITTED', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'PLAN';
+    s.current_ticket_id = 'tkt_add';
+
+    const result = await processEvent(run, db, 'PLAN_SUBMITTED', {
+      ticket_id: 'tkt_add',
+      files_to_touch: [{ path: 'src/new.ts', action: 'add', reason: 'new file' }],
+      estimated_lines: 10,
+      risk_level: 'low',
+    });
+    expect(result.processed).toBe(true);
+    expect(result.new_phase).toBe('EXECUTE');
+  });
+
+  it('normalizes risk_level alias "moderate" → "medium" in PLAN_SUBMITTED', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'PLAN';
+    s.current_ticket_id = 'tkt_risk';
+
+    const result = await processEvent(run, db, 'PLAN_SUBMITTED', {
+      ticket_id: 'tkt_risk',
+      files_to_touch: [{ path: 'src/x.ts', action: 'modify', reason: 'fix' }],
+      estimated_lines: 5,
+      risk_level: 'moderate',
+    });
+    expect(result.processed).toBe(true);
+    expect(result.new_phase).toBe('EXECUTE');
+  });
+
+  it('normalizes risk_level alias "critical" → "high" (triggers human review gate)', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'PLAN';
+    s.current_ticket_id = 'tkt_risk2';
+
+    const result = await processEvent(run, db, 'PLAN_SUBMITTED', {
+      ticket_id: 'tkt_risk2',
+      files_to_touch: [{ path: 'src/x.ts', action: 'modify', reason: 'fix' }],
+      estimated_lines: 5,
+      risk_level: 'critical',
+    });
+    // "critical" normalizes to "high", which correctly triggers BLOCKED_NEEDS_HUMAN
+    expect(result.processed).toBe(true);
+    expect(result.new_phase).toBe('BLOCKED_NEEDS_HUMAN');
   });
 
   it('routes QA_PASSED to QA handler', async () => {

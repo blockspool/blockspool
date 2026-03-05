@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import chalk from 'chalk';
 import { spawnSync } from 'node:child_process';
 import type { AutoSessionState } from './solo-auto-state.js';
-import { readRunState, writeRunState, recordCycle, recordDocsAudit, getQualityRate } from './run-state.js';
+import { readRunState, writeRunState, recordCycle, getQualityRate } from './run-state.js';
 import { getSessionPhase } from './solo-auto-utils.js';
 import {
   checkPrStatuses,
@@ -311,14 +311,11 @@ export async function runPreCycleMaintenance(state: AutoSessionState): Promise<P
 
 // ── Post-cycle maintenance ──────────────────────────────────────────────────
 
-export async function runPostCycleMaintenance(state: AutoSessionState, scope: string, isDocsAuditCycle: boolean): Promise<void> {
+export async function runPostCycleMaintenance(state: AutoSessionState, scope: string): Promise<void> {
   state.currentlyProcessing = false;
 
   // Record cycle completion
   const updatedRunState = recordCycle(state.repoRoot);
-  if (isDocsAuditCycle) {
-    recordDocsAudit(state.repoRoot);
-  }
 
   // Record cycle summary + persist calibration state
   {

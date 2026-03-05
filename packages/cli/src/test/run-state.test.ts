@@ -10,8 +10,6 @@ import {
   readRunState,
   writeRunState,
   recordCycle,
-  isDocsAuditDue,
-  recordDocsAudit,
   recordQualitySignal,
   getQualityRate,
   deferProposal,
@@ -58,7 +56,6 @@ describe('readRunState', () => {
   it('returns defaults when no file exists', () => {
     const state = readRunState(tmpDir);
     expect(state.totalCycles).toBe(0);
-    expect(state.lastDocsAuditCycle).toBe(0);
     expect(state.lastRunAt).toBe(0);
     expect(state.deferredProposals).toEqual([]);
     expect(state.recentCycles).toEqual([]);
@@ -68,13 +65,11 @@ describe('readRunState', () => {
   it('round-trips through write and read', () => {
     const state = readRunState(tmpDir);
     state.totalCycles = 5;
-    state.lastDocsAuditCycle = 2;
     state.lastRunAt = 1700000000000;
     writeRunState(tmpDir, state);
 
     const loaded = readRunState(tmpDir);
     expect(loaded.totalCycles).toBe(5);
-    expect(loaded.lastDocsAuditCycle).toBe(2);
     expect(loaded.lastRunAt).toBe(1700000000000);
     expect(loaded.deferredProposals).toEqual([]);
   });
@@ -91,84 +86,6 @@ describe('recordCycle', () => {
 
     const state = readRunState(tmpDir);
     expect(state.totalCycles).toBe(2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// isDocsAuditDue
-// ---------------------------------------------------------------------------
-
-describe('isDocsAuditDue', () => {
-  it('returns true when no cycles have run (default interval 3)', () => {
-    // totalCycles=0, lastDocsAuditCycle=0 → gap=0 < 3
-    expect(isDocsAuditDue(tmpDir)).toBe(false);
-  });
-
-  it('returns true when gap reaches default interval', () => {
-    const state = readRunState(tmpDir);
-    state.totalCycles = 3;
-    state.lastDocsAuditCycle = 0;
-    writeRunState(tmpDir, state);
-
-    expect(isDocsAuditDue(tmpDir)).toBe(true);
-  });
-
-  it('returns false when gap is under the interval', () => {
-    const state = readRunState(tmpDir);
-    state.totalCycles = 5;
-    state.lastDocsAuditCycle = 4;
-    writeRunState(tmpDir, state);
-
-    expect(isDocsAuditDue(tmpDir)).toBe(false);
-  });
-
-  it('respects custom interval parameter', () => {
-    const state = readRunState(tmpDir);
-    state.totalCycles = 10;
-    state.lastDocsAuditCycle = 5;
-    writeRunState(tmpDir, state);
-
-    expect(isDocsAuditDue(tmpDir, 5)).toBe(true);
-    expect(isDocsAuditDue(tmpDir, 6)).toBe(false);
-  });
-
-  it('returns true when gap exceeds interval', () => {
-    const state = readRunState(tmpDir);
-    state.totalCycles = 20;
-    state.lastDocsAuditCycle = 5;
-    writeRunState(tmpDir, state);
-
-    expect(isDocsAuditDue(tmpDir)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// recordDocsAudit
-// ---------------------------------------------------------------------------
-
-describe('recordDocsAudit', () => {
-  it('updates lastDocsAuditCycle to current totalCycles', async () => {
-    const state = readRunState(tmpDir);
-    state.totalCycles = 7;
-    writeRunState(tmpDir, state);
-
-    await recordDocsAudit(tmpDir);
-
-    const loaded = readRunState(tmpDir);
-    expect(loaded.lastDocsAuditCycle).toBe(7);
-  });
-
-  it('makes isDocsAuditDue return false after recording', async () => {
-    const state = readRunState(tmpDir);
-    state.totalCycles = 6;
-    state.lastDocsAuditCycle = 0;
-    writeRunState(tmpDir, state);
-
-    expect(isDocsAuditDue(tmpDir)).toBe(true);
-
-    await recordDocsAudit(tmpDir);
-
-    expect(isDocsAuditDue(tmpDir)).toBe(false);
   });
 });
 

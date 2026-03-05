@@ -33,7 +33,7 @@ vi.mock('../lib/logger.js');
 vi.mock('./solo-config.js');
 vi.mock('./solo-utils.js');
 vi.mock('./solo-git.js');
-vi.mock('./solo-ci.js');
+
 
 describe('solo-ticket: buildTicketPrompt', () => {
   it('builds basic prompt with title and description', () => {

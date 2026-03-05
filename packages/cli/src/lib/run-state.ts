@@ -2,7 +2,7 @@
  * Persistent run state for cross-session cycle tracking.
  *
  * Stored in `.promptwheel/run-state.json`. Tracks how many scout cycles
- * have run so periodic tasks (like docs-audit) can trigger automatically.
+ * have run so periodic tasks can trigger automatically.
  */
 
 import * as fs from 'node:fs';
@@ -34,8 +34,6 @@ export interface CategorySuccessStats {
 export interface RunState {
   /** Total scout cycles completed (persists across sessions) */
   totalCycles: number;
-  /** Cycle number of the last docs-audit run */
-  lastDocsAuditCycle: number;
   /** Timestamp of last run */
   lastRunAt: number;
   /** Proposals deferred because they were outside the session scope */
@@ -96,7 +94,6 @@ function withRunStateLock<T>(fn: () => T): Promise<T> {
 
 const DEFAULT_STATE: RunState = {
   totalCycles: 0,
-  lastDocsAuditCycle: 0,
   lastRunAt: 0,
   deferredProposals: [],
   recentCycles: [],
@@ -115,7 +112,6 @@ export function readRunState(repoRoot: string): RunState {
     const parsed = JSON.parse(raw);
     return {
       totalCycles: parsed.totalCycles ?? 0,
-      lastDocsAuditCycle: parsed.lastDocsAuditCycle ?? 0,
       lastRunAt: parsed.lastRunAt ?? 0,
       deferredProposals: Array.isArray(parsed.deferredProposals) ? parsed.deferredProposals : [],
       recentCycles: Array.isArray(parsed.recentCycles) ? parsed.recentCycles : [],
@@ -159,26 +155,6 @@ export function recordCycle(repoRoot: string): RunState {
   state.lastRunAt = Date.now();
   writeRunState(repoRoot, state);
   return state;
-}
-
-/**
- * Check if a docs-audit cycle is due.
- * Returns true every N cycles since the last docs-audit.
- */
-export function isDocsAuditDue(repoRoot: string, interval: number = 3): boolean {
-  const state = readRunState(repoRoot);
-  return (state.totalCycles - state.lastDocsAuditCycle) >= interval;
-}
-
-/**
- * Record that a docs-audit was run.
- */
-export function recordDocsAudit(repoRoot: string): Promise<void> {
-  return withRunStateLock(() => {
-    const state = readRunState(repoRoot);
-    state.lastDocsAuditCycle = state.totalCycles;
-    writeRunState(repoRoot, state);
-  });
 }
 
 /** Max age for deferred proposals (7 days) */

@@ -121,7 +121,9 @@ export function pruneHistory(
   const removed = lines.length - maxEntries;
   if (!dryRun) {
     const kept = lines.slice(-maxEntries);
-    fs.writeFileSync(historyPath, kept.join('\n') + '\n');
+    const tmp = historyPath + '.tmp';
+    fs.writeFileSync(tmp, kept.join('\n') + '\n');
+    fs.renameSync(tmp, historyPath);
   }
   return removed;
 }
@@ -643,7 +645,9 @@ export function pruneMetrics(
   const removed = lines.length - maxEntries;
   if (!dryRun) {
     const kept = lines.slice(-maxEntries);
-    fs.writeFileSync(metricsPath, kept.join('\n') + '\n');
+    const tmp = metricsPath + '.tmp';
+    fs.writeFileSync(tmp, kept.join('\n') + '\n');
+    fs.renameSync(tmp, metricsPath);
   }
   return removed;
 }

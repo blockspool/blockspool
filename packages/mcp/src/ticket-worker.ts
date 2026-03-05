@@ -19,6 +19,7 @@ import { getRegistry } from './tool-registry.js';
 import { checkSpindle, recordDiff, recordCommandFailure, recordPlanHash } from './spindle.js';
 import { loadGuidelines, formatGuidelinesForPrompt } from './guidelines.js';
 import { validateTicketResultPayload } from './event-handlers-ticket.js';
+import { recordTicketDedup, toBooleanOrUndefined, toStringOrUndefined, toStringArrayOrUndefined } from './event-helpers.js';
 import {
   computeRetryRisk,
   scoreStrategies,
@@ -70,7 +71,7 @@ export async function advanceTicketWorker(
     };
   }
 
-  // Increment worker step count and mark as active
+  // Increment worker step count once per orchestrator call and mark as active
   worker.step_count++;
   run.updateTicketWorker(ticketId, { step_count: worker.step_count, last_active_at_step: s.step_count });
 
@@ -130,153 +131,158 @@ export async function advanceTicketWorker(
     };
   }
 
-  const worktreePath = `.promptwheel/worktrees/${ticketId}`;
-  const policy = deriveScopePolicy({
-    allowedPaths: ticket.allowedPaths ?? [],
-    category: ticket.category ?? 'refactor',
-    maxLinesPerTicket: s.max_lines_per_ticket,
-    worktreeRoot: s.direct ? undefined : worktreePath,
-    learnings: s.cached_learnings,
-  });
+  // Phase loop: handles phase forwarding (e.g. PLAN → EXECUTE) without
+  // recursion so that step_count is only incremented once per orchestrator call.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const worktreePath = `.promptwheel/worktrees/${ticketId}`;
+    const policy = deriveScopePolicy({
+      allowedPaths: ticket.allowedPaths ?? [],
+      category: ticket.category ?? 'refactor',
+      maxLinesPerTicket: s.max_lines_per_ticket,
+      worktreeRoot: s.direct ? undefined : worktreePath,
+      learnings: s.cached_learnings,
+    });
 
-  const constraints: AdvanceConstraints = {
-    allowed_paths: policy.allowed_paths,
-    denied_paths: policy.denied_paths,
-    denied_patterns: policy.denied_patterns.map(r => r.source),
-    max_files: policy.max_files,
-    max_lines: policy.max_lines,
-    required_commands: ticket.verificationCommands ?? [],
-    plan_required: policy.plan_required,
-    auto_approve_patterns: getRegistry(ctx.project.rootPath).getAutoApprovePatterns({
-      phase: worker.phase === 'QA' ? 'QA' : worker.phase as 'PLAN' | 'EXECUTE' | 'PR',
-      category: ticket.category ?? null,
-    }),
-  };
+    const constraints: AdvanceConstraints = {
+      allowed_paths: policy.allowed_paths,
+      denied_paths: policy.denied_paths,
+      denied_patterns: policy.denied_patterns.map(r => r.source),
+      max_files: policy.max_files,
+      max_lines: policy.max_lines,
+      required_commands: ticket.verificationCommands ?? [],
+      plan_required: policy.plan_required,
+      auto_approve_patterns: getRegistry(ctx.project.rootPath).getAutoApprovePatterns({
+        phase: worker.phase === 'QA' ? 'QA' : worker.phase as 'PLAN' | 'EXECUTE' | 'PR',
+        category: ticket.category ?? null,
+      }),
+    };
 
-  // Write per-ticket scope policy
-  writeScopePolicy(ctx.project.rootPath, ticketId, policy);
+    // Write per-ticket scope policy
+    writeScopePolicy(ctx.project.rootPath, ticketId, policy);
 
-  switch (worker.phase) {
-    case 'PLAN': {
-      if (!policy.plan_required) {
-        run.updateTicketWorker(ticketId, { plan_approved: true, phase: 'EXECUTE' });
-        return advanceTicketWorker(ctx, ticketId);
+    switch (worker.phase) {
+      case 'PLAN': {
+        if (!policy.plan_required) {
+          run.updateTicketWorker(ticketId, { plan_approved: true, phase: 'EXECUTE' });
+          continue; // Forward to EXECUTE without re-incrementing step_count
+        }
+
+        if (worker.plan_approved) {
+          run.updateTicketWorker(ticketId, { phase: 'EXECUTE' });
+          continue; // Forward to EXECUTE without re-incrementing step_count
+        }
+
+        if (worker.plan_rejections >= MAX_PLAN_REJECTIONS) {
+          await repos.tickets.updateStatus(db, ticketId, 'blocked');
+          run.failTicketWorker(ticketId, `Plan rejected ${MAX_PLAN_REJECTIONS} times`);
+          return {
+            action: 'FAILED',
+            phase: 'FAILED',
+            prompt: null,
+            constraints: null,
+            ticket_id: ticketId,
+            reason: `Commit plan rejected ${MAX_PLAN_REJECTIONS} times`,
+          };
+        }
+
+        const prompt = buildTicketPlanPrompt(ticket, worktreePath, worker.plan_rejections > 0);
+        return {
+          action: 'PROMPT',
+          phase: 'PLAN',
+          prompt,
+          constraints,
+          ticket_id: ticketId,
+          reason: worker.plan_rejections > 0
+            ? `Re-planning (attempt ${worker.plan_rejections + 1}/${MAX_PLAN_REJECTIONS})`
+            : `Planning ticket: ${ticket.title}`,
+        };
       }
 
-      if (worker.plan_approved) {
-        run.updateTicketWorker(ticketId, { phase: 'EXECUTE' });
-        return advanceTicketWorker(ctx, ticketId);
+      case 'EXECUTE': {
+        const guidelines = loadGuidelines(ctx.project.rootPath);
+        const guidelinesBlock = guidelines ? formatGuidelinesForPrompt(guidelines) + '\n\n' : '';
+
+        // Build critic block for QA retries
+        let criticBlock = '';
+        if (worker.qa_retries > 0 && worker.last_qa_failure) {
+          const cachedLearnings: Learning[] = run.require().cached_learnings ?? [];
+          const failureContext = {
+            failed_commands: worker.last_qa_failure.failed_commands,
+            error_output: worker.last_qa_failure.error_output,
+            attempt: worker.qa_retries + 1,
+            max_attempts: MAX_QA_RETRIES,
+          };
+          const risk = computeRetryRisk(ticket.allowedPaths ?? [], ticket.verificationCommands ?? [], cachedLearnings, failureContext);
+          const strategies = scoreStrategies(ticket.allowedPaths ?? [], failureContext, cachedLearnings);
+          criticBlock = buildCriticBlock(failureContext, risk, strategies, cachedLearnings);
+          if (criticBlock) criticBlock += '\n\n';
+        }
+
+        const prompt = guidelinesBlock + criticBlock + buildTicketExecutePrompt(ticket, worker.plan, worktreePath);
+        return {
+          action: 'PROMPT',
+          phase: 'EXECUTE',
+          prompt,
+          constraints,
+          ticket_id: ticketId,
+          reason: `Executing ticket: ${ticket.title}`,
+        };
       }
 
-      if (worker.plan_rejections >= MAX_PLAN_REJECTIONS) {
-        await repos.tickets.updateStatus(db, ticketId, 'blocked');
-        run.failTicketWorker(ticketId, `Plan rejected ${MAX_PLAN_REJECTIONS} times`);
+      case 'QA': {
+        if (worker.qa_retries >= MAX_QA_RETRIES) {
+          await repos.tickets.updateStatus(db, ticketId, 'blocked');
+          run.failTicketWorker(ticketId, `QA failed ${MAX_QA_RETRIES} times`);
+          return {
+            action: 'FAILED',
+            phase: 'FAILED',
+            prompt: null,
+            constraints: null,
+            ticket_id: ticketId,
+            reason: `QA failed ${MAX_QA_RETRIES} times`,
+          };
+        }
+
+        // Merge session-level qa_commands with ticket verification commands
+        const sessionQaCommands = s.qa_commands ?? [];
+        const qaTicket = sessionQaCommands.length > 0
+          ? { ...ticket, verificationCommands: [...new Set([...(ticket.verificationCommands ?? []), ...sessionQaCommands])] }
+          : ticket;
+
+        const prompt = buildTicketQaPrompt(qaTicket, worktreePath);
+        return {
+          action: 'PROMPT',
+          phase: 'QA',
+          prompt,
+          constraints,
+          ticket_id: ticketId,
+          reason: `Running QA for: ${ticket.title} (attempt ${worker.qa_retries + 1}/${MAX_QA_RETRIES})`,
+        };
+      }
+
+      case 'PR': {
+        const prompt = buildTicketPrPrompt(ticket, s.draft, worktreePath);
+        return {
+          action: 'PROMPT',
+          phase: 'PR',
+          prompt,
+          constraints: null,
+          ticket_id: ticketId,
+          reason: `Creating PR for: ${ticket.title}`,
+        };
+      }
+
+      default:
         return {
           action: 'FAILED',
           phase: 'FAILED',
           prompt: null,
           constraints: null,
           ticket_id: ticketId,
-          reason: `Commit plan rejected ${MAX_PLAN_REJECTIONS} times`,
+          reason: `Unknown worker phase: ${worker.phase}`,
         };
-      }
-
-      const prompt = buildTicketPlanPrompt(ticket, worktreePath, worker.plan_rejections > 0);
-      return {
-        action: 'PROMPT',
-        phase: 'PLAN',
-        prompt,
-        constraints,
-        ticket_id: ticketId,
-        reason: worker.plan_rejections > 0
-          ? `Re-planning (attempt ${worker.plan_rejections + 1}/${MAX_PLAN_REJECTIONS})`
-          : `Planning ticket: ${ticket.title}`,
-      };
     }
-
-    case 'EXECUTE': {
-      const guidelines = loadGuidelines(ctx.project.rootPath);
-      const guidelinesBlock = guidelines ? formatGuidelinesForPrompt(guidelines) + '\n\n' : '';
-
-      // Build critic block for QA retries
-      let criticBlock = '';
-      if (worker.qa_retries > 0 && worker.last_qa_failure) {
-        const cachedLearnings: Learning[] = run.require().cached_learnings ?? [];
-        const failureContext = {
-          failed_commands: worker.last_qa_failure.failed_commands,
-          error_output: worker.last_qa_failure.error_output,
-          attempt: worker.qa_retries + 1,
-          max_attempts: MAX_QA_RETRIES,
-        };
-        const risk = computeRetryRisk(ticket.allowedPaths ?? [], ticket.verificationCommands ?? [], cachedLearnings, failureContext);
-        const strategies = scoreStrategies(ticket.allowedPaths ?? [], failureContext, cachedLearnings);
-        criticBlock = buildCriticBlock(failureContext, risk, strategies, cachedLearnings);
-        if (criticBlock) criticBlock += '\n\n';
-      }
-
-      const prompt = guidelinesBlock + criticBlock + buildTicketExecutePrompt(ticket, worker.plan, worktreePath);
-      return {
-        action: 'PROMPT',
-        phase: 'EXECUTE',
-        prompt,
-        constraints,
-        ticket_id: ticketId,
-        reason: `Executing ticket: ${ticket.title}`,
-      };
-    }
-
-    case 'QA': {
-      if (worker.qa_retries >= MAX_QA_RETRIES) {
-        await repos.tickets.updateStatus(db, ticketId, 'blocked');
-        run.failTicketWorker(ticketId, `QA failed ${MAX_QA_RETRIES} times`);
-        return {
-          action: 'FAILED',
-          phase: 'FAILED',
-          prompt: null,
-          constraints: null,
-          ticket_id: ticketId,
-          reason: `QA failed ${MAX_QA_RETRIES} times`,
-        };
-      }
-
-      // Merge session-level qa_commands with ticket verification commands
-      const sessionQaCommands = s.qa_commands ?? [];
-      const qaTicket = sessionQaCommands.length > 0
-        ? { ...ticket, verificationCommands: [...new Set([...(ticket.verificationCommands ?? []), ...sessionQaCommands])] }
-        : ticket;
-
-      const prompt = buildTicketQaPrompt(qaTicket, worktreePath);
-      return {
-        action: 'PROMPT',
-        phase: 'QA',
-        prompt,
-        constraints,
-        ticket_id: ticketId,
-        reason: `Running QA for: ${ticket.title} (attempt ${worker.qa_retries + 1}/${MAX_QA_RETRIES})`,
-      };
-    }
-
-    case 'PR': {
-      const prompt = buildTicketPrPrompt(ticket, s.draft, worktreePath);
-      return {
-        action: 'PROMPT',
-        phase: 'PR',
-        prompt,
-        constraints: null,
-        ticket_id: ticketId,
-        reason: `Creating PR for: ${ticket.title}`,
-      };
-    }
-
-    default:
-      return {
-        action: 'FAILED',
-        phase: 'FAILED',
-        prompt: null,
-        constraints: null,
-        ticket_id: ticketId,
-        reason: `Unknown worker phase: ${worker.phase}`,
-      };
   }
 }
 
@@ -375,6 +381,8 @@ export async function ingestTicketEvent(
           if (prUrl && run.require().create_prs) {
             run.require().prs_created++;
           }
+          await repos.tickets.updateStatus(db, ticketId, 'done');
+          await recordTicketDedup(db, run.rootPath, ticketId, true);
           run.completeTicketWorker(ticketId);
           return { processed: true, message: prUrl ? 'Ticket complete with PR (inline contract)' : 'Ticket complete (inline contract)' };
         }
@@ -402,6 +410,7 @@ export async function ingestTicketEvent(
         return { processed: true, message: 'Moving to QA' };
       }
       if (validation.isFailure) {
+        await recordTicketDedup(db, run.rootPath, ticketId, false, 'agent_error');
         await repos.tickets.updateStatus(db, ticketId, 'blocked');
         run.failTicketWorker(ticketId, (payload['reason'] as string) ?? 'Execution failed');
         return { processed: true, message: 'Ticket failed' };
@@ -410,9 +419,9 @@ export async function ingestTicketEvent(
     }
 
     case 'QA_COMMAND_RESULT': {
-      const success = payload['success'] as boolean;
+      const success = toBooleanOrUndefined(payload['success']) ?? false;
       if (!success) {
-        recordCommandFailure(worker.spindle, payload['command'] as string, (payload['output'] ?? '') as string);
+        recordCommandFailure(worker.spindle, toStringOrUndefined(payload['command']) ?? '', toStringOrUndefined(payload['output']) ?? '');
         run.updateTicketWorker(ticketId, { spindle: worker.spindle });
       }
       return { processed: true, message: `QA command ${success ? 'passed' : 'failed'}` };
@@ -427,6 +436,7 @@ export async function ingestTicketEvent(
 
       // Skip PR phase when not creating PRs
       if (!run.require().create_prs) {
+        await recordTicketDedup(db, run.rootPath, ticketId, true);
         run.completeTicketWorker(ticketId);
         return { processed: true, message: 'QA passed, PRs disabled — ticket complete' };
       }
@@ -443,8 +453,10 @@ export async function ingestTicketEvent(
       worker.qa_retries++;
       // Store failure context for critic block injection on retry
       {
-        const failedCmds = (payload['failed_commands'] ?? payload['command'] ?? '') as string | string[];
-        let errorOutput = (payload['error'] ?? payload['output'] ?? '') as string;
+        const failedCmdsRaw = toStringArrayOrUndefined(payload['failed_commands'])
+          ?? (toStringOrUndefined(payload['command']) ? [toStringOrUndefined(payload['command'])!] : []);
+        const failedCmds: string[] = failedCmdsRaw;
+        let errorOutput = toStringOrUndefined(payload['error']) ?? toStringOrUndefined(payload['output']) ?? '';
         // Include failed criteria in error context for targeted retry
         const failedCriteria = Array.isArray(payload['criteria_results'])
           ? (payload['criteria_results'] as Array<{ criterion?: string; passed?: boolean; evidence?: string }>)
@@ -457,11 +469,12 @@ export async function ingestTicketEvent(
           errorOutput = errorOutput ? `${errorOutput}\n${criteriaMsg}` : criteriaMsg;
         }
         worker.last_qa_failure = {
-          failed_commands: Array.isArray(failedCmds) ? failedCmds : failedCmds ? [failedCmds] : [],
+          failed_commands: failedCmds,
           error_output: errorOutput.slice(0, 500),
         };
       }
       if (worker.qa_retries >= MAX_QA_RETRIES) {
+        await recordTicketDedup(db, run.rootPath, ticketId, false, 'qa_failed');
         await repos.tickets.updateStatus(db, ticketId, 'blocked');
         run.failTicketWorker(ticketId, `QA failed ${worker.qa_retries} times`);
         return { processed: true, message: `QA failed ${worker.qa_retries} times, giving up` };
@@ -490,6 +503,7 @@ export async function ingestTicketEvent(
       if (run.require().create_prs) {
         run.require().prs_created++;
       }
+      await recordTicketDedup(db, run.rootPath, ticketId, true);
       run.completeTicketWorker(ticketId);
       return { processed: true, message: 'PR created, ticket complete' };
     }

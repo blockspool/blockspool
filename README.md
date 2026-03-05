@@ -154,7 +154,7 @@ Results feed back as proposals (scout output), learnings (cross-run memory), or 
 ```
 Scout ──> Filter ──> Execute (parallel) ──> QA ──> PR
   |                                                  |
-  └──── next cycle (sectors rotate, learnings grow) ─┘
+  └──── next cycle (learnings grow, drill adapts) ────┘
 ```
 
 1. **Scout** — scans your codebase for improvements
@@ -214,7 +214,7 @@ Optional `.promptwheel/config.json`. See [Configuration](docs/configuration.md).
 ## FAQ
 
 **How is this different from just running Claude Code?**
-PromptWheel is an orchestration layer. It coordinates autonomous agents in parallel, tracks learnings across runs, enforces scope isolation, deduplicates work, and progresses through structured trajectories and formulas — producing draft PRs you review before merging.
+PromptWheel is an orchestration layer. It coordinates autonomous agents in parallel, tracks learnings across runs, enforces scope isolation, deduplicates work, and progresses through structured trajectories — producing draft PRs you review before merging.
 
 **Will it break my code?**
 Every change runs through typecheck and tests. Failed tickets are blocked, not merged. Scope enforcement sandboxes each ticket. All PRs are drafts by default.
@@ -237,5 +237,5 @@ Apache 2.0 - See [LICENSE](./LICENSE)
 ---
 
 <p align="center">
-  <b>PromptWheel v0.7.36</b>
+  <b>PromptWheel v0.7.37</b>
 </p>

@@ -301,18 +301,10 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
       if (!ownership.ok) return ownership.response;
       const ticket = ownership.ticket;
 
-      // If no allowed_paths, everything is allowed
-      if (ticket.allowedPaths.length === 0) {
-        state.run.appendEvent('SCOPE_ALLOWED', { ticket_id: params.ticketId, files: params.changedFiles });
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({ valid: true, message: 'No scope restrictions.' }),
-          }],
-        };
-      }
-
       // Use proper scope policy with minimatch-based validation
+      // NOTE: Even when allowedPaths is empty (unrestricted), we still enforce
+      // denied_paths (ALWAYS_DENIED) and denied_patterns (FILE_DENY_PATTERNS)
+      // to protect sensitive files like .env, credentials, .pem, etc.
       const s = ownership.session;
       const worktreeRoot = s.direct
         ? undefined

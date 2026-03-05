@@ -208,8 +208,9 @@ export function buildCriticBlock(
   if (strategies.length > 0) {
     lines.push('');
     lines.push('### Recommended Approach');
-    for (const s of strategies) {
-      lines.push(`${s.confidence}. [${s.confidence}] ${s.label}: ${s.instruction}`);
+    for (let i = 0; i < strategies.length; i++) {
+      const s = strategies[i];
+      lines.push(`${i + 1}. [${s.confidence}] ${s.label}: ${s.instruction}`);
     }
   }
 

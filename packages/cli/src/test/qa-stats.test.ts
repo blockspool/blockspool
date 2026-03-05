@@ -47,7 +47,6 @@ function writeRunState(qualitySignals: { totalTickets: number; firstPassSuccess:
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const state = {
     totalCycles: 10,
-    lastDocsAuditCycle: 0,
     lastRunAt: Date.now(),
     deferredProposals: [],
     qualitySignals,

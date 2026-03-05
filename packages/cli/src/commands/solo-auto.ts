@@ -33,7 +33,6 @@ Examples:
     .option('--hours <n>', 'Run for N hours (accepts decimals: 0.5 = 30min)')
     .option('--pr', 'Create pull requests instead of direct commits')
     .option('--scope <path>', 'Directory to focus on')
-    .addOption(new Option('--formula <name>').hideHelp())
     .option('--dry-run', 'Preview without making changes')
     .option('--output <format>', 'Output format: json (writes structured JSON report)')
     .option('-v, --verbose', 'Detailed output')
@@ -70,8 +69,6 @@ Examples:
     .addOption(new Option('--max-scout-files <n>').hideHelp())
     .addOption(new Option('--scout-concurrency <n>').hideHelp())
     .addOption(new Option('--codex-mcp').hideHelp())
-    .addOption(new Option('--no-docs-audit').hideHelp())
-    .addOption(new Option('--docs-audit-interval <n>').hideHelp())
     .addOption(new Option('--auto-merge').hideHelp())
     .addOption(new Option('--direct-branch <name>').hideHelp())
     .addOption(new Option('--direct-finalize <mode>').hideHelp())
@@ -108,8 +105,6 @@ Examples:
       batchTokenBudget?: string;
       scoutTimeout?: string;
       maxScoutFiles?: string;
-      docsAudit?: boolean;
-      docsAuditInterval?: string;
       scoutConcurrency?: string;
       codexMcp?: boolean;
       pr?: boolean;

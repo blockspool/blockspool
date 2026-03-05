@@ -32,9 +32,6 @@ export interface ScoutResult {
   proposals: TicketProposal[];
   scoutResult: Awaited<ReturnType<typeof scoutRepo>>;
   scope: string;
-  cycleFormula: null;
-  isDeepCycle: boolean;
-  isDocsAuditCycle: boolean;
   shouldRetry: boolean;
   shouldBreak: boolean;
   scoutDurationMs?: number;
@@ -69,7 +66,6 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
 
   await getDeduplicationContext(state.adapter, state.project.id, state.repoRoot);
 
-  const cycleFormula = null;
   const { allow: allowCategories, block: blockCategories } = state.getCycleCategories(null);
 
   // Trajectory step overrides: narrow scope and categories to current step
@@ -92,12 +88,8 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     }
   }
 
-  const isDeepCycle = false;
-  const isDocsAuditCycle = false;
-
-  const cycleSuffix = '';
   const cycleLabel = state.maxCycles > 1 || state.runMode === 'spin'
-    ? `[Cycle ${state.cycleCount}]${cycleSuffix} `
+    ? `[Cycle ${state.cycleCount}] `
     : 'Step 1: ';
   state.displayAdapter.scoutStarted(scope, state.cycleCount);
   state.displayAdapter.log(chalk.bold(`${cycleLabel}Scouting ${scope}...`));
@@ -318,7 +310,7 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
           if (state.activeTrajectoryState) saveTrajectoryState(state.repoRoot, state.activeTrajectoryState);
         }
       }
-      return { proposals: [], scoutResult, scope, cycleFormula, isDeepCycle, isDocsAuditCycle, shouldRetry: false, shouldBreak: false };
+      return { proposals: [], scoutResult, scope, shouldRetry: false, shouldBreak: false };
     }
 
     // CLI gets more retries than MCP plugin since it's a longer-running standalone process
@@ -327,7 +319,7 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
       state.scoutRetries++;
       if (state.options.verbose) state.displayAdapter.log(chalk.gray(`  No improvements found in ${scope} (attempt ${state.scoutRetries}/${maxRetries + 1}). Retrying with fresh approach...`));
       await sleep(1000);
-      return { proposals: [], scoutResult, scope, cycleFormula, isDeepCycle, isDocsAuditCycle, shouldRetry: true, shouldBreak: false };
+      return { proposals: [], scoutResult, scope, shouldRetry: true, shouldBreak: false };
     }
     state.scoutRetries = 0;
     state.scoutedDirs = [];
@@ -336,12 +328,12 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
     }
     state.displayAdapter.log(chalk.green(`✓ No improvements found in scope "${scope}"`));
     // Let shouldContinue() decide whether to loop or stop
-    return { proposals: [], scoutResult, scope, cycleFormula, isDeepCycle, isDocsAuditCycle, shouldRetry: true, shouldBreak: false };
+    return { proposals: [], scoutResult, scope, shouldRetry: true, shouldBreak: false };
   }
 
   state.displayAdapter.scoutCompleted(proposals.length);
   const scoutDurationMs = Date.now() - scoutStart;
-  return { proposals, scoutResult, scope, cycleFormula, isDeepCycle, isDocsAuditCycle, shouldRetry: false, shouldBreak: false, scoutDurationMs };
+  return { proposals, scoutResult, scope, shouldRetry: false, shouldBreak: false, scoutDurationMs };
 }
 
 // ── Incremental scanning helpers ──────────────────────────────────────────

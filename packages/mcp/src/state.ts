@@ -47,6 +47,9 @@ export class SessionManager {
     ticketsFailed: number;
     currentTicketId: string | null;
     timeRemainingMs: number | null;
+    totalCostUsd: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
   } {
     const s = this.run.require();
     const timeRemainingMs = s.expires_at
@@ -63,6 +66,9 @@ export class SessionManager {
       ticketsFailed: s.tickets_failed,
       currentTicketId: s.current_ticket_id,
       timeRemainingMs,
+      totalCostUsd: s.total_cost_usd,
+      totalInputTokens: s.total_input_tokens,
+      totalOutputTokens: s.total_output_tokens,
     };
   }
 }

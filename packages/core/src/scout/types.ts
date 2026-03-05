@@ -42,6 +42,10 @@ export interface TicketProposal {
   estimated_complexity: ComplexityLevel;
   /** Function/class names this proposal modifies (for symbol-aware conflict detection). */
   target_symbols?: string[];
+  /** Severity tier: how critical is this change? */
+  severity?: 'blocking' | 'degrading' | 'polish' | 'speculative';
+  /** Arbitrary metadata (e.g., github_issue_number for issue-driven proposals). */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -62,7 +66,7 @@ export interface ScoutOptions {
   minConfidence?: number;
   /** Working directory (default: cwd) */
   projectPath?: string;
-  /** Timeout per batch in ms (default: 120000) */
+  /** Timeout per batch in ms (default: 180000) */
   timeoutMs?: number;
   /** Cancellation signal */
   signal?: AbortSignal;
@@ -191,6 +195,7 @@ export const PROPOSAL_SCHEMA = {
           touched_files_estimate: { type: 'number' },
           rollback_note: { type: 'string' },
           target_symbols: { type: 'array', items: { type: 'string' } },
+          severity: { type: 'string', enum: ['blocking', 'degrading', 'polish', 'speculative'] },
         },
       },
     },

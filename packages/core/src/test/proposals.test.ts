@@ -20,6 +20,7 @@ import {
   type ValidatedProposal,
   type ReviewedProposal,
   type GraphContext,
+  type ProposalSeverity,
   validateProposalSchema,
   normalizeProposal,
   buildProposalReviewPrompt,
@@ -31,6 +32,8 @@ import {
   formatProposalDescription,
   computePriority,
   PROPOSALS_DEFAULTS,
+  SEVERITY_WEIGHT,
+  inferSeverity,
 } from '../proposals/shared.js';
 
 // ---------------------------------------------------------------------------
@@ -73,6 +76,7 @@ function makeValidated(overrides: Partial<ValidatedProposal> = {}): ValidatedPro
     risk: 'low',
     touched_files_estimate: 3,
     rollback_note: 'Revert single commit',
+    severity: 'polish',
     ...overrides,
   };
 }
@@ -786,5 +790,161 @@ describe('computePriority', () => {
   it('handles zero', () => {
     expect(computePriority(0, 85)).toBe(0);
     expect(computePriority(7, 0)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Severity tiers
+// ---------------------------------------------------------------------------
+
+describe('SEVERITY_WEIGHT', () => {
+  it('has expected weight values', () => {
+    expect(SEVERITY_WEIGHT.blocking).toBe(3);
+    expect(SEVERITY_WEIGHT.degrading).toBe(2);
+    expect(SEVERITY_WEIGHT.polish).toBe(1);
+    expect(SEVERITY_WEIGHT.speculative).toBe(0.5);
+  });
+
+  it('covers all ProposalSeverity values', () => {
+    const severities: ProposalSeverity[] = ['blocking', 'degrading', 'polish', 'speculative'];
+    for (const s of severities) {
+      expect(SEVERITY_WEIGHT[s]).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('normalizeProposal severity', () => {
+  it('defaults severity to polish when missing', () => {
+    const result = normalizeProposal(makeRaw());
+    expect(result.severity).toBe('polish');
+  });
+
+  it('preserves valid severity values', () => {
+    const severities: ProposalSeverity[] = ['blocking', 'degrading', 'polish', 'speculative'];
+    for (const sev of severities) {
+      const result = normalizeProposal(makeRaw({ severity: sev }));
+      expect(result.severity).toBe(sev);
+    }
+  });
+
+  it('defaults to polish for invalid severity', () => {
+    const result = normalizeProposal(makeRaw({ severity: 'invalid' as any }));
+    expect(result.severity).toBe('polish');
+  });
+});
+
+describe('scoreAndRank with severity', () => {
+  it('ranks blocking proposals higher than polish at equal impact/confidence', () => {
+    const proposals = [
+      makeValidated({ title: 'Polish', severity: 'polish', confidence: 80, impact_score: 7 }),
+      makeValidated({ title: 'Blocking', severity: 'blocking', confidence: 80, impact_score: 7 }),
+    ];
+
+    const result = scoreAndRank(proposals);
+    expect(result[0].title).toBe('Blocking');
+    expect(result[1].title).toBe('Polish');
+  });
+
+  it('severity can override higher raw score', () => {
+    // Blocking (3x): 5 * 70 * 3 = 1050
+    // Speculative (0.5x): 9 * 90 * 0.5 = 405
+    const proposals = [
+      makeValidated({ title: 'Spec', severity: 'speculative', confidence: 90, impact_score: 9 }),
+      makeValidated({ title: 'Block', severity: 'blocking', confidence: 70, impact_score: 5 }),
+    ];
+
+    const result = scoreAndRank(proposals);
+    expect(result[0].title).toBe('Block');
+    expect(result[1].title).toBe('Spec');
+  });
+
+  it('defaults missing severity to polish weight (1x)', () => {
+    const proposals = [
+      makeValidated({ title: 'WithSev', severity: 'degrading', confidence: 80, impact_score: 5 }),
+      { ...makeValidated({ title: 'NoSev', confidence: 80, impact_score: 5 }), severity: undefined as any },
+    ];
+
+    const result = scoreAndRank(proposals);
+    // degrading (2x) should beat undefined->polish (1x)
+    expect(result[0].title).toBe('WithSev');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// inferSeverity
+// ---------------------------------------------------------------------------
+
+describe('inferSeverity', () => {
+  it('classifies security category as blocking', () => {
+    expect(inferSeverity('security', 'Add CSRF protection')).toBe('blocking');
+  });
+
+  it('classifies crash-related descriptions as blocking', () => {
+    expect(inferSeverity('fix', 'Fix crash when input is null')).toBe('blocking');
+  });
+
+  it('classifies race condition descriptions as blocking', () => {
+    expect(inferSeverity('fix', 'Fix race condition in activation promise')).toBe('blocking');
+  });
+
+  it('classifies .catch(null) as blocking', () => {
+    expect(inferSeverity('fix', 'Fix .catch(null) not suppressing errors')).toBe('blocking');
+  });
+
+  it('classifies fix with silent failure as degrading', () => {
+    expect(inferSeverity('fix', 'Stop silently swallowing changelog errors')).toBe('degrading');
+  });
+
+  it('classifies fix with wrong result as degrading', () => {
+    expect(inferSeverity('fix', 'ALB header separator produces wrong output')).toBe('degrading');
+  });
+
+  it('classifies plain fix as degrading', () => {
+    expect(inferSeverity('fix', 'Fix duplicate ID in test fixture')).toBe('degrading');
+  });
+
+  it('classifies docs as polish', () => {
+    expect(inferSeverity('docs', 'Add JSDoc to exported functions')).toBe('polish');
+  });
+
+  it('classifies types as polish', () => {
+    expect(inferSeverity('types', 'Replace any with unknown')).toBe('polish');
+  });
+
+  it('classifies cleanup as polish', () => {
+    expect(inferSeverity('cleanup', 'Remove dead code')).toBe('polish');
+  });
+
+  it('classifies refactor with degrading signals as degrading', () => {
+    expect(inferSeverity('refactor', 'Fix missing guard in error path')).toBe('degrading');
+  });
+
+  it('classifies speculative descriptions as speculative', () => {
+    expect(inferSeverity('refactor', 'Consider extracting this into a helper')).toBe('speculative');
+  });
+
+  it('defaults refactor to polish', () => {
+    expect(inferSeverity('refactor', 'Extract shared logic')).toBe('polish');
+  });
+
+  it('defaults perf to polish', () => {
+    expect(inferSeverity('perf', 'Hoist TextEncoder to module scope')).toBe('polish');
+  });
+
+  it('normalizeProposal uses inferSeverity when severity not provided', () => {
+    const result = normalizeProposal(makeRaw({
+      category: 'security',
+      description: 'Fix SQL injection vulnerability',
+    }));
+    expect(result.severity).toBe('blocking');
+  });
+
+  it('normalizeProposal preserves explicit severity over inference', () => {
+    const result = normalizeProposal(makeRaw({
+      category: 'security',
+      description: 'Fix SQL injection vulnerability',
+      severity: 'polish',
+    }));
+    expect(result.severity).toBe('polish');
   });
 });

@@ -134,6 +134,10 @@ export function issueToProposal(issue: GitHubIssue, index: number): TicketPropos
     verification_commands: [],
     rationale: `Requested via GitHub issue #${issue.number}: ${issue.url}`,
     estimated_complexity: 'moderate',
+    metadata: {
+      github_issue_number: issue.number,
+      github_issue_url: issue.url,
+    },
   };
 }
 

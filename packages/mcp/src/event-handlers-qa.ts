@@ -114,6 +114,20 @@ export async function handleQaPassed(ctx: EventContext, payload: Record<string, 
     await repos.tickets.updateStatus(ctx.db, s.current_ticket_id, 'done');
   }
 
+  // Build structured ticket summary
+  const planFiles = s.current_ticket_plan?.files_to_touch?.map(f => f.path) ?? [];
+  s.last_ticket_summary = {
+    ticket_id: s.current_ticket_id ?? '',
+    title: ticket?.title ?? '',
+    changed_files: planFiles,
+    lines_changed: s.total_lines_changed,
+    tests_run: ticket?.verificationCommands ?? [],
+    tests_passed: true,
+    risks: s.current_ticket_plan?.risk_level === 'high' ? ['high-risk plan'] : [],
+    duration_ms: Date.now() - new Date(s.started_at).getTime(),
+    cost_usd: s.total_cost_usd > 0 ? s.total_cost_usd : undefined,
+  };
+
   // Save QA summary artifact
   ctx.run.saveArtifact(
     `${s.step_count}-qa-summary.json`,

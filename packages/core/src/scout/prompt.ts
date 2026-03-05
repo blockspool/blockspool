@@ -178,12 +178,13 @@ Respond with ONLY a JSON object (no markdown, no explanation):
       "risk": "low|medium|high",
       "touched_files_estimate": 3,
       "rollback_note": "git revert",
-      "target_symbols": ["functionName", "ClassName"]
+      "target_symbols": ["functionName", "ClassName"],
+      "severity": "blocking"
     }
   ]
 }
 
-Note: "target_symbols" is optional but recommended — list the function/class/variable names this change modifies. This enables parallel execution of proposals that touch the same file but different symbols.
+Note: "target_symbols" and "severity" are optional. Severity values: "blocking" (security/correctness), "degrading" (degrades functionality), "polish" (default, normal improvement), "speculative" (exploratory). Proposals are ranked by impact × confidence × severity weight (blocking=3×, degrading=2×, polish=1×, speculative=0.5×). — list the function/class/variable names this change modifies. This enables parallel execution of proposals that touch the same file but different symbols.
 
 If no improvements are needed, return: {"proposals": []}${coverageContext ? `
 

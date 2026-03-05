@@ -30,10 +30,10 @@ import type {
 import { TERMINAL_PHASES } from './types.js';
 import { deriveScopePolicy } from './scope-policy.js';
 import { checkSpindle, getFileEditWarnings } from './spindle.js';
-import { loadGuidelines, formatGuidelinesForPrompt } from './guidelines.js';
+import { loadGuidelines, formatGuidelinesForPrompt, loadMission, formatMissionForPrompt } from './guidelines.js';
 import { detectProjectMetadata, formatMetadataForPrompt } from './project-metadata.js';
 import { formatIndexForPrompt, refreshCodebaseIndex, hasStructuralChanges } from './codebase-index.js';
-import { buildProposalReviewPrompt, type ValidatedProposal } from './proposals.js';
+import { buildProposalReviewPrompt, inferSeverity, type ValidatedProposal } from './proposals.js';
 import { loadDedupMemory, formatDedupForPrompt } from './dedup-memory.js';
 import {
   computeRetryRisk,
@@ -224,6 +224,9 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
       risk: p.risk ?? 'medium',
       touched_files_estimate: p.touched_files_estimate ?? 0,
       rollback_note: p.rollback_note ?? '',
+      severity: (['blocking', 'degrading', 'polish', 'speculative'] as const).includes(p.severity as any)
+        ? p.severity as 'blocking' | 'degrading' | 'polish' | 'speculative'
+        : inferSeverity(String(p.category ?? '').toLowerCase(), String(p.description ?? '')),
     }));
 
     const reviewPrompt = buildProposalReviewPrompt(forReview);
@@ -260,6 +263,9 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
   const dedupBlock = dedupMemoryBlock ? dedupMemoryBlock + '\n\n' : '';
 
   const hints = run.consumeHints();
+
+  const mission = loadMission(ctx.project.rootPath);
+  const missionBlock = mission ? formatMissionForPrompt(mission) + '\n\n' : '';
 
   const guidelines = loadGuidelines(ctx.project.rootPath);
   const guidelinesBlock = guidelines ? formatGuidelinesForPrompt(guidelines) + '\n\n' : '';
@@ -431,7 +437,7 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     console.warn(`[promptwheel] Trajectory load failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const prompt = guidelinesBlock + metadataBlock + indexBlock + dedupBlock + trajectoryBlock + learningsBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
+  const prompt = missionBlock + guidelinesBlock + metadataBlock + indexBlock + dedupBlock + trajectoryBlock + learningsBlock + escalationBlock + buildScoutPrompt(s.scope, s.categories, s.min_confidence,
     s.max_proposals_per_scout, dedupContext, hints, s.min_impact_score, s.scouted_dirs, s.scout_exclude_dirs);
 
   // Reset scout_retries at the start of a fresh cycle (non-retry entry)

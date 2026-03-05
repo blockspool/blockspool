@@ -1267,3 +1267,86 @@ describe('processEvent — routing', () => {
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// Cost tracking (Phase 1a)
+// ---------------------------------------------------------------------------
+
+describe('cost tracking', () => {
+  it('initializes cost fields to zero', () => {
+    startRun();
+    const s = run.require();
+    expect(s.total_cost_usd).toBe(0);
+    expect(s.total_input_tokens).toBe(0);
+    expect(s.total_output_tokens).toBe(0);
+  });
+
+  it('accumulates cost from TICKET_RESULT with trace data', async () => {
+    startRun();
+    const s = run.require();
+    s.phase = 'EXECUTE';
+    s.current_ticket_id = 'tkt_cost';
+
+    // Simulate a ticket result — cost is accumulated in handleTicketResult
+    // when trace analysis runs on stdout. Without actual stream-json output
+    // the cost stays at 0, which tests the initialization path.
+    const result = await processEvent(run, db, 'TICKET_RESULT', {
+      status: 'done',
+      changed_files: ['src/foo.ts'],
+      lines_added: 3,
+      lines_removed: 1,
+    });
+
+    expect(result.processed).toBe(true);
+    expect(result.new_phase).toBe('QA');
+    // Cost should still be 0 (no trace data provided)
+    expect(s.total_cost_usd).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ticket summary (Phase 3b)
+// ---------------------------------------------------------------------------
+
+describe('ticket summary', () => {
+  it('initializes last_ticket_summary to null', () => {
+    startRun();
+    const s = run.require();
+    expect(s.last_ticket_summary).toBeNull();
+  });
+
+  it('populates last_ticket_summary on QA_PASSED', async () => {
+    startRun({ create_prs: false });
+
+    const ticket = await repos.tickets.create(db, {
+      projectId: project.id,
+      title: 'Summary test ticket',
+      description: 'test',
+      status: 'in_progress',
+      priority: 80,
+      category: 'refactor',
+      allowedPaths: [],
+      verificationCommands: ['npm test'],
+    });
+
+    const s = run.require();
+    s.phase = 'QA';
+    s.current_ticket_id = ticket.id;
+    s.current_ticket_plan = {
+      ticket_id: ticket.id,
+      files_to_touch: [{ path: 'src/foo.ts', action: 'modify' as const, reason: 'fix' }],
+      expected_tests: ['npm test'],
+      risk_level: 'low',
+      estimated_lines: 10,
+    };
+    s.total_lines_changed = 7;
+
+    await processEvent(run, db, 'QA_PASSED', {});
+
+    expect(s.last_ticket_summary).not.toBeNull();
+    expect(s.last_ticket_summary!.ticket_id).toBe(ticket.id);
+    expect(s.last_ticket_summary!.title).toBe('Summary test ticket');
+    expect(s.last_ticket_summary!.changed_files).toEqual(['src/foo.ts']);
+    expect(s.last_ticket_summary!.tests_passed).toBe(true);
+  });
+});

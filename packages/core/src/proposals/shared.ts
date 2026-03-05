@@ -10,6 +10,34 @@
 // Types
 // ---------------------------------------------------------------------------
 
+export type ProposalSeverity = 'blocking' | 'degrading' | 'polish' | 'speculative';
+
+export const SEVERITY_WEIGHT: Record<ProposalSeverity, number> = {
+  blocking: 3,
+  degrading: 2,
+  polish: 1,
+  speculative: 0.5,
+};
+
+const BLOCKING_SIGNALS = /(?:\b(?:crash|race condition|security|vulnerability|injection|xss|csrf|auth bypass|data loss|corrupt|undefined is not|typeerror|referenceerror|unhandled|deadlock|infinite loop|memory leak|denial.of.service|force.delete|rm -rf)\b|\.catch\(null\))/i;
+const DEGRADING_SIGNALS = /\b(silent(ly)?.(fail|swallow|ignore|drop)|wrong (result|output|value|status|code)|incorrect|broken|missing (guard|check|validation|error)|unreachable|dead code|resource leak|hang(s|ing)?|timeout|orphan)\b/i;
+const SPECULATIVE_SIGNALS = /\b(consider|might|could|potentially|arguably|style|cosmetic|nitpick|optional|subjective)\b/i;
+
+/**
+ * Infer severity from category + description when LLM doesn't provide it.
+ * Deterministic, no LLM dependency.
+ */
+export function inferSeverity(category: string, description: string): ProposalSeverity {
+  if (category === 'security') return 'blocking';
+  if (BLOCKING_SIGNALS.test(description)) return 'blocking';
+  if (category === 'fix' && DEGRADING_SIGNALS.test(description)) return 'degrading';
+  if (category === 'fix') return 'degrading'; // fixes are at least degrading
+  if (category === 'docs' || category === 'types' || category === 'cleanup') return 'polish';
+  if (DEGRADING_SIGNALS.test(description)) return 'degrading';
+  if (SPECULATIVE_SIGNALS.test(description)) return 'speculative';
+  return 'polish';
+}
+
 /** Raw proposal as received from LLM output (all fields optional). */
 export interface RawProposal {
   category?: string;
@@ -28,6 +56,8 @@ export interface RawProposal {
   rollback_note?: string;
   /** Function/class names this proposal modifies (for symbol-aware conflict detection). */
   target_symbols?: string[];
+  /** Severity tier: how critical is this change? */
+  severity?: ProposalSeverity;
 }
 
 /** Proposal with all required fields validated and defaults applied. */
@@ -48,6 +78,8 @@ export interface ValidatedProposal {
   rollback_note: string;
   /** Function/class names this proposal modifies (for symbol-aware conflict detection). */
   target_symbols?: string[];
+  /** Severity tier: how critical is this change? */
+  severity: ProposalSeverity;
 }
 
 /** Result of adversarial review — revised scores for a single proposal. */
@@ -164,6 +196,9 @@ export function normalizeProposal(raw: RawProposal): ValidatedProposal {
     risk: raw.risk ?? 'medium',
     touched_files_estimate: raw.touched_files_estimate ?? (raw.allowed_paths?.length ?? 1),
     rollback_note: raw.rollback_note ?? 'git revert',
+    severity: (['blocking', 'degrading', 'polish', 'speculative'] as const).includes(raw.severity as ProposalSeverity)
+      ? raw.severity as ProposalSeverity
+      : inferSeverity(category, raw.description ?? ''),
   };
   if (raw.target_symbols?.length) result.target_symbols = raw.target_symbols;
   return result;
@@ -391,7 +426,7 @@ export function computeGraphBoost(
  * When graphContext is provided, proposals touching hub modules get
  * a structural boost. Does not mutate the input array.
  */
-export function scoreAndRank<T extends { confidence: number; impact_score?: number; files?: string[] }>(
+export function scoreAndRank<T extends { confidence: number; impact_score?: number; files?: string[]; severity?: ProposalSeverity }>(
   proposals: T[],
   maxCount?: number,
   graphContext?: GraphContext,
@@ -400,7 +435,8 @@ export function scoreAndRank<T extends { confidence: number; impact_score?: numb
     .map(p => {
       const base = (p.impact_score ?? PROPOSALS_DEFAULTS.DEFAULT_IMPACT) * p.confidence;
       const boost = computeGraphBoost(p.files ?? [], graphContext);
-      return { proposal: p, score: base * boost };
+      const severityMult = SEVERITY_WEIGHT[p.severity ?? 'polish'];
+      return { proposal: p, score: base * boost * severityMult };
     })
     .sort((a, b) => b.score - a.score);
 

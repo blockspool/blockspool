@@ -5,6 +5,7 @@
  */
 
 import { nanoid } from '../utils/id.js';
+import { inferSeverity } from '../proposals/shared.js';
 import { buildScoutPrompt } from './prompt.js';
 import { parseClaudeOutput, ClaudeScoutBackend, type ScoutBackend } from './runner.js';
 import { scanFiles, batchFilesByTokens, batchFilesByModule } from './scanner.js';
@@ -242,6 +243,12 @@ function normalizeProposal(
       proposal.target_symbols = undefined;
     }
 
+    // Normalize severity — infer from category+description if LLM didn't provide it
+    const validSeverities = ['blocking', 'degrading', 'polish', 'speculative'];
+    if (!proposal.severity || !validSeverities.includes(proposal.severity)) {
+      proposal.severity = inferSeverity(proposal.category, proposal.description);
+    }
+
     return proposal;
   } catch (err) {
     if (process.env.PROMPTWHEEL_VERBOSE) {
@@ -277,7 +284,8 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
 
   const scoutBackend: ScoutBackend = backend ?? new ClaudeScoutBackend();
   // Codex needs more time per batch: cold start + large token-packed batches
-  const defaultTimeout = scoutBackend.name === 'codex' ? 600000 : 120000;
+  // Claude gets 180s (up from 120s) — complex batches in large repos need the headroom
+  const defaultTimeout = scoutBackend.name === 'codex' ? 600000 : 180000;
   const timeoutMs = userTimeoutMs ?? defaultTimeout;
 
   const startTime = Date.now();
@@ -494,10 +502,13 @@ export async function scout(options: ScoutOptions): Promise<ScoutResult> {
       await Promise.allSettled(tasks);
     }
 
-    // Sort proposals by impact * confidence (descending)
+    // Sort proposals by impact * confidence * severity weight (descending)
+    const SEVERITY_WEIGHT: Record<string, number> = { blocking: 3, degrading: 2, polish: 1, speculative: 0.5 };
     proposals.sort((a, b) => {
-      const scoreA = (a.impact_score ?? 5) * a.confidence;
-      const scoreB = (b.impact_score ?? 5) * b.confidence;
+      const sevA = SEVERITY_WEIGHT[(a as { severity?: string }).severity ?? 'polish'] ?? 1;
+      const sevB = SEVERITY_WEIGHT[(b as { severity?: string }).severity ?? 'polish'] ?? 1;
+      const scoreA = (a.impact_score ?? 5) * a.confidence * sevA;
+      const scoreB = (b.impact_score ?? 5) * b.confidence * sevB;
       return scoreB - scoreA;
     });
 

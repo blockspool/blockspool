@@ -197,6 +197,26 @@ export interface RunState {
 
   // Acceptance criteria verification (opt-out, default true)
   criteria_verification: boolean;
+
+  // Cost tracking (accumulated from TRACE_ANALYSIS events)
+  total_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+
+  // Last completed ticket summary
+  last_ticket_summary: TicketSummary | null;
+}
+
+export interface TicketSummary {
+  ticket_id: string;
+  title: string;
+  changed_files: string[];
+  lines_changed: number;
+  tests_run: string[];
+  tests_passed: boolean;
+  risks: string[];
+  duration_ms: number;
+  cost_usd?: number;
 }
 
 export interface ProjectMetadataSnapshot {
@@ -389,7 +409,7 @@ export interface EventPayloadMap {
   SCOPE_BLOCKED: { ticket_id: string; violations?: string[]; surprise_files?: string[]; planned_files?: string[]; allowed_paths?: string[]; path?: string; category_violations?: string[] };
 
   TICKET_RESULT: { status: string; changed_files: string[]; lines_added?: number; lines_removed?: number; summary?: string; diff?: string; reason?: string };
-  TRACE_ANALYSIS: { ticket_id: string; is_stream_json: boolean; compaction_count: number; total_tokens: number; tool_count: number };
+  TRACE_ANALYSIS: { ticket_id: string; is_stream_json: boolean; compaction_count: number; total_tokens: number; tool_count: number; cost_usd?: number };
 
   QA_STARTED: { ticket_id: string };
   QA_COMMAND_RESULT: { command: string; success: boolean; output?: string; durationMs?: number; timedOut?: boolean };

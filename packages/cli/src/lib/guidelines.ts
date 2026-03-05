@@ -18,7 +18,7 @@ import {
 
 // Re-export types and pure functions
 export type { ProjectGuidelines, GuidelinesBackend } from '@promptwheel/core/guidelines/shared';
-export { formatGuidelinesForPrompt } from '@promptwheel/core/guidelines/shared';
+export { formatGuidelinesForPrompt, formatMissionForPrompt } from '@promptwheel/core/guidelines/shared';
 
 export interface GuidelinesOptions {
   /** Which backend is running. Determines default file search order. */
@@ -140,4 +140,21 @@ function buildBaselineInput(repoRoot: string): BaselineInput {
   input.isMonorepo = hasWorkspaces || fs.existsSync(path.join(repoRoot, 'packages'));
 
   return input;
+}
+
+const MISSION_PATH = '.promptwheel/MISSION.md';
+
+/**
+ * Load `.promptwheel/MISSION.md` if it exists.
+ * Returns the raw content string or null.
+ */
+export function loadMission(repoRoot: string): string | null {
+  const full = path.resolve(repoRoot, MISSION_PATH);
+  try {
+    if (!fs.existsSync(full)) return null;
+    const content = fs.readFileSync(full, 'utf-8').trim();
+    return content || null;
+  } catch {
+    return null;
+  }
 }

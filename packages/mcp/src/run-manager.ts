@@ -276,6 +276,14 @@ export class RunManager {
 
       // Acceptance criteria verification (default: true)
       criteria_verification: config.criteria_verification !== false,
+
+      // Cost tracking
+      total_cost_usd: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+
+      // Last ticket summary
+      last_ticket_summary: null,
     };
 
     // Detect project metadata (test runner, framework, etc.)

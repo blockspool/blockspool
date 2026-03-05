@@ -21,6 +21,7 @@ import {
   balanceProposals,
   formatProposalDescription,
   computePriority,
+  inferSeverity,
   PROPOSALS_DEFAULTS,
 } from '@promptwheel/core/proposals/shared';
 import { minimatch } from 'minimatch';
@@ -40,6 +41,7 @@ export {
   balanceProposals,
   formatProposalDescription,
   computePriority,
+  inferSeverity,
   PROPOSALS_DEFAULTS,
 } from '@promptwheel/core/proposals/shared';
 
@@ -257,6 +259,7 @@ export async function filterAndCreateTickets(
       estimatedComplexity: p.estimated_complexity,
       ...(p.acceptance_criteria?.length ? { acceptance_criteria: p.acceptance_criteria } : {}),
       ...(p.target_symbols?.length ? { targetSymbols: p.target_symbols } : {}),
+      ...(p.severity && p.severity !== 'polish' ? { severity: p.severity } : {}),
       ...(s.active_trajectory ? { trajectory_name: s.active_trajectory } : {}),
       ...(s.trajectory_step_id ? { trajectory_step_id: s.trajectory_step_id } : {}),
     },

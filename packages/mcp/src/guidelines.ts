@@ -16,7 +16,7 @@ import {
 // Re-export types and pure functions
 export type { ProjectGuidelines } from '@promptwheel/core/guidelines/shared';
 export type { GuidelinesBackend } from '@promptwheel/core/guidelines/shared';
-export { formatGuidelinesForPrompt } from '@promptwheel/core/guidelines/shared';
+export { formatGuidelinesForPrompt, formatMissionForPrompt } from '@promptwheel/core/guidelines/shared';
 
 export interface GuidelinesOptions {
   backend?: GuidelinesBackend;
@@ -97,3 +97,21 @@ function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
   if (normalizedCandidate === normalizedRoot) return true;
   return normalizedCandidate.startsWith(normalizedRoot + path.sep);
 }
+
+const MISSION_PATH = '.promptwheel/MISSION.md';
+
+/**
+ * Load `.promptwheel/MISSION.md` if it exists.
+ * Returns the raw content string or null.
+ */
+export function loadMission(repoRoot: string): string | null {
+  const full = path.resolve(repoRoot, MISSION_PATH);
+  try {
+    if (!fs.existsSync(full)) return null;
+    const content = fs.readFileSync(full, 'utf-8').trim();
+    return content || null;
+  } catch {
+    return null;
+  }
+}
+

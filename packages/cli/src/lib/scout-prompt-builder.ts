@@ -4,6 +4,7 @@
  */
 
 const BLOCK_ORDER = [
+  'mission',
   'guidelines',
   'portfolio',
   'metadata',
@@ -25,6 +26,11 @@ type BlockKey = (typeof BLOCK_ORDER)[number];
 
 export class ScoutPromptBuilder {
   private blocks = new Map<BlockKey, string>();
+
+  addMission(content: string): this {
+    if (content) this.blocks.set('mission', content);
+    return this;
+  }
 
   addGuidelines(content: string): this {
     if (content) this.blocks.set('guidelines', content);

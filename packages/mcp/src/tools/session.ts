@@ -17,6 +17,7 @@ import type { EventType, SessionConfig } from '../types.js';
 import { getRegistry, setCustomToolsEnabledOverride } from '../tool-registry.js';
 import { deriveScopePolicy, isFileAllowed, serializeScopePolicy } from '../scope-policy.js';
 import { repos } from '@promptwheel/core';
+import { appendJournalEntry, journalSessionStart, journalSessionEnd } from '../journal.js';
 
 export function registerSessionTools(server: McpServer, getState: () => SessionManager) {
   server.tool(
@@ -185,6 +186,16 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
         }));
       } catch (err) {
         warnings.push(`Could not write loop-state.json: ${err instanceof Error ? err.message : 'unknown error'}`);
+      }
+
+      // Journal entry for session start
+      if (state.run.dir) {
+        appendJournalEntry(state.run.dir, journalSessionStart({
+          scope: runState.scope,
+          categories: runState.categories,
+          stepBudget: runState.step_budget,
+          startedAt: runState.started_at,
+        }));
       }
 
       // Test runner info
@@ -410,7 +421,14 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
               categories: s.categories.length > 0 ? s.categories : undefined,
               trajectory,
               codebase_index: indexStats,
+              command_blocklist_enabled: true,
+              cost: status.totalCostUsd > 0 || status.totalInputTokens > 0 ? {
+                total_cost_usd: status.totalCostUsd,
+                total_input_tokens: status.totalInputTokens,
+                total_output_tokens: status.totalOutputTokens,
+              } : undefined,
               budget_warnings: warnings.length > 0 ? warnings : undefined,
+              last_ticket_summary: s.last_ticket_summary ?? undefined,
               last_qa_failure: lastFailure,
               last_plan_rejection: s.last_plan_rejection_reason ?? undefined,
               ...drillSummary,
@@ -463,6 +481,16 @@ export function registerSessionTools(server: McpServer, getState: () => SessionM
           if (err instanceof Error && !('code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT')) {
             console.warn(`[promptwheel] failed to clean up loop-state.json on end: ${err.message}`);
           }
+        }
+
+        // Journal entry for session end
+        if (state.run.dir) {
+          appendJournalEntry(state.run.dir, journalSessionEnd({
+            ticketsCompleted: finalState.tickets_completed,
+            ticketsFailed: finalState.tickets_failed,
+            totalCostUsd: finalState.total_cost_usd,
+            durationMs,
+          }));
         }
 
         // Clean up orphaned worktrees

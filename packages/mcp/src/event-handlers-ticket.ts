@@ -13,6 +13,7 @@ import { deriveScopePolicy, validatePlanScope } from './scope-policy.js';
 import { recordDiff, recordPlanHash } from './spindle.js';
 import { addLearning, extractTags, type StructuredKnowledge } from './learnings.js';
 import { isStreamJsonOutput, analyzeTrace } from '@promptwheel/core/trace/shared';
+import { appendJournalEntry, journalTicketComplete, journalTicketFailed } from './journal.js';
 
 export interface TicketResultValidationInput {
   payload: Record<string, unknown>;
@@ -272,13 +273,21 @@ export async function handleTicketResult(ctx: EventContext, payload: Record<stri
     if (stdout && isStreamJsonOutput(stdout.split('\n')[0] ?? '')) {
       try {
         const traceAnalysis = analyzeTrace(stdout);
+        const traceTotalTokens = traceAnalysis.total_input_tokens + traceAnalysis.total_output_tokens;
         ctx.run.appendEvent('TRACE_ANALYSIS', {
           ticket_id: s.current_ticket_id,
           is_stream_json: traceAnalysis.is_stream_json,
           compaction_count: traceAnalysis.compactions.length,
-          total_tokens: traceAnalysis.total_input_tokens + traceAnalysis.total_output_tokens,
+          total_tokens: traceTotalTokens,
           tool_count: traceAnalysis.tool_profiles.length,
+          cost_usd: traceAnalysis.total_cost_usd,
         });
+        // Accumulate cost into session state
+        if (traceAnalysis.total_cost_usd !== undefined && traceAnalysis.total_cost_usd !== null) {
+          s.total_cost_usd += traceAnalysis.total_cost_usd;
+        }
+        s.total_input_tokens += traceAnalysis.total_input_tokens;
+        s.total_output_tokens += traceAnalysis.total_output_tokens;
       } catch (err) {
         console.warn(`[promptwheel] trace analysis: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -315,9 +324,17 @@ export async function handleTicketResult(ctx: EventContext, payload: Record<stri
     // Record failed ticket in dedup memory + sector failure
     await recordTicketDedup(ctx.db, ctx.run.rootPath, s.current_ticket_id, false, 'agent_error', ticket);
     // Fail the ticket, move to next
+    const failReason = toStringOrUndefined(payload['reason']) ?? 'Execution failed';
     if (s.current_ticket_id) {
       await repos.tickets.updateStatus(ctx.db, s.current_ticket_id, 'blocked');
-      ctx.run.failTicket(toStringOrUndefined(payload['reason']) ?? 'Execution failed');
+      ctx.run.failTicket(failReason);
+    }
+    // Journal entry for ticket failure
+    if (ctx.run.dir) {
+      appendJournalEntry(ctx.run.dir, journalTicketFailed(
+        ticket?.title ?? 'unknown',
+        failReason,
+      ));
     }
     ctx.run.setPhase('NEXT_TICKET');
     return {
@@ -355,6 +372,16 @@ export async function handlePrCreated(ctx: EventContext, payload: Record<string,
   );
 
   s.prs_created++;
+  // Journal entry for ticket completion
+  if (ctx.run.dir) {
+    const planFiles = s.current_ticket_plan?.files_to_touch?.map(f => f.path) ?? [];
+    appendJournalEntry(ctx.run.dir, journalTicketComplete({
+      title: ticket?.title ?? 'unknown',
+      changedFiles: planFiles,
+      linesChanged: s.total_lines_changed,
+      costUsd: s.total_cost_usd > 0 ? s.total_cost_usd : undefined,
+    }));
+  }
   ctx.run.completeTicket();
   ctx.run.appendEvent('PR_CREATED', payload);
   ctx.run.setPhase('NEXT_TICKET');

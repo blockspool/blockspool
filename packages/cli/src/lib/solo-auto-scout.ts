@@ -14,7 +14,7 @@ import { formatElapsed } from './solo-auto-utils.js';
 import { readRunState } from './run-state.js';
 import { formatProgress } from './solo-config.js';
 import { consumePendingHints } from './solo-hints.js';
-import { formatGuidelinesForPrompt } from './guidelines.js';
+import { formatGuidelinesForPrompt, formatMissionForPrompt, loadMission } from './guidelines.js';
 import { selectRelevant, formatLearningsForPrompt, extractTags, addLearning } from './learnings.js';
 import { formatIndexForPrompt, formatAnalysisForPrompt } from './codebase-index.js';
 import { formatDedupForPrompt } from './dedup-memory.js';
@@ -110,6 +110,8 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
   // Build prompt using ScoutPromptBuilder
   const promptBuilder = new ScoutPromptBuilder();
 
+  const mission = loadMission(scoutPath);
+  if (mission) promptBuilder.addMission(formatMissionForPrompt(mission));
   if (state.guidelines) promptBuilder.addGuidelines(formatGuidelinesForPrompt(state.guidelines));
   // Inject portfolio context (cross-session project knowledge)
   const portfolio = loadPortfolio(state.repoRoot);

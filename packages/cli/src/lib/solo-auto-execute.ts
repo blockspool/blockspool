@@ -21,6 +21,7 @@ import { recordDedupEntry, resolveBlockingModules } from './dedup-memory.js';
 import { recordOutcome as recordLearningOutcome } from './learnings.js';
 import { pushRecentDiff, recordQualitySignal, recordCategoryOutcome, deferProposal } from './run-state.js';
 import { appendErrorLedger } from './error-ledger.js';
+import { commentOnIssue } from './issue-comment.js';
 import {
   mergeTicketToMilestone,
   deleteTicketBranch,
@@ -648,6 +649,15 @@ export async function executeProposals(state: AutoSessionState, toProcess: Ticke
       state.totalPrsCreated++;
       if (result.prUrl) state.allPrUrls.push(result.prUrl);
       if (result.prUrl) state.pendingPrUrls.push(result.prUrl);
+      // Comment back on GitHub issue if this ticket originated from one
+      if (result.prUrl && proposal.metadata?.github_issue_number) {
+        commentOnIssue({
+          repoRoot: state.repoRoot,
+          issueNumber: proposal.metadata.github_issue_number as number,
+          prUrl: result.prUrl,
+          ticketTitle: proposal.title,
+        });
+      }
       const verifiedFiles = result.actualChangedFiles ?? proposal.files ?? proposal.allowed_paths ?? [];
       recordDedupEntry(state.repoRoot, proposal.title, true, undefined, otherTitles, verifiedFiles);
       recordCategoryOutcome(state.repoRoot, proposal.category, true);

@@ -72,6 +72,10 @@ export function formatGuidelinesForPrompt(guidelines: ProjectGuidelines): string
   ].join('\n');
 }
 
+export function formatMissionForPrompt(mission: string): string {
+  return `<mission>\n${mission}\n</mission>`;
+}
+
 // ---------------------------------------------------------------------------
 // Baseline generation (pure — returns content string, caller writes)
 // ---------------------------------------------------------------------------

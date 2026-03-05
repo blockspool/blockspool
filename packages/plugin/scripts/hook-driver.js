@@ -176,7 +176,17 @@ if (hookType === 'PreToolUse') {
     const toolName = data.tool_name;
     const toolInput = data.tool_input ?? {};
 
-    // Only check write operations
+    // Check Bash tool for dangerous command patterns
+    if (toolName === 'Bash') {
+      const command = toolInput.command ?? '';
+      const blocked = checkCommandBlocklist(command);
+      if (blocked) {
+        deny(`Blocked dangerous command: ${blocked}`);
+      }
+      process.exit(0);
+    }
+
+    // Only check write operations for scope enforcement
     const writeTools = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
     if (!writeTools.includes(toolName)) {
       process.exit(0);
@@ -259,6 +269,31 @@ process.exit(0);
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const COMMAND_BLOCKLIST = [
+  { pattern: /\brm\s+(-\w*r\w*f\w*|-\w*f\w*r\w*)\s+\/(\s|$)/, reason: 'Recursive force-delete from root' },
+  { pattern: /\brm\s+(-\w*r\w*f\w*|-\w*f\w*r\w*)\s+~\//, reason: 'Recursive force-delete from home directory' },
+  { pattern: /\bgit\s+push\s+.*--force\b/, reason: 'Force push can destroy remote history' },
+  { pattern: /\bgit\s+push\s+-f\b/, reason: 'Force push can destroy remote history' },
+  { pattern: /\bgit\s+reset\s+--hard\b/, reason: 'Hard reset discards uncommitted work' },
+  { pattern: /\bgit\s+clean\s+(-\w*f\w*d|-\w*d\w*f)\b/, reason: 'git clean -fd deletes untracked files' },
+  { pattern: /\bDROP\s+(TABLE|DATABASE)\b/i, reason: 'SQL DROP is destructive and irreversible' },
+  { pattern: /\bchmod\s+777\b/, reason: 'chmod 777 is a security risk' },
+  { pattern: /\bcurl\b.*\|\s*(ba)?sh\b/, reason: 'Piping curl to shell is a security risk' },
+  { pattern: /\bwget\b.*\|\s*(ba)?sh\b/, reason: 'Piping wget to shell is a security risk' },
+  { pattern: /\bmkfs\b/, reason: 'mkfs formats filesystems' },
+  { pattern: /\bdd\s+.*\bof=\/dev\//, reason: 'dd to device can destroy data' },
+  { pattern: />\s*\/dev\/sd[a-z]/, reason: 'Redirecting to block device can destroy data' },
+];
+
+function checkCommandBlocklist(command) {
+  for (const entry of COMMAND_BLOCKLIST) {
+    if (entry.pattern.test(command)) {
+      return entry.reason;
+    }
+  }
+  return null;
+}
 
 function deny(reason) {
   process.stdout.write(JSON.stringify({

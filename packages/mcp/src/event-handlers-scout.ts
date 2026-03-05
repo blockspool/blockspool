@@ -4,6 +4,7 @@ import { repos, SCOUT_DEFAULTS } from '@promptwheel/core';
 import { filterAndCreateTickets, parseReviewedProposals } from './proposals.js';
 import type { RawProposal } from './proposals.js';
 import { addLearning, extractTags } from './learnings.js';
+import { appendJournalEntry, journalScoutComplete } from './journal.js';
 
 const MAX_SCOUT_RETRIES = SCOUT_DEFAULTS.MAX_SCOUT_RETRIES;
 const MAX_BARREN_CYCLES = SCOUT_DEFAULTS.MAX_BARREN_CYCLES;
@@ -225,6 +226,16 @@ export async function handleProposalsReviewed(ctx: EventContext, payload: Record
   );
 
   if (result.created_ticket_ids.length > 0) {
+    // Journal entry for scout completion
+    if (ctx.run.dir) {
+      appendJournalEntry(ctx.run.dir, journalScoutComplete({
+        cycleNumber: s.scout_cycles,
+        found: pendingProposals.length,
+        accepted: result.accepted.length,
+        rejected: result.rejected.length,
+        acceptedTitles: result.accepted.map(a => a.title),
+      }));
+    }
     s.scout_retries = 0;
     s.consecutive_barren_cycles = 0;
     ctx.run.setPhase('NEXT_TICKET');

@@ -29,6 +29,7 @@ interface ScoutOutput {
     files: string[];
     estimated_complexity: string;
     confidence: number;
+    severity: string;
   }>;
   tickets: Array<{
     id: string;
@@ -167,6 +168,7 @@ export function registerInspectScoutCommand(solo: Command): void {
               files: proposal.files,
               estimated_complexity: proposal.estimated_complexity,
               confidence: proposal.confidence,
+              severity: proposal.severity ?? 'polish',
             })),
             tickets: result.tickets.map((ticket) => ({
               id: ticket.id,

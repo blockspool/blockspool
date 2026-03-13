@@ -429,12 +429,13 @@ export function registerExecuteTools(server: McpServer, getState: () => SessionM
             stdio: ['pipe', 'pipe', 'pipe'],
           });
           qaResults.push({ command: cmd, success: true, output: output.slice(-2000) });
-          state.run.appendEvent('QA_COMMAND_RESULT', { command: cmd, success: true });
+          state.run.appendEvent('QA_COMMAND_RESULT', { command: cmd, success: true, output: output.slice(-2000) });
         } catch (e: unknown) {
           const err = e as { stdout?: string; stderr?: string; message: string };
           const output = (err.stderr || err.stdout || err.message).slice(-2000);
           qaResults.push({ command: cmd, success: false, output });
-          state.run.appendEvent('QA_COMMAND_RESULT', { command: cmd, success: false });
+          state.run.appendEvent('QA_COMMAND_RESULT', { command: cmd, success: false, output });
+          break; // Short-circuit: no point running remaining commands after a failure
         }
       }
 

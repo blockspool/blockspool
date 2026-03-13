@@ -743,10 +743,12 @@ export function acquireSessionLock(repoRoot: string): { acquired: boolean; stale
           return { acquired: false };
         } catch {
           // Process is dead — stale lock, clean it up
-          fs.unlinkSync(lockPath);
-          // Fall through to acquire
+          try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
           return acquireLock(lockPath, pid);
         }
+      } else {
+        // Unreadable PID — treat as corrupt, remove before re-acquiring
+        try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
       }
     } catch {
       // Corrupt lock file — remove and proceed
@@ -759,9 +761,12 @@ export function acquireSessionLock(repoRoot: string): { acquired: boolean; stale
 
 function acquireLock(lockPath: string, stalePid?: number): { acquired: boolean; stalePid?: number } {
   try {
-    fs.writeFileSync(lockPath, String(process.pid));
+    // Use 'wx' (exclusive create) to prevent TOCTOU race where two processes
+    // both detect a stale lock, both delete it, and both write their PID.
+    fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
     return { acquired: true, stalePid };
   } catch {
+    // EEXIST: another process created the lock between our delete and write
     return { acquired: false };
   }
 }

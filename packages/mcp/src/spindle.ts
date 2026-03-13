@@ -267,11 +267,16 @@ function computeRisk(
     score += 1;
   }
 
-  // File edit frequency warnings
+  // File edit frequency warnings (capped at +4 to avoid inflated risk on multi-file tickets)
   if (spindle.file_edit_counts) {
+    let fileEditContribution = 0;
     for (const count of Object.values(spindle.file_edit_counts)) {
-      if (count >= config.maxFileEdits) score += 2;
+      if (count >= config.maxFileEdits) {
+        fileEditContribution += 2;
+        if (fileEditContribution >= 4) break;
+      }
     }
+    score += fileEditContribution;
   }
 
   // Command failures

@@ -149,15 +149,31 @@ function parseCriteriaOutput(output: string, criteria: string[]): CriterionResul
 
   // If we got fewer results than criteria, fill the gaps (fail-open)
   if (results.length < criteria.length) {
-    const covered = new Set(results.map(r => r.criterion));
+    const coveredNormalized = new Set(results.map(r => normalizeCriterion(r.criterion)));
     for (const c of criteria) {
-      if (!covered.has(c)) {
+      const norm = normalizeCriterion(c);
+      if (coveredNormalized.has(norm)) continue;
+      // Substring fallback: check if any result's criterion contains or is contained by target
+      const hasSubstringMatch = results.some(r => {
+        const rNorm = normalizeCriterion(r.criterion);
+        return rNorm.includes(norm) || norm.includes(rNorm);
+      });
+      if (!hasSubstringMatch) {
         results.push({ criterion: c, passed: true, evidence: 'Not evaluated by verifier' });
       }
     }
   }
 
   return results.length > 0 ? results : null;
+}
+
+/**
+ * Normalize a criterion string for fuzzy matching: lowercase, strip
+ * punctuation, and collapse whitespace so minor LLM paraphrasing
+ * doesn't cause a false gap-fill.
+ */
+function normalizeCriterion(s: string): string {
+  return s.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 function tryParseJson(text: string): unknown {

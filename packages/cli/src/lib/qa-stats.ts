@@ -196,6 +196,54 @@ export function recordQaCommandResult(
   });
 }
 
+/**
+ * Record results for multiple QA commands in a single load/save cycle.
+ */
+export function recordQaCommandResults(
+  projectRoot: string,
+  entries: Array<{
+    name: string;
+    result: {
+      passed: boolean;
+      durationMs: number;
+      timedOut: boolean;
+      skippedPreExisting: boolean;
+    };
+  }>,
+): Promise<void> {
+  if (entries.length === 0) return Promise.resolve();
+  return withWriteLock(() => {
+    const store = loadQaStats(projectRoot);
+    for (const { name, result } of entries) {
+      const stats = ensureCommand(store, name);
+      stats.totalRuns++;
+      stats.lastRunAt = Date.now();
+
+      if (result.skippedPreExisting) {
+        stats.preExistingSkips++;
+      } else if (result.timedOut) {
+        stats.timeouts++;
+        stats.consecutiveTimeouts++;
+        stats.consecutiveFailures++;
+      } else if (result.passed) {
+        stats.successes++;
+        stats.consecutiveFailures = 0;
+        stats.consecutiveTimeouts = 0;
+      } else {
+        stats.failures++;
+        stats.consecutiveFailures++;
+        stats.consecutiveTimeouts = 0;
+      }
+
+      stats.totalDurationMs += result.durationMs;
+      stats.avgDurationMs = stats.totalRuns > 0
+        ? Math.round(stats.totalDurationMs / stats.totalRuns)
+        : 0;
+    }
+    saveQaStats(projectRoot, store);
+  });
+}
+
 /** Hysteresis band: only adjust if quality rate moved >15% from last calibration */
 const HYSTERESIS_BAND = 0.15;
 

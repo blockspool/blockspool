@@ -16,11 +16,64 @@ import { gitExec, gitExecFile } from '../solo-git.js';
 import { recordCommandFailure } from '../spindle/index.js';
 import { buildTicketPrompt } from '../solo-prompt-builder.js';
 import { isTestFailure, extractTestFilesFromQaOutput } from '../solo-qa-retry.js';
-import { recordQaCommandResult } from '../qa-stats.js';
+import { recordQaCommandResults } from '../qa-stats.js';
 import { recordQualitySignal } from '../run-state.js';
 import { verifyCriteria } from '../criteria-verifier.js';
 import type { FailureReason } from '../solo-ticket-types.js';
 import type { TicketContext, StepResult } from './types.js';
+
+/**
+ * Record per-command QA stats for both executed and skipped commands.
+ * Uses batch API to load/save the stats file once instead of per-command.
+ */
+async function recordQaStats(
+  adapter: TicketContext['adapter'],
+  repoRoot: string,
+  qaRunId: string,
+  skippedCommands: string[],
+): Promise<void> {
+  const entries: Array<{ name: string; result: { passed: boolean; durationMs: number; timedOut: boolean; skippedPreExisting: boolean } }> = [];
+  const details = await getQaRunDetails(adapter, qaRunId);
+  if (details) {
+    for (const step of details.steps) {
+      entries.push({
+        name: step.name,
+        result: {
+          passed: step.status === 'success',
+          durationMs: step.durationMs ?? 0,
+          timedOut: (step.signal === 'SIGTERM') || false,
+          skippedPreExisting: false,
+        },
+      });
+    }
+  }
+  for (const name of skippedCommands) {
+    entries.push({
+      name,
+      result: { passed: false, durationMs: 0, timedOut: false, skippedPreExisting: true },
+    });
+  }
+  await recordQaCommandResults(repoRoot, entries);
+}
+
+/**
+ * Build a failure result, persist it, and return a StepResult that stops the pipeline.
+ */
+async function failAndReturn(
+  ctx: TicketContext,
+  errorParts: string[],
+  failureReason: FailureReason,
+): Promise<StepResult> {
+  const result = {
+    success: false,
+    branchName: ctx.branchName,
+    durationMs: Date.now() - ctx.startTime,
+    error: errorParts.join('\n'),
+    failureReason,
+  };
+  await ctx.saveRunSummary(result);
+  return { continue: false, result };
+}
 
 export async function run(ctx: TicketContext): Promise<StepResult> {
   const { ticket, repoRoot, worktreePath, config, adapter, opts, startTime, branchName, onProgress, qaBaseline, spindleState, baselineFiles, execBackend } = ctx;
@@ -120,22 +173,7 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
 
       // Record per-command QA stats on failure path
       try {
-        for (const step of qaDetails.steps) {
-          recordQaCommandResult(repoRoot, step.name, {
-            passed: step.status === 'success',
-            durationMs: step.durationMs ?? 0,
-            timedOut: (step.signal === 'SIGTERM') || false,
-            skippedPreExisting: false,
-          });
-        }
-        for (const name of skippedCommands) {
-          recordQaCommandResult(repoRoot, name, {
-            passed: false,
-            durationMs: 0,
-            timedOut: false,
-            skippedPreExisting: true,
-          });
-        }
+        await recordQaStats(adapter, repoRoot, qaResult.runId, skippedCommands);
       } catch {
         // Non-fatal
       }
@@ -206,15 +244,7 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
               errorParts.push('');
               errorParts.push(`(QA retry created scope violations: ${violatedFiles})`);
               errorParts.push(`Worktree preserved for inspection: ${worktreePath}`);
-              const result = {
-                success: false,
-                branchName,
-                durationMs: Date.now() - startTime,
-                error: errorParts.join('\n'),
-                failureReason: 'scope_violation' as FailureReason,
-              };
-              await ctx.saveRunSummary(result);
-              return { continue: false, result };
+              return failAndReturn(ctx, errorParts, 'scope_violation');
             }
 
             // Re-commit
@@ -241,72 +271,32 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
               errorParts.push('(QA retry with test-fix also failed)');
               errorParts.push(`To retry: promptwheel solo run ${ticket.id}`);
               errorParts.push(`Worktree preserved for inspection: ${worktreePath}`);
-              const result = {
-                success: false,
-                branchName,
-                durationMs: Date.now() - startTime,
-                error: errorParts.join('\n'),
-                failureReason: 'qa_failed' as FailureReason,
-              };
-              await ctx.saveRunSummary(result);
-              return { continue: false, result };
+              return failAndReturn(ctx, errorParts, 'qa_failed');
             }
           } else {
             errorParts.push('');
             errorParts.push('(QA retry agent execution failed)');
             errorParts.push(`To retry: promptwheel solo run ${ticket.id}`);
             errorParts.push(`Worktree preserved for inspection: ${worktreePath}`);
-            const result = {
-              success: false,
-              branchName,
-              durationMs: Date.now() - startTime,
-              error: errorParts.join('\n'),
-              failureReason: 'qa_failed' as FailureReason,
-            };
-            await ctx.saveRunSummary(result);
-            return { continue: false, result };
+            return failAndReturn(ctx, errorParts, 'qa_failed');
           }
         } catch {
           errorParts.push('');
           errorParts.push(`To retry: promptwheel solo run ${ticket.id}`);
           errorParts.push(`Worktree preserved for inspection: ${worktreePath}`);
-          const result = {
-            success: false,
-            branchName,
-            durationMs: Date.now() - startTime,
-            error: errorParts.join('\n'),
-            failureReason: 'qa_failed' as FailureReason,
-          };
-          await ctx.saveRunSummary(result);
-          return { continue: false, result };
+          return failAndReturn(ctx, errorParts, 'qa_failed');
         }
       } else {
         errorParts.push('');
         errorParts.push(`To retry: promptwheel solo run ${ticket.id}`);
         errorParts.push(`Worktree preserved for inspection: ${worktreePath}`);
-        const result = {
-          success: false,
-          branchName,
-          durationMs: Date.now() - startTime,
-          error: errorParts.join('\n'),
-          failureReason: 'qa_failed' as FailureReason,
-        };
-        await ctx.saveRunSummary(result);
-        return { continue: false, result };
+        return failAndReturn(ctx, errorParts, 'qa_failed');
       }
     } else {
       errorParts.push('');
       errorParts.push(`To retry: promptwheel solo run ${ticket.id}`);
       errorParts.push(`Worktree preserved for inspection: ${worktreePath}`);
-      const result = {
-        success: false,
-        branchName,
-        durationMs: Date.now() - startTime,
-        error: errorParts.join('\n'),
-        failureReason: 'qa_failed' as FailureReason,
-      };
-      await ctx.saveRunSummary(result);
-      return { continue: false, result };
+      return failAndReturn(ctx, errorParts, 'qa_failed');
     }
   }
 
@@ -343,15 +333,7 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
           recordQualitySignal(repoRoot, 'qa_fail');
           await ctx.skipRemaining(7, 'Criteria verification failed');
 
-          const result = {
-            success: false,
-            branchName,
-            durationMs: Date.now() - startTime,
-            error: `QA commands passed but acceptance criteria not met:\n${failMsg}`,
-            failureReason: 'qa_failed' as FailureReason,
-          };
-          await ctx.saveRunSummary(result);
-          return { continue: false, result };
+          return failAndReturn(ctx, [`QA commands passed but acceptance criteria not met:\n${failMsg}`], 'qa_failed');
         }
 
         // Store criteria results in metadata for learnings
@@ -366,25 +348,7 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
 
         // Record per-command QA stats
         try {
-          const qaStatsDetails = await getQaRunDetails(adapter, qaResult.runId);
-          if (qaStatsDetails) {
-            for (const step of qaStatsDetails.steps) {
-              recordQaCommandResult(repoRoot, step.name, {
-                passed: step.status === 'success',
-                durationMs: step.durationMs ?? 0,
-                timedOut: (step.signal === 'SIGTERM') || false,
-                skippedPreExisting: false,
-              });
-            }
-          }
-          for (const name of skippedCommands) {
-            recordQaCommandResult(repoRoot, name, {
-              passed: false,
-              durationMs: 0,
-              timedOut: false,
-              skippedPreExisting: true,
-            });
-          }
+          await recordQaStats(adapter, repoRoot, qaResult.runId, skippedCommands);
         } catch {
           // Non-fatal
         }
@@ -406,25 +370,7 @@ export async function run(ctx: TicketContext): Promise<StepResult> {
 
   // Record per-command QA stats
   try {
-    const qaStatsDetails = await getQaRunDetails(adapter, qaResult.runId);
-    if (qaStatsDetails) {
-      for (const step of qaStatsDetails.steps) {
-        recordQaCommandResult(repoRoot, step.name, {
-          passed: step.status === 'success',
-          durationMs: step.durationMs ?? 0,
-          timedOut: (step.signal === 'SIGTERM') || false,
-          skippedPreExisting: false,
-        });
-      }
-    }
-    for (const name of skippedCommands) {
-      recordQaCommandResult(repoRoot, name, {
-        passed: false,
-        durationMs: 0,
-        timedOut: false,
-        skippedPreExisting: true,
-      });
-    }
+    await recordQaStats(adapter, repoRoot, qaResult.runId, skippedCommands);
   } catch {
     // Non-fatal
   }

@@ -37,7 +37,9 @@ function saveCache(cache: UpdateCache): void {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
+    const tmp = CACHE_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(cache, null, 2));
+    fs.renameSync(tmp, CACHE_FILE);
   } catch {
     // Non-fatal
   }

@@ -262,6 +262,7 @@ export async function filterAndCreateTickets(
     metadata: {
       scoutConfidence: p.confidence,
       estimatedComplexity: p.estimated_complexity,
+      ...(p.risk ? { scoutRisk: p.risk } : {}),
       ...(p.acceptance_criteria?.length ? { acceptance_criteria: p.acceptance_criteria } : {}),
       ...(p.target_symbols?.length ? { targetSymbols: p.target_symbols } : {}),
       ...(p.severity && p.severity !== 'polish' ? { severity: p.severity } : {}),

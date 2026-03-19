@@ -125,7 +125,7 @@ export async function runScoutPhase(state: AutoSessionState, preSelectedScope?: 
       formatTrajectoryForPrompt(state.activeTrajectory, state.activeTrajectoryState.stepStates, state.currentTrajectoryStep),
     );
   }
-  if (state.codebaseIndex) promptBuilder.addCodebaseIndex(formatIndexForPrompt(state.codebaseIndex, state.cycleCount));
+  if (state.codebaseIndex) promptBuilder.addCodebaseIndex(formatIndexForPrompt(state.codebaseIndex, state.cycleCount, state.scoutedDirs));
   if (state.codebaseIndex) {
     const analysisBlock = formatAnalysisForPrompt(state.codebaseIndex, state.cycleCount);
     if (analysisBlock) promptBuilder.addAnalysis(analysisBlock);

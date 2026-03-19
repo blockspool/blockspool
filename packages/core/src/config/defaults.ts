@@ -80,7 +80,7 @@ export const EXECUTION_DEFAULTS = {
   /** Max QA retry attempts before failing a ticket */
   MAX_QA_RETRIES: 3,
   /** Default parallel ticket count */
-  PARALLEL: 2,
+  PARALLEL: 3,
   /** Maximum parallel tickets allowed */
   MAX_PARALLEL: 5,
 } as const;

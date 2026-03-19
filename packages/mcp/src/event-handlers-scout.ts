@@ -82,6 +82,50 @@ export async function handleScoutOutput(ctx: EventContext, payload: Record<strin
     : `Attempt ${s.scout_retries + 1}: Explored ${exploredDirs.join(', ') || '(unknown)'}. Found ${rawProposals.length} proposals.`;
   s.scout_exploration_log.push(logEntry);
 
+  // Fast-path: if proposals include review_notes (self-reviewed in scout prompt),
+  // skip the separate adversarial review round-trip and create tickets directly.
+  const hasReviewNotes = rawProposals.length > 0 && rawProposals.some(
+    (p) => typeof p.review_note === 'string' && p.review_note.length > 0
+  );
+  if (hasReviewNotes) {
+    // Create tickets directly — proposals are already self-reviewed
+    const result = await filterAndCreateTickets(ctx.run, ctx.db, rawProposals);
+
+    // Update exploration log with rejection info
+    const lastIdx = s.scout_exploration_log.length - 1;
+    if (lastIdx >= 0) {
+      s.scout_exploration_log[lastIdx] += ` ${result.accepted.length} accepted, ${result.rejected.length} rejected (self-reviewed, ${result.rejected.map(r => r.reason).slice(0, 3).join('; ')}).`;
+    }
+
+    // Save artifact
+    ctx.run.saveArtifact(
+      `${s.step_count}-scout-proposals-self-reviewed.json`,
+      JSON.stringify({ raw: rawProposals, self_reviewed: true, result }, null, 2),
+    );
+
+    if (result.created_ticket_ids.length > 0) {
+      if (ctx.run.dir) {
+        appendJournalEntry(ctx.run.dir, journalScoutComplete({
+          cycleNumber: s.scout_cycles,
+          found: rawProposals.length,
+          accepted: result.accepted.length,
+          rejected: result.rejected.length,
+          acceptedTitles: result.accepted.map(a => a.title),
+        }));
+      }
+      s.scout_retries = 0;
+      s.consecutive_barren_cycles = 0;
+      ctx.run.setPhase('NEXT_TICKET');
+      return {
+        processed: true,
+        phase_changed: true,
+        new_phase: 'NEXT_TICKET',
+        message: `Created ${result.created_ticket_ids.length} tickets (self-reviewed, skipped adversarial round-trip). ${result.rejected.length} rejected.`,
+      };
+    }
+    // All self-reviewed proposals rejected — fall through to retry logic below
+  }
+
   if (rawProposals.length === 0) {
     // At high coverage, reduce retry attempts — there's little left to find
     const coveragePct = s.files_total > 0 ? s.files_scanned / s.files_total : 0;
@@ -186,6 +230,17 @@ export async function handleProposalsReviewed(ctx: EventContext, payload: Record
     const reviewedLower = reviewed.title.toLowerCase();
     const match = pendingProposals.find(p => p.title?.toLowerCase() === reviewedLower);
     if (match) {
+      // Warn when review_note implies a score change but structured fields are missing
+      if (reviewed.review_note) {
+        const note = reviewed.review_note.toLowerCase();
+        if (typeof reviewed.impact_score !== 'number' && /\b(impact|reduce.*impact|lower.*impact|impact.*\d)\b/.test(note)) {
+          console.warn(`[promptwheel] Review for "${reviewed.title}" mentions impact adjustment in review_note but impact_score field is missing — original score kept`);
+        }
+        if (typeof reviewed.confidence !== 'number' && /\b(confidence|reduce.*confidence|lower.*confidence|confidence.*\d)\b/.test(note)) {
+          console.warn(`[promptwheel] Review for "${reviewed.title}" mentions confidence adjustment in review_note but confidence field is missing — original score kept`);
+        }
+      }
+
       // Record learning if confidence lowered >20 pts
       if (s.learnings_enabled && typeof reviewed.confidence === 'number' && typeof match.confidence === 'number') {
         const drop = match.confidence - reviewed.confidence;
@@ -202,6 +257,24 @@ export async function handleProposalsReviewed(ctx: EventContext, payload: Record
           });
         }
       }
+
+      // Record learning if impact lowered significantly (>=3 pts)
+      if (s.learnings_enabled && typeof reviewed.impact_score === 'number' && typeof match.impact_score === 'number') {
+        const drop = match.impact_score - reviewed.impact_score;
+        if (drop >= 3) {
+          addLearning(ctx.run.rootPath, {
+            text: `Proposal "${reviewed.title}" had inflated impact (${match.impact_score}→${reviewed.impact_score})`,
+            category: 'warning',
+            source: { type: 'review_downgrade', detail: reviewed.review_note },
+            tags: extractTags(match.files ?? match.allowed_paths ?? [], []),
+            structured: {
+              root_cause: reviewed.review_note ?? `Impact inflated by ${drop} points`,
+              applies_to: match.allowed_paths?.[0],
+            },
+          });
+        }
+      }
+
       if (typeof reviewed.confidence === 'number') match.confidence = reviewed.confidence;
       if (typeof reviewed.impact_score === 'number') match.impact_score = reviewed.impact_score;
     }

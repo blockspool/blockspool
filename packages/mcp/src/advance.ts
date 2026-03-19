@@ -294,9 +294,9 @@ async function advanceScout(ctx: AdvanceContext): Promise<AdvanceResponse> {
     s.categories = [...s.config_categories];
   }
 
-  // Build codebase index block — use cycles + retries so retries advance the chunk
+  // Build codebase index block — smart rotation prioritizes unscouted sectors
   const chunkOffset = s.scout_cycles + s.scout_retries;
-  const indexBlock = s.codebase_index ? formatIndexForPrompt(s.codebase_index, chunkOffset) + '\n\n' : '';
+  const indexBlock = s.codebase_index ? formatIndexForPrompt(s.codebase_index, chunkOffset, s.scouted_dirs) + '\n\n' : '';
 
   // Build escalation block if retrying after 0 proposals
   const escalationBlock = s.scout_retries > 0
@@ -688,11 +688,14 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
   });
 
   // Derive scope policy for this ticket
+  const ticketMeta = ticket.metadata as Record<string, unknown> | null | undefined;
   const policy = deriveScopePolicy({
     allowedPaths: ticket.allowedPaths ?? [],
     category: ticket.category ?? 'refactor',
     maxLinesPerTicket: s.max_lines_per_ticket,
     learnings: s.cached_learnings,
+    estimatedComplexity: typeof ticketMeta?.estimatedComplexity === 'string' ? ticketMeta.estimatedComplexity : undefined,
+    scoutRisk: typeof ticketMeta?.scoutRisk === 'string' ? ticketMeta.scoutRisk : undefined,
   });
 
   const constraints: AdvanceConstraints = {
@@ -706,7 +709,7 @@ async function advanceNextTicket(ctx: AdvanceContext): Promise<AdvanceResponse> 
     auto_approve_patterns: getScoutAutoApprove(),
   };
 
-  // Docs category: skip plan, go straight to execute
+  // Skip plan when not required (docs, low-risk simple tickets, etc.)
   if (!policy.plan_required) {
     s.plan_approved = true;
     run.setPhase('EXECUTE');

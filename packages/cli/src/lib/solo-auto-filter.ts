@@ -90,6 +90,19 @@ export async function filterProposals(
                   });
                 }
               }
+              // Record learning for significant impact reductions (>=3 pts)
+              const origImpact = proposals[ri]?.impact_score;
+              if (origImpact !== undefined && typeof reviewed[ri].impact_score === 'number') {
+                const impactDrop = origImpact - reviewed[ri].impact_score;
+                if (impactDrop >= 3) {
+                  addLearning(state.repoRoot, {
+                    text: `Proposal "${reviewed[ri].title}" had inflated impact (${origImpact}→${reviewed[ri].impact_score})`.slice(0, 200),
+                    category: 'warning',
+                    source: { type: 'review_downgrade' as any, detail: reviewed[ri].review_note },
+                    tags: extractTags(proposals[ri]?.files ?? proposals[ri]?.allowed_paths ?? [], []),
+                  });
+                }
+              }
             }
           }
         }

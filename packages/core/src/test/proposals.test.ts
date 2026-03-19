@@ -407,6 +407,23 @@ Trailing text.
     expect(result![0].confidence).toBe(50);
     expect(result![0].impact_score).toBe(PROPOSALS_DEFAULTS.DEFAULT_IMPACT);
   });
+
+  it('warns when confidence or impact_score fields are missing', () => {
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warns.push(args.map(String).join(' ')); };
+
+    try {
+      const response = '<reviewed-proposals>[{ "title": "Fix A", "confidence": 80 }]</reviewed-proposals>';
+      const result = parseReviewedProposals(response);
+      expect(result).not.toBeNull();
+      expect(result![0].confidence).toBe(80);
+      expect(result![0].impact_score).toBe(PROPOSALS_DEFAULTS.DEFAULT_IMPACT);
+      expect(warns.some(w => w.includes('missing') && w.includes('impact_score'))).toBe(true);
+    } finally {
+      console.warn = origWarn;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

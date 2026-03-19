@@ -118,6 +118,8 @@ export interface RawProposal {
   severity?: ProposalSeverity;
   /** Structured risk factors for rubric-based severity derivation. */
   risk_assessment?: RiskAssessment;
+  /** Self-review note from scout (used to skip separate adversarial review round-trip). */
+  review_note?: string;
 }
 
 /** Proposal with all required fields validated and defaults applied. */
@@ -339,8 +341,9 @@ export function buildProposalReviewPrompt(proposals: ReviewableProposal[]): stri
   parts.push(
     '## Output',
     '',
-    'For each proposal, revise the `confidence` (0-100) and `impact_score` (1-10).',
+    'For each proposal, you MUST include both `confidence` (0-100) and `impact_score` (1-10) — these fields are required, not optional.',
     'If a proposal is fundamentally flawed, set its confidence to 0.',
+    'If the impact is overstated, lower `impact_score` accordingly — do not just mention it in the review_note.',
     'Optionally add a `review_note` (string) explaining your reasoning.',
     '',
     'Call `promptwheel_ingest_event` with type `PROPOSALS_REVIEWED` and payload:',
@@ -384,10 +387,23 @@ export function parseReviewedProposals(response: string): ReviewedProposal[] | n
     const results: ReviewedProposal[] = [];
     for (const item of parsed) {
       if (typeof item.title !== 'string') continue;
+
+      // Warn when structured fields are missing — LLM may describe changes in
+      // review_note without setting the numeric field, causing the original
+      // score to be silently preserved.
+      const hasConfidence = typeof item.confidence === 'number';
+      const hasImpact = typeof item.impact_score === 'number';
+      if (!hasConfidence || !hasImpact) {
+        const missing = [!hasConfidence && 'confidence', !hasImpact && 'impact_score'].filter(Boolean);
+        console.warn(
+          `[promptwheel] Review for "${item.title}" is missing ${missing.join(', ')} — using ${!hasConfidence ? `confidence=${50}` : ''}${!hasConfidence && !hasImpact ? ', ' : ''}${!hasImpact ? `impact_score=${PROPOSALS_DEFAULTS.DEFAULT_IMPACT}` : ''}`
+        );
+      }
+
       results.push({
         title: item.title,
-        confidence: typeof item.confidence === 'number' ? item.confidence : 50,
-        impact_score: typeof item.impact_score === 'number' ? item.impact_score : PROPOSALS_DEFAULTS.DEFAULT_IMPACT,
+        confidence: hasConfidence ? item.confidence : 50,
+        impact_score: hasImpact ? item.impact_score : PROPOSALS_DEFAULTS.DEFAULT_IMPACT,
         review_note: typeof item.review_note === 'string' ? item.review_note : undefined,
       });
     }

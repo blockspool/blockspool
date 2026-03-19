@@ -583,18 +583,39 @@ export function computeGraphMetrics(
  * get exposure over multiple cycles. Includes untested modules, hotspots,
  * and entrypoints.
  */
-export function formatIndexForPrompt(index: CodebaseIndex, scoutCycle: number): string {
+export function formatIndexForPrompt(index: CodebaseIndex, scoutCycle: number, scoutedDirs?: string[]): string {
   const { modules, dependency_edges, untested_modules, large_files, entrypoints } = index;
 
   if (modules.length === 0) {
     return '## Codebase Structure\n\nNo modules detected.';
   }
 
+  // Smart sector rotation: prioritize unscouted modules, then by file count (more files = more potential issues).
+  // Falls back to sequential chunking when no scouted dirs are provided.
+  let focusModules: ModuleEntry[];
+  let otherModules: ModuleEntry[];
   const totalChunks = Math.max(1, Math.ceil(modules.length / CHUNK_SIZE));
-  const chunkIndex = scoutCycle % totalChunks;
-  const offset = chunkIndex * CHUNK_SIZE;
-  const focusModules = modules.slice(offset, offset + CHUNK_SIZE);
-  const otherModules = modules.filter((_, i) => i < offset || i >= offset + CHUNK_SIZE);
+  let chunkIndex = scoutCycle % totalChunks;
+
+  if (scoutedDirs && scoutedDirs.length > 0) {
+    const scoutedSet = new Set(scoutedDirs.map(d => d.replace(/\/$/, '')));
+    // Sort: unscouted first, then by production file count descending
+    const sorted = [...modules].sort((a, b) => {
+      const aVisited = scoutedSet.has(a.path) || scoutedSet.has(a.path + '/') ? 1 : 0;
+      const bVisited = scoutedSet.has(b.path) || scoutedSet.has(b.path + '/') ? 1 : 0;
+      if (aVisited !== bVisited) return aVisited - bVisited; // unscouted first
+      const aFiles = a.production_file_count ?? a.file_count ?? 0;
+      const bFiles = b.production_file_count ?? b.file_count ?? 0;
+      return bFiles - aFiles; // more files first
+    });
+    focusModules = sorted.slice(0, CHUNK_SIZE);
+    otherModules = sorted.slice(CHUNK_SIZE);
+    chunkIndex = 0; // smart rotation doesn't use sequential chunks
+  } else {
+    const offset = chunkIndex * CHUNK_SIZE;
+    focusModules = modules.slice(offset, offset + CHUNK_SIZE);
+    otherModules = modules.filter((_, i) => i < offset || i >= offset + CHUNK_SIZE);
+  }
 
   const parts: string[] = [];
 

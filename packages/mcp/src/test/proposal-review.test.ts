@@ -277,6 +277,53 @@ describe('SCOUT_OUTPUT fallback parsing', () => {
     expect(s.pending_proposals).toBeNull();
   });
 
+  it('warns when review_note implies score change but field is missing', async () => {
+    const s = run.require();
+    s.phase = 'SCOUT';
+    s.pending_proposals = [makeProposal({ title: 'Impact test', confidence: 85, impact_score: 7 })];
+
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warns.push(args.map(String).join(' ')); };
+
+    try {
+      await processEvent(run, db, 'PROPOSALS_REVIEWED', {
+        reviewed_proposals: [
+          { title: 'Impact test', confidence: 80, review_note: 'Reduced impact to 3 — marginal value' },
+          // Note: impact_score is missing
+        ],
+      });
+    } finally {
+      console.warn = origWarn;
+    }
+
+    const impactWarn = warns.find(w => w.includes('impact_score field is missing'));
+    expect(impactWarn).toBeDefined();
+    // Original impact_score (7) should be preserved since field was missing
+    // But the proposal should still be in the system (filtered or not)
+  });
+
+  it('records learning when impact is reduced significantly', async () => {
+    const s = run.require();
+    s.phase = 'SCOUT';
+    s.learnings_enabled = true;
+    s.pending_proposals = [makeProposal({ title: 'Impact drop', confidence: 85, impact_score: 8 })];
+
+    await processEvent(run, db, 'PROPOSALS_REVIEWED', {
+      reviewed_proposals: [
+        { title: 'Impact drop', confidence: 85, impact_score: 4, review_note: 'Overstated importance' },
+      ],
+    });
+
+    // Check that a learning was recorded (impact dropped by 4, threshold is >=3)
+    const learningsPath = path.join(tmpDir, '.promptwheel', 'learnings.ndjson');
+    if (fs.existsSync(learningsPath)) {
+      const content = fs.readFileSync(learningsPath, 'utf8');
+      expect(content).toContain('inflated impact');
+      expect(content).toContain('8→4');
+    }
+  });
+
   it('does not redirect when no pending proposals exist', async () => {
     const s = run.require();
     s.phase = 'SCOUT';

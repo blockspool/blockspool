@@ -183,6 +183,10 @@ export interface DeriveScopeInput {
   worktreeRoot?: string;
   /** Cross-run learnings for adaptive trust (optional, backward compatible) */
   learnings?: Learning[];
+  /** Scout-estimated complexity: trivial, simple, moderate, complex */
+  estimatedComplexity?: string;
+  /** Scout-assessed risk: low, medium, high */
+  scoutRisk?: string;
 }
 
 export function deriveScopePolicy(input: DeriveScopeInput): ScopePolicy {
@@ -190,6 +194,13 @@ export function deriveScopePolicy(input: DeriveScopeInput): ScopePolicy {
   let maxLines = input.category === 'test' ? 1000 : input.maxLinesPerTicket;
   let planRequired = input.category !== 'docs';
   let riskAssessment: AdaptiveRiskAssessment | undefined;
+
+  // Skip plan for low-risk, simple tickets — saves one MCP round-trip.
+  // The post-execution scope check in handleTicketResult still catches violations.
+  if (planRequired && input.scoutRisk === 'low'
+    && (input.estimatedComplexity === 'trivial' || input.estimatedComplexity === 'simple')) {
+    planRequired = false;
+  }
 
   // Adaptive trust: adjust constraints based on failure history in learnings
   if (input.learnings && input.learnings.length > 0) {
